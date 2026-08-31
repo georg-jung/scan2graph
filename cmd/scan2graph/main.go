@@ -118,14 +118,9 @@ func run(cfg *config.Config) error {
 
 	errCh := make(chan error, 2)
 
-	smtpSrv := smtpin.New(cfg, store, pipe, slog.Default())
-	go func() {
-		slog.Info("smtp listening", "addr", cfg.SMTPAddr)
-		if err := smtpSrv.ListenAndServe(); err != nil && !errors.Is(err, smtp.ErrServerClosed) {
-			errCh <- fmt.Errorf("smtp server: %w", err)
-		}
-	}()
-
+	// Built before anything can accept a scan: this is where OIDC discovery
+	// happens, and a printer must not be told 250 for a scan the appliance
+	// is about to lose because it could not reach the identity provider.
 	handler, err := newHTTPHandler(ctx, cfg, store)
 	if err != nil {
 		return err
@@ -135,6 +130,14 @@ func run(cfg *config.Config) error {
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+
+	smtpSrv := smtpin.New(cfg, store, pipe, slog.Default())
+	go func() {
+		slog.Info("smtp listening", "addr", cfg.SMTPAddr)
+		if err := smtpSrv.ListenAndServe(); err != nil && !errors.Is(err, smtp.ErrServerClosed) {
+			errCh <- fmt.Errorf("smtp server: %w", err)
+		}
+	}()
 
 	go func() {
 		slog.Info("http listening", "addr", cfg.HTTPAddr)
