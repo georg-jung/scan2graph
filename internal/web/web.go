@@ -11,8 +11,6 @@ import (
 	"bytes"
 	"context"
 	"embed"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -35,11 +33,10 @@ import (
 // refresh, code exchange), so a hung Entra cannot pin a request goroutine.
 const providerTimeout = 15 * time.Second
 
-// contentSecurityPolicy allows exactly what the pages use: the stylesheet, the
-// one polling script and its fetch back to this origin. Nothing else loads,
-// frames, or receives a form post.
-const contentSecurityPolicy = "default-src 'none'; style-src 'self'; script-src 'self'; " +
-	"connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+// contentSecurityPolicy allows exactly what the pages use: the stylesheet.
+// Nothing else loads, frames, or receives a form post.
+const contentSecurityPolicy = "default-src 'none'; style-src 'self'; " +
+	"form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
 
 //go:embed templates static
 var assets embed.FS
@@ -78,24 +75,12 @@ type Server struct {
 // New performs OIDC discovery against the configured authority, so it can fail
 // and it takes a context.
 func New(ctx context.Context, opts Options) (*Server, error) {
-	switch {
-	case opts.Store == nil:
-		return nil, errors.New("web: Options.Store is required")
-	case opts.Config == nil:
-		return nil, errors.New("web: Options.Config is required")
-	case opts.Config.PublicBaseURL == "":
-		return nil, errors.New("web: Config.PublicBaseURL is required to build the sign-in redirect URI")
-	}
-
 	s := &Server{
 		store:  opts.Store,
 		cfg:    opts.Config,
 		log:    opts.Logger,
 		now:    opts.Now,
 		client: &http.Client{Timeout: providerTimeout},
-	}
-	if s.log == nil {
-		s.log = slog.Default()
 	}
 	if s.now == nil {
 		s.now = time.Now
@@ -132,7 +117,6 @@ func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /{$}", s.guard(s.handleList))
 	mux.Handle("GET /scan/{jobID}", s.guard(s.handleDetail))
-	mux.Handle("GET /scan/{jobID}/status", s.guard(s.handleStatus))
 	mux.Handle("GET /scan/{jobID}/{docID}", s.guard(s.handleDownload))
 	mux.HandleFunc("GET /auth/login", s.handleLogin)
 	mux.HandleFunc("GET /auth/callback", s.handleCallback)
@@ -149,7 +133,6 @@ func secureHeaders(next http.Handler) http.Handler {
 		h.Set("Cache-Control", "no-store")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
-		h.Set("X-Frame-Options", "DENY")
 		h.Set("Content-Security-Policy", contentSecurityPolicy)
 		next.ServeHTTP(w, r)
 	})
@@ -197,6 +180,9 @@ func (s *Server) handleList(w http.ResponseWriter, _ *http.Request, sess *sessio
 	v := listView{page: pageFor("Scans", sess), Scans: make([]scanRow, 0, len(found))}
 	for _, j := range found {
 		v.Scans = append(v.Scans, s.row(j))
+		if j.Status == jobs.StatusPending || j.Status == jobs.StatusProcessing {
+			v.Refresh = true
+		}
 	}
 	s.render(w, listTmpl, v)
 }
@@ -213,9 +199,7 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, sess *sess
 		Scan:      row,
 		Documents: make([]docRow, 0, len(j.Documents)),
 	}
-	if j.Status == jobs.StatusPending || j.Status == jobs.StatusProcessing {
-		v.StatusURL = "/scan/" + j.ID + "/status"
-	}
+	v.Refresh = j.Status == jobs.StatusPending || j.Status == jobs.StatusProcessing
 	for _, d := range j.Documents {
 		v.Documents = append(v.Documents, docRow{
 			Name: d.DisplayName,
@@ -224,19 +208,6 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, sess *sess
 		})
 	}
 	s.render(w, detailTmpl, v)
-}
-
-// handleStatus is what the detail page polls while OCR is still running.
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request, sess *session) {
-	j, ok := s.job(sess, r.PathValue("jobID"))
-	if !ok {
-		notFound(w)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(struct {
-		Status jobs.Status `json:"status"`
-	}{j.Status})
 }
 
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request, sess *session) {
@@ -266,17 +237,15 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request, sess *se
 	w.Header().Set("Content-Type", "application/pdf")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+d.DisplayName+`"`)
 	w.Header().Set("Content-Length", strconv.FormatInt(d.Size, 10))
-	if _, err := io.Copy(w, f); err != nil {
-		s.log.Warn("web: download interrupted", "job_id", j.ID, "err", err)
-	}
+	_, _ = io.Copy(w, f)
 }
 
 // page is what every template's layout needs.
 type page struct {
-	Title     string
-	User      string
-	SignedIn  bool
-	StatusURL string // set only while a scan is still being processed
+	Title    string
+	User     string
+	SignedIn bool
+	Refresh  bool // set while a scan on the page is still being worked on
 }
 
 type listView struct {

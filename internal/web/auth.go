@@ -3,7 +3,6 @@ package web
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"net/http"
 	"slices"
 	"strings"
@@ -59,7 +58,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		s.signInFailed(w, "the identity provider refused the sign-in", nil)
 		return
 	}
-	if !secretEqual(state, q.Get("state")) {
+	if state != q.Get("state") {
 		s.signInFailed(w, "state mismatch", nil)
 		return
 	}
@@ -82,7 +81,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		s.signInFailed(w, "id token verification failed", err)
 		return
 	}
-	if !secretEqual(idToken.Nonce, nonce) {
+	if idToken.Nonce != nonce {
 		s.signInFailed(w, "nonce mismatch", nil)
 		return
 	}
@@ -98,13 +97,9 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	identities := s.identities(claims.Email, claims.PreferredUsername)
-	name := claims.Name
-	if name == "" && len(identities) > 0 {
-		name = identities[0]
-	}
 	setCookie(w, &http.Cookie{
 		Name:   sessionCookie,
-		Value:  s.sessions.create(&session{identities: identities, name: name}),
+		Value:  s.sessions.create(&session{identities: identities, name: claims.Name}),
 		Path:   "/",
 		MaxAge: int(sessionTTL.Seconds()),
 	})
@@ -169,9 +164,4 @@ func setCookie(w http.ResponseWriter, c *http.Cookie) {
 
 func clearCookie(w http.ResponseWriter, name, path string) {
 	setCookie(w, &http.Cookie{Name: name, Value: "", Path: path, MaxAge: -1})
-}
-
-// secretEqual compares two unguessable values without a timing side channel.
-func secretEqual(a, b string) bool {
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }

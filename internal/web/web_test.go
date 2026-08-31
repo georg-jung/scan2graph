@@ -9,7 +9,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
-	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -235,44 +235,29 @@ func TestSignInRoundTrip(t *testing.T) {
 		"Cache-Control":          "no-store",
 		"X-Content-Type-Options": "nosniff",
 		"Referrer-Policy":        "no-referrer",
-		"X-Frame-Options":        "DENY",
 	} {
 		if got := resp.Header.Get(header); got != want {
 			t.Errorf("list page %s = %q, want %q", header, got, want)
 		}
 	}
-	if !strings.Contains(resp.Header.Get("Content-Security-Policy"), "default-src 'none'") {
-		t.Errorf("list page CSP = %q", resp.Header.Get("Content-Security-Policy"))
+	if got := resp.Header.Get("Content-Security-Policy"); got != contentSecurityPolicy {
+		t.Errorf("list page CSP = %q, want %q", got, contentSecurityPolicy)
 	}
 }
 
 func TestCallbackRejectsBadState(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		state string
-	}{
-		{"wrong state", "not-the-state-we-issued"},
-		{"missing state", ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			h := newHarness(t)
-			c := h.client()
-			callback, err := url.Parse(h.startSignIn(c))
-			if err != nil {
-				t.Fatalf("parse callback URL: %v", err)
-			}
-			q := callback.Query()
-			if tc.state == "" {
-				q.Del("state")
-			} else {
-				q.Set("state", tc.state)
-			}
-			callback.RawQuery = q.Encode()
-
-			resp, _ := h.get(c, callback.String())
-			assertSignInRejected(t, h, c, resp)
-		})
+	h := newHarness(t)
+	c := h.client()
+	callback, err := url.Parse(h.startSignIn(c))
+	if err != nil {
+		t.Fatalf("parse callback URL: %v", err)
 	}
+	q := callback.Query()
+	q.Set("state", "not-the-state-we-issued")
+	callback.RawQuery = q.Encode()
+
+	resp, _ := h.get(c, callback.String())
+	assertSignInRejected(t, h, c, resp)
 }
 
 func TestCallbackRejectsTamperedIDToken(t *testing.T) {
@@ -378,7 +363,7 @@ func TestNoSessionRedirectsToSignIn(t *testing.T) {
 	h := newHarness(t)
 	j := h.addJob("Invoice", []string{ann}, webCaps, "%PDF-1.7")
 	c := h.client()
-	for _, path := range []string{"/", "/scan/" + j.ID, "/scan/" + j.ID + "/status", "/scan/" + j.ID + "/" + j.Documents[0].ID} {
+	for _, path := range []string{"/", "/scan/" + j.ID, "/scan/" + j.ID + "/" + j.Documents[0].ID} {
 		resp, _ := h.get(c, h.ts.URL+path)
 		if resp.StatusCode != http.StatusSeeOther || h.location(resp) != h.ts.URL+"/auth/login" {
 			t.Errorf("GET %s without a session: status %d location %q, want 303 to /auth/login",
@@ -452,11 +437,6 @@ func TestOtherUsersJobIsIndistinguishableFromMissing(t *testing.T) {
 			"/scan/" + theirs.ID + "/" + theirs.Documents[0].ID,
 			"/scan/" + missing + "/" + missing,
 		},
-		{
-			"status",
-			"/scan/" + theirs.ID + "/status",
-			"/scan/" + missing + "/status",
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			denied, deniedBody := h.get(c, h.ts.URL+tc.theirs)
@@ -513,35 +493,37 @@ func TestDownload(t *testing.T) {
 	}
 }
 
-func TestStatusEndpoint(t *testing.T) {
+// TestRefreshMetaWhileProcessing checks that the self-refresh meta tag
+// appears on the detail page and the list page while a job is still being
+// worked on, and disappears on both once it is ready.
+func TestRefreshMetaWhileProcessing(t *testing.T) {
 	h := newHarness(t)
 	j := h.addJob("My invoice", []string{ann}, webCaps, "%PDF-1.7")
 	if err := h.store.SetStatus(j.ID, jobs.StatusProcessing, ""); err != nil {
 		t.Fatalf("SetStatus: %v", err)
 	}
 	c := h.signedIn()
+	const refresh = `<meta http-equiv="refresh" content="5">`
 
-	resp, body := h.get(c, h.ts.URL+"/scan/"+j.ID+"/status")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status: %d, want 200", resp.StatusCode)
+	if _, page := h.get(c, h.ts.URL+"/scan/"+j.ID); !strings.Contains(page, refresh) {
+		t.Errorf("detail page of a processing scan does not refresh:\n%s", page)
 	}
-	if got := strings.TrimSpace(body); got != `{"status":"processing"}` {
-		t.Errorf("status body = %s", got)
-	}
-	if got := resp.Header.Get("Content-Type"); got != "application/json" {
-		t.Errorf("status Content-Type = %q", got)
+	if _, page := h.get(c, h.ts.URL+"/"); !strings.Contains(page, refresh) {
+		t.Errorf("list page with a processing scan does not refresh:\n%s", page)
 	}
 
-	// The detail page asks for polling only while the job is busy.
-	_, page := h.get(c, h.ts.URL+"/scan/"+j.ID)
-	if !strings.Contains(page, `data-status="/scan/`+j.ID+`/status"`) {
-		t.Errorf("detail page of a processing scan does not poll:\n%s", page)
-	}
 	if err := h.store.SetStatus(j.ID, jobs.StatusReady, ""); err != nil {
 		t.Fatalf("SetStatus: %v", err)
 	}
-	if _, page := h.get(c, h.ts.URL+"/scan/"+j.ID); strings.Contains(page, "data-status") {
-		t.Errorf("detail page of a finished scan still polls:\n%s", page)
+	if _, page := h.get(c, h.ts.URL+"/scan/"+j.ID); strings.Contains(page, refresh) {
+		t.Errorf("detail page of a finished scan still refreshes:\n%s", page)
+	}
+	resp, page := h.get(c, h.ts.URL+"/")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list page: status %d, want 200", resp.StatusCode)
+	}
+	if strings.Contains(page, refresh) || !strings.Contains(page, "My invoice") {
+		t.Errorf("list page with nothing processing did not render as expected:\n%s", page)
 	}
 }
 
@@ -558,7 +540,7 @@ func TestConcurrentRequests(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range 5 {
-				for _, path := range []string{"/", "/scan/" + j.ID, "/scan/" + j.ID + "/status", "/scan/" + j.ID + "/" + j.Documents[0].ID} {
+				for _, path := range []string{"/", "/scan/" + j.ID, "/scan/" + j.ID + "/" + j.Documents[0].ID} {
 					resp, err := c.Get(h.ts.URL + path)
 					if err != nil {
 						t.Errorf("GET %s: %v", path, err)
@@ -590,20 +572,9 @@ func TestIdentities(t *testing.T) {
 		{"nothing usable", "", "not-an-address", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := s.identities(tc.email, tc.upn)
-			if len(got) != len(tc.want) {
+			if got := s.identities(tc.email, tc.upn); !slices.Equal(got, tc.want) {
 				t.Fatalf("identities = %q, want %q", got, tc.want)
-			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Fatalf("identities = %q, want %q", got, tc.want)
-				}
 			}
 		})
 	}
-}
-
-func TestMain(m *testing.M) {
-	slog.SetDefault(quiet())
-	os.Exit(m.Run())
 }

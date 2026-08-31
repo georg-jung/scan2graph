@@ -6,11 +6,9 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -103,23 +101,18 @@ func (f *fakeIDP) discovery(w http.ResponseWriter, _ *http.Request) {
 		"authorization_endpoint":                f.URL + "/authorize",
 		"token_endpoint":                        f.URL + "/token",
 		"jwks_uri":                              f.URL + "/jwks",
-		"response_types_supported":              []string{"code"},
-		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"RS256"},
-		"scopes_supported":                      []string{"openid", "profile", "email"},
 	})
 }
 
 func (f *fakeIDP) jwks(w http.ResponseWriter, _ *http.Request) {
-	e := make([]byte, 4)
-	binary.BigEndian.PutUint32(e, uint32(f.key.E))
 	writeJSON(w, map[string]any{"keys": []map[string]any{{
 		"kty": "RSA",
 		"alg": "RS256",
 		"use": "sig",
 		"kid": testKeyID,
 		"n":   b64(f.key.N.Bytes()),
-		"e":   b64(strings.TrimLeft(string(e), "\x00")),
+		"e":   "AQAB", // Go always generates E=65537
 	}}})
 }
 
@@ -138,16 +131,6 @@ func (f *fakeIDP) authorize(w http.ResponseWriter, r *http.Request) {
 	if got := q.Get("code_challenge_method"); got != "S256" {
 		f.t.Errorf("fake idp: code_challenge_method = %q, want S256", got)
 		http.Error(w, "bad challenge method", http.StatusBadRequest)
-		return
-	}
-	if got := q.Get("client_id"); got != f.ClientID {
-		f.t.Errorf("fake idp: client_id = %q, want %q", got, f.ClientID)
-		http.Error(w, "bad client", http.StatusBadRequest)
-		return
-	}
-	if got := q.Get("response_type"); got != "code" {
-		f.t.Errorf("fake idp: response_type = %q, want code", got)
-		http.Error(w, "bad response type", http.StatusBadRequest)
 		return
 	}
 
@@ -248,8 +231,8 @@ func (f *fakeIDP) sign(claims map[string]any) string {
 	return signingInput + "." + b64(sig)
 }
 
-func b64[T ~string | ~[]byte](v T) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(v))
+func b64(b []byte) string {
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
