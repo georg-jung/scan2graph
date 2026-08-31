@@ -1,0 +1,28 @@
+{{define "content" -}}
+{{if .Refresh}}<meta http-equiv="refresh" content="5">{{end}}
+<h1>Your scans</h1>
+{{if .Scans}}
+<div class="scroll">
+<table>
+<thead><tr><th>Received</th><th>Scan</th><th>Docs</th><th>Status</th><th>Expiry</th></tr></thead>
+<tbody>
+{{range .Scans}}
+<tr>
+  <td data-label="Received" class="nowrap muted small">{{.Received}}</td>
+  <td data-label="Scan">
+    <a href="/scan/{{.ID}}">{{if .Subject}}{{.Subject}}{{else}}(no subject){{end}}</a>
+    <div class="muted small">from {{.Profile}}</div>
+  </td>
+  <td data-label="Docs">{{.Documents}}</td>
+  <td data-label="Status" class="nowrap"><span class="status {{.Status}}">{{.Status}}</span></td>
+  <td data-label="Expiry" class="nowrap muted small">{{.Expires}}</td>
+</tr>
+{{end}}
+</tbody>
+</table>
+</div>
+{{else}}
+<p class="empty">Nothing here right now. Scans show up on this page once the
+printer has sent them, and disappear again when they expire.</p>
+{{end}}
+{{- end}}

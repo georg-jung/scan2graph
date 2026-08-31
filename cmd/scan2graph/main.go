@@ -24,6 +24,7 @@ import (
 	"github.com/georg-jung/scan2graph/internal/jobs"
 	"github.com/georg-jung/scan2graph/internal/pipeline"
 	"github.com/georg-jung/scan2graph/internal/smtpin"
+	"github.com/georg-jung/scan2graph/internal/web"
 )
 
 // version is set at build time (-ldflags "-X main.version=...").
@@ -117,6 +118,19 @@ func run(cfg *config.Config) error {
 
 	errCh := make(chan error, 2)
 
+	// Built before anything can accept a scan: this is where OIDC discovery
+	// happens, and a printer must not be told 250 for a scan the appliance
+	// is about to lose because it could not reach the identity provider.
+	handler, err := newHTTPHandler(ctx, cfg, store)
+	if err != nil {
+		return err
+	}
+	srv := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
 	smtpSrv := smtpin.New(cfg, store, pipe, slog.Default())
 	go func() {
 		slog.Info("smtp listening", "addr", cfg.SMTPAddr)
@@ -124,12 +138,6 @@ func run(cfg *config.Config) error {
 			errCh <- fmt.Errorf("smtp server: %w", err)
 		}
 	}()
-
-	srv := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           newHTTPHandler(),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
 
 	go func() {
 		slog.Info("http listening", "addr", cfg.HTTPAddr)
@@ -250,11 +258,26 @@ func announceSMTPCredentials(cfg *config.Config) {
 	}
 }
 
-func newHTTPHandler() http.Handler {
+// newHTTPHandler serves the health endpoints always, and mounts the web UI
+// underneath them when a profile enables web downloads. Discovery against
+// Entra happens here, so a wrong authority is a startup failure rather than a
+// surprise at the first sign-in.
+func newHTTPHandler(ctx context.Context, cfg *config.Config, store *jobs.Store) (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", plainOK)
 	mux.HandleFunc("GET /readyz", plainOK)
-	return mux
+
+	if cfg.PublicBaseURL == "" {
+		slog.Info("web UI disabled: no profile enables web downloads")
+		return mux, nil
+	}
+	ui, err := web.New(ctx, web.Options{Store: store, Config: cfg, Logger: slog.Default()})
+	if err != nil {
+		return nil, fmt.Errorf("web UI: %w", err)
+	}
+	mux.Handle("/", ui.Handler())
+	slog.Info("web UI enabled", "base_url", cfg.PublicBaseURL)
+	return mux, nil
 }
 
 func plainOK(w http.ResponseWriter, _ *http.Request) {

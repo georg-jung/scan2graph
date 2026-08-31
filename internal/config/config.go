@@ -128,7 +128,7 @@ func Load(getenv func(string) string) (*Config, error) {
 	c.DIScope = l.stringDefault("S2G_DI_SCOPE", "https://cognitiveservices.azure.com/.default")
 
 	c.AllowedRecipientDomains = l.domains(anyEmail, `at least one sender profile has "email" enabled`)
-	c.PublicBaseURL = l.baseURL("S2G_PUBLIC_BASE_URL", anyWeb,
+	c.PublicBaseURL = l.rootBaseURL("S2G_PUBLIC_BASE_URL", anyWeb,
 		`at least one sender profile has "web" enabled`, "http", "https")
 	c.GraphSender = l.graphSender(anyEmail, `at least one sender profile has "email" enabled`)
 
