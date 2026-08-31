@@ -94,8 +94,13 @@ func apiErrorMessage(resp *http.Response) string {
 
 // RetryAfter parses the Retry-After header (seconds or an HTTP date),
 // falling back to d when absent or unparsable, and clamps the result to
-// maxWait. Exported for docintel's poll, which uses it for its own polling
-// cadence, not just the retry-on-error loop above.
+// [baseBackoff, maxWait]. Exported for docintel's poll, which uses it for
+// its own polling cadence, not just the retry-on-error loop above.
+//
+// The lower bound matters: "Retry-After: 0", or a date the service already
+// considers past, would otherwise turn the poll into a hot loop and let the
+// retry loop burn its whole budget in under a millisecond, failing a job
+// that a two second wait would have survived.
 func RetryAfter(h http.Header, fallback time.Duration) time.Duration {
 	v := h.Get("Retry-After")
 	if v == "" {
@@ -105,12 +110,16 @@ func RetryAfter(h http.Header, fallback time.Duration) time.Duration {
 		if secs < 0 {
 			return fallback
 		}
-		return min(time.Duration(secs)*time.Second, maxWait)
+		return clamp(time.Duration(secs) * time.Second)
 	}
 	if t, err := http.ParseTime(v); err == nil {
-		return min(max(time.Until(t), 0), maxWait)
+		return clamp(time.Until(t))
 	}
 	return fallback
+}
+
+func clamp(d time.Duration) time.Duration {
+	return min(max(d, baseBackoff), maxWait)
 }
 
 // backoff is the wait before retry attempt+1 when the response carries no

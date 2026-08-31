@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 
 	"github.com/georg-jung/scan2graph/internal/msapi"
 )
@@ -26,6 +27,12 @@ import (
 // request body (~4 MB). A constant, not configuration: it is a property of
 // the API, not something an operator can usefully change.
 const maxGraphMessageBytes = 4 * 1024 * 1024
+
+// MaxAttachmentBytes is how much scan one message can carry, and the number
+// a notice quotes to the user. The MIME message base64-encodes every
+// attachment and Graph's request body base64-encodes that message again, so
+// two encodings' worth of the limit above is gone before the first page.
+const MaxAttachmentBytes = maxGraphMessageBytes * 9 / 16
 
 // ErrTooLarge is returned by Send when the composed message would exceed
 // Graph's size limit. The caller sends a notice instead.
@@ -57,6 +64,21 @@ type Attachment struct {
 // Graph. A Message with no Attachments is how a notice is sent -- there is
 // no second code path for that.
 func (c *Client) Send(ctx context.Context, m Message) error {
+	// Stat the attachments before composing: a scan that cannot fit would
+	// otherwise be base64-encoded into memory twice over, only to be thrown
+	// away here.
+	var attached int64
+	for _, a := range m.Attachments {
+		fi, err := os.Stat(a.Path)
+		if err != nil {
+			return fmt.Errorf("graphmail: open attachment %q: %w", a.Name, err)
+		}
+		attached += fi.Size()
+	}
+	if attached > MaxAttachmentBytes {
+		return fmt.Errorf("graphmail: attachments are %d bytes, limit is %d: %w", attached, int64(MaxAttachmentBytes), ErrTooLarge)
+	}
+
 	raw, err := buildMessage(c.Sender, m)
 	if err != nil {
 		return err

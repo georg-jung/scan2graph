@@ -15,7 +15,7 @@ func TestRetryAfter(t *testing.T) {
 	}{
 		{"absent falls back", "", 5 * time.Second, 5 * time.Second},
 		{"seconds", "2", time.Second, 2 * time.Second},
-		{"zero seconds", "0", time.Second, 0},
+		{"zero seconds is floored", "0", time.Second, baseBackoff},
 		{"negative seconds falls back", "-1", 5 * time.Second, 5 * time.Second},
 		{"clamped to maxWait", "9999", time.Second, maxWait},
 		{"garbage falls back", "soon please", 5 * time.Second, 5 * time.Second},
@@ -40,10 +40,12 @@ func TestRetryAfter(t *testing.T) {
 		}
 	})
 
-	t.Run("http-date in the past clamps to zero", func(t *testing.T) {
+	// A wait of zero would spin: the poll loop calls this on every response
+	// and the retry loop would exhaust its attempts in microseconds.
+	t.Run("http-date in the past is floored", func(t *testing.T) {
 		h := http.Header{"Retry-After": {time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat)}}
-		if got := RetryAfter(h, time.Minute); got != 0 {
-			t.Errorf("RetryAfter(past date) = %v, want 0", got)
+		if got := RetryAfter(h, time.Minute); got != baseBackoff {
+			t.Errorf("RetryAfter(past date) = %v, want %v", got, baseBackoff)
 		}
 	})
 }

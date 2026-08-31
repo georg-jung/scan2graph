@@ -28,6 +28,14 @@ import (
 // it exists to stop a wedged HTTP call from owning a worker forever.
 const jobTimeout = 30 * time.Minute
 
+// noticeTimeout bounds a notice send. A notice is often sent because the
+// job's own context is gone (the budget above expired, or the process is
+// shutting down), so it gets a fresh deadline of its own - but a short one,
+// because it has to fit inside a container stop grace period, which is ten
+// seconds by default. If Graph cannot take the notice in five seconds, the
+// thing that would have carried it is broken anyway.
+const noticeTimeout = 5 * time.Second
+
 // queuePerWorker is how many accepted jobs may wait per worker before
 // Enqueue starts refusing. The store's own MaxJobs is the real ceiling on
 // outstanding scans; this only keeps a burst from being dropped.
@@ -37,9 +45,12 @@ const queuePerWorker = 8
 // them) and used as the notice text, so they never name an internal error, a
 // path or a token.
 const (
-	reasonOCRFailed   = "Text recognition failed, so the scan was not delivered."
-	reasonSendFailed  = "The scan could not be sent by email."
-	reasonTooLargeFmt = "The scan is %.1f MB, which is too large to send by email."
+	reasonOCRFailed = "Text recognition failed, so the scan was not delivered."
+	// With web the scan is still there to download, so saying it was not
+	// delivered would contradict both the link below it and the web UI.
+	reasonOCRFailedWeb = "Text recognition failed, so the scan could not be made searchable."
+	reasonSendFailed   = "The scan could not be sent by email."
+	reasonTooLargeFmt  = "The scan is %.1f MB, which is larger than the %.1f MB an email can carry."
 )
 
 // OCR turns a PDF into a searchable one. Implemented by *docintel.Client.
@@ -145,7 +156,11 @@ func (p *Pipeline) process(parent context.Context, job jobs.Job) {
 	if job.Caps.OCR {
 		if err := p.runOCR(ctx, &job); err != nil {
 			p.log.Warn("pipeline: ocr failed", "job_id", job.ID, "err", err)
-			p.fail(ctx, job, reasonOCRFailed)
+			reason := reasonOCRFailed
+			if job.Caps.Web {
+				reason = reasonOCRFailedWeb
+			}
+			p.fail(ctx, job, reason)
 			return
 		}
 	}
@@ -195,8 +210,13 @@ func (p *Pipeline) runOCR(ctx context.Context, job *jobs.Job) error {
 		if err := p.store.ReplaceDocument(job.ID, doc.ID, out.Name(), true); err != nil {
 			return err
 		}
-		doc.Path = out.Name()
-		doc.OCRApplied = true
+		// Size too, not just the path: the too-large notice adds these up,
+		// and a stale pre-OCR size makes it quote a nonsense figure.
+		fi, err := os.Stat(out.Name())
+		if err != nil {
+			return err
+		}
+		doc.Path, doc.Size, doc.OCRApplied = out.Name(), fi.Size(), true
 	}
 	return nil
 }
@@ -224,7 +244,7 @@ func (p *Pipeline) deliver(ctx context.Context, job jobs.Job) error {
 	})
 	if errors.Is(err, graphmail.ErrTooLarge) {
 		p.log.Warn("pipeline: scan too large to email, sending a notice", "job_id", job.ID, "bytes", total)
-		p.notice(ctx, job, fmt.Sprintf(reasonTooLargeFmt, float64(total)/(1<<20)))
+		p.notice(ctx, job, fmt.Sprintf(reasonTooLargeFmt, megabytes(total), megabytes(graphmail.MaxAttachmentBytes)))
 		return nil
 	}
 	return err
@@ -248,9 +268,15 @@ func (p *Pipeline) fail(ctx context.Context, job jobs.Job, reason string) {
 // is never left with nothing. It is sent once: the job is already failing (or
 // already undeliverable), so a notice that fails is logged and dropped.
 func (p *Pipeline) notice(ctx context.Context, job jobs.Job, reason string) {
+	// Detached from the job's context on purpose: when the failure *is* the
+	// context expiring, inheriting it would make Send return before it ever
+	// asked Graph for anything, and the user would hear nothing at all.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), noticeTimeout)
+	defer cancel()
+
 	body := reason + "\n\n"
 	if job.Caps.Web && p.baseURL != "" {
-		body += fmt.Sprintf("You can download it here for the next %d minutes:\n%s/scan/%s\n",
+		body += fmt.Sprintf("You can download the original scan here for the next %d minutes:\n%s/scan/%s\n",
 			int(time.Until(job.ExpiresAt).Minutes()), p.baseURL, job.ID)
 	} else {
 		body += "Try scanning fewer pages or at a lower resolution, " +
@@ -264,6 +290,9 @@ func (p *Pipeline) notice(ctx context.Context, job jobs.Job, reason string) {
 		p.log.Warn("pipeline: notice failed", "job_id", job.ID, "err", err)
 	}
 }
+
+// megabytes renders a byte count the way a notice talks about it.
+func megabytes(n int64) float64 { return float64(n) / (1 << 20) }
 
 func (p *Pipeline) deleteJob(id string) {
 	if err := p.store.Delete(id); err != nil {

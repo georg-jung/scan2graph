@@ -48,6 +48,10 @@ func succeedAnalyze(resultID string) http.HandlerFunc {
 	}
 }
 
+// fakePDF stands in for a searchable PDF: the client checks the magic
+// bytes, so a result body has to start like a real one.
+const fakePDF = "%PDF-1.7 fake searchable pdf bytes"
+
 // succeedFetch writes data as the "searchable pdf" body.
 func succeedFetch(data string) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, data) }
@@ -61,7 +65,7 @@ func succeedPoll(w http.ResponseWriter, _ *http.Request) {
 func TestSearchablePDF_HappyPath(t *testing.T) {
 	const (
 		pdfIn    = "fake pdf bytes for the happy path"
-		pdfOut   = "fake searchable pdf bytes, distinct from the input"
+		pdfOut   = fakePDF + ", distinct from the input"
 		resultID = "result-abc-123"
 	)
 
@@ -138,7 +142,7 @@ func TestSearchablePDF_PollsUntilSucceeded(t *testing.T) {
 		}
 		json.NewEncoder(w).Encode(map[string]string{"status": status})
 	})
-	mux.HandleFunc(fetchPath, succeedFetch("done"))
+	mux.HandleFunc(fetchPath, succeedFetch(fakePDF))
 
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -151,8 +155,8 @@ func TestSearchablePDF_PollsUntilSucceeded(t *testing.T) {
 	if want := int32(runningSteps + 1); pollN != want {
 		t.Errorf("poll calls = %d, want %d", pollN, want)
 	}
-	if out.String() != "done" {
-		t.Errorf("out = %q, want %q", out.String(), "done")
+	if out.String() != fakePDF {
+		t.Errorf("out = %q, want %q", out.String(), fakePDF)
 	}
 }
 
@@ -171,7 +175,7 @@ func TestSearchablePDF_RetryAfterHonoured(t *testing.T) {
 		}
 		succeedPoll(w, r)
 	})
-	mux.HandleFunc(fetchPath, succeedFetch("done"))
+	mux.HandleFunc(fetchPath, succeedFetch(fakePDF))
 
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -299,7 +303,7 @@ func TestSearchablePDF_Retries(t *testing.T) {
 				io.WriteString(w, s.body)
 			})
 			mux.HandleFunc(pollPath, succeedPoll)
-			mux.HandleFunc(fetchPath, succeedFetch("done"))
+			mux.HandleFunc(fetchPath, succeedFetch(fakePDF))
 
 			srv := httptest.NewServer(mux)
 			defer srv.Close()
@@ -320,6 +324,66 @@ func TestSearchablePDF_Retries(t *testing.T) {
 				t.Errorf("error %q does not contain %q", err.Error(), tt.wantMsg)
 			}
 		})
+	}
+}
+
+// A 200 whose body is not a PDF must fail the job: the searchable file
+// replaces the original scan, which is then deleted, so an empty body or an
+// error page would leave the user with nothing readable.
+func TestSearchablePDF_ResultIsNotAPDF(t *testing.T) {
+	tests := []struct{ name, body string }{
+		{"empty body", ""},
+		{"html error page", "<html><body>Bad gateway</body></html>"},
+		{"truncated", "%PD"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc(analyzePath, succeedAnalyze("r1"))
+			mux.HandleFunc(pollPath, succeedPoll)
+			mux.HandleFunc(fetchPath, succeedFetch(tt.body))
+
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			c, _ := testClient(srv)
+			var out bytes.Buffer
+			if err := c.SearchablePDF(context.Background(), strings.NewReader("in"), &out); err == nil {
+				t.Fatal("SearchablePDF = nil, want an error for a result that is not a PDF")
+			}
+			if out.Len() != 0 {
+				t.Errorf("wrote %d bytes to out, want none", out.Len())
+			}
+		})
+	}
+}
+
+// Operation-Location decides where the bearer token goes next, so a
+// response naming another host must be refused rather than polled.
+func TestSearchablePDF_OperationLocationOnAnotherHost(t *testing.T) {
+	var elsewhereHits int32
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&elsewhereHits, 1)
+		json.NewEncoder(w).Encode(map[string]string{"status": "succeeded"})
+	}))
+	defer elsewhere.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc(analyzePath, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Operation-Location", elsewhere.URL+
+			"/documentintelligence/documentModels/prebuilt-read/analyzeResults/r1")
+		w.WriteHeader(http.StatusAccepted)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c, _ := testClient(srv)
+	err := c.SearchablePDF(context.Background(), strings.NewReader("in"), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "Operation-Location") {
+		t.Fatalf("err = %v, want a refusal naming Operation-Location", err)
+	}
+	if got := atomic.LoadInt32(&elsewhereHits); got != 0 {
+		t.Errorf("the other host was called %d times, want 0", got)
 	}
 }
 

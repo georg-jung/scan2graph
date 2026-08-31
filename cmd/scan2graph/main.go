@@ -118,7 +118,6 @@ func run(cfg *config.Config) error {
 			errCh <- fmt.Errorf("smtp server: %w", err)
 		}
 	}()
-	defer smtpSrv.Close()
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -140,13 +139,20 @@ func run(cfg *config.Config) error {
 		slog.Info("shutdown signal received")
 	}
 
+	// The SMTP listener goes first: it answers 250 as soon as a scan is
+	// staged, so it must stop making that promise before the workers that
+	// would have to keep it are on their way out.
+	if err := smtpSrv.Close(); err != nil && !errors.Is(err, smtp.ErrServerClosed) {
+		slog.Warn("smtp server close failed", "err", err)
+	}
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	err = srv.Shutdown(shutdownCtx)
 
-	// The SMTP listener is already closing (deferred above), so no new job can
-	// arrive; wait for the workers to notice the cancelled context. Whatever
-	// they were doing is lost either way - that is the ephemeral contract.
+	// No new job can arrive now; wait for the workers to notice the cancelled
+	// context. Whatever they were doing is lost either way - that is the
+	// ephemeral contract.
 	<-pipeDone
 	return err
 }
@@ -162,6 +168,9 @@ func msClient(ctx context.Context, cfg *config.Config, scope string) *http.Clien
 	}
 	c := cc.Client(ctx)
 	c.Timeout = 5 * time.Minute
+	// Never follow a redirect: this client attaches the bearer token to
+	// whatever URL it is handed, so a 3xx could walk it to another origin.
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return c
 }
 

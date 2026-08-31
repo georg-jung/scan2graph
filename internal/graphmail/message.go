@@ -21,13 +21,13 @@ func buildMessage(sender string, m Message) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.WriteString("From: " + sender + "\r\n")
 	buf.WriteString("To: " + strings.Join(m.To, ", ") + "\r\n")
-	buf.WriteString("Subject: " + mime.QEncoding.Encode("utf-8", m.Subject) + "\r\n")
+	buf.WriteString("Subject: " + encodeSubject(m.Subject) + "\r\n")
 	buf.WriteString("Date: " + time.Now().Format(time.RFC1123Z) + "\r\n")
 	buf.WriteString("MIME-Version: 1.0\r\n")
 
 	if len(m.Attachments) == 0 {
 		buf.WriteString("Content-Type: text/plain; charset=utf-8\r\n\r\n")
-		buf.WriteString(m.Body)
+		buf.WriteString(crlf(m.Body))
 		return buf.Bytes(), nil
 	}
 
@@ -38,7 +38,7 @@ func buildMessage(sender string, m Message) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("graphmail: build message: %w", err)
 	}
-	if _, err := tw.Write([]byte(m.Body)); err != nil {
+	if _, err := tw.Write([]byte(crlf(m.Body))); err != nil {
 		return nil, fmt.Errorf("graphmail: build message: %w", err)
 	}
 
@@ -53,6 +53,21 @@ func buildMessage(sender string, m Message) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// crlf gives a body the line endings a MIME message must use. The notices
+// this package sends are written with plain "\n", which would otherwise go
+// out as bare LF inside an otherwise CRLF message.
+func crlf(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\n", "\r\n")
+}
+
+// encodeSubject Q-encodes a subject and folds it between encoded words.
+// mime.QEncoding joins them with a plain space, so a mostly non-ASCII
+// subject at the store's 200 rune cap would otherwise be one Subject line
+// of well over RFC 5322's 998 octet limit.
+func encodeSubject(s string) string {
+	return strings.ReplaceAll(mime.QEncoding.Encode("utf-8", s), "?= =?", "?=\r\n =?")
+}
+
 // attachFile streams a's file into one application/pdf part, base64
 // encoding it as it goes so the file is never held in memory whole.
 func attachFile(mw *multipart.Writer, a Attachment) error {
@@ -65,7 +80,10 @@ func attachFile(mw *multipart.Writer, a Attachment) error {
 	h := textproto.MIMEHeader{
 		"Content-Type":              {"application/pdf"},
 		"Content-Transfer-Encoding": {"base64"},
-		"Content-Disposition":       {fmt.Sprintf(`attachment; filename="%s"`, mime.QEncoding.Encode("utf-8", a.Name))},
+		// FormatMediaType, not an encoded word: RFC 2047 has no business in
+		// a header parameter, and this emits RFC 2231's filename* when the
+		// name needs it.
+		"Content-Disposition": {mime.FormatMediaType("attachment", map[string]string{"filename": a.Name})},
 	}
 	pw, err := mw.CreatePart(h)
 	if err != nil {

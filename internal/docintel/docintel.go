@@ -36,6 +36,11 @@ type Client struct {
 // msapi.
 const pollInterval = 3 * time.Second
 
+// pdfMagic starts every PDF file. A 200 is not proof of one: an empty body
+// or an HTML error page would otherwise be copied out, replace the original
+// scan and be delivered as the job's result.
+const pdfMagic = "%PDF-"
+
 // SearchablePDF submits pdf to the prebuilt-read model with output=pdf,
 // polls the resulting operation to completion, and streams the resulting
 // searchable PDF to out. pdf must support seeking back to the start, since
@@ -66,6 +71,9 @@ func (c *Client) SearchablePDF(ctx context.Context, pdf io.ReadSeeker, out io.Wr
 	if opLoc == "" {
 		return errors.New("docintel: analyze response has no Operation-Location header")
 	}
+	if err := c.sameOrigin(opLoc); err != nil {
+		return err
+	}
 
 	resultURL, err := c.poll(ctx, opLoc)
 	if err != nil {
@@ -79,8 +87,37 @@ func (c *Client) SearchablePDF(ctx context.Context, pdf io.ReadSeeker, out io.Wr
 		return err
 	}
 	defer resp.Body.Close()
+
+	var head [len(pdfMagic)]byte
+	if _, err := io.ReadFull(resp.Body, head[:]); err != nil {
+		return fmt.Errorf("docintel: read searchable pdf: %w", err)
+	}
+	if string(head[:]) != pdfMagic {
+		return errors.New("docintel: analyze result is not a PDF")
+	}
+	if _, err := out.Write(head[:]); err != nil {
+		return fmt.Errorf("docintel: stream searchable pdf: %w", err)
+	}
 	if _, err := io.Copy(out, resp.Body); err != nil {
 		return fmt.Errorf("docintel: stream searchable pdf: %w", err)
+	}
+	return nil
+}
+
+// sameOrigin rejects an Operation-Location that points anywhere but the
+// configured endpoint. The polling and result requests carry the bearer
+// token, and that header is whatever the response chose to put there.
+func (c *Client) sameOrigin(loc string) error {
+	u, err := url.Parse(loc)
+	if err != nil {
+		return fmt.Errorf("docintel: parse Operation-Location: %w", err)
+	}
+	e, err := url.Parse(c.Endpoint)
+	if err != nil {
+		return fmt.Errorf("docintel: parse endpoint: %w", err)
+	}
+	if u.Scheme != e.Scheme || u.Host != e.Host {
+		return fmt.Errorf("docintel: Operation-Location points at %q, not at the configured endpoint", u.Host)
 	}
 	return nil
 }

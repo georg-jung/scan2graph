@@ -125,7 +125,12 @@ type fakeMailer struct {
 	messages []sent
 }
 
-func (f *fakeMailer) Send(_ context.Context, m graphmail.Message) error {
+func (f *fakeMailer) Send(ctx context.Context, m graphmail.Message) error {
+	// A real client makes no request at all on a dead context, so neither
+	// does this one: nothing is recorded.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	rec := sent{msg: m}
 	for _, a := range m.Attachments {
 		b, _ := os.ReadFile(a.Path)
@@ -242,7 +247,7 @@ func TestProcess(t *testing.T) {
 			ocrErr:     errors.New("document intelligence said no"),
 			wantOCR:    1,
 			wantSends:  1,
-			wantNotice: []string{reasonOCRFailed, testBaseURL + "/scan/"},
+			wantNotice: []string{reasonOCRFailedWeb, "download the original scan", testBaseURL + "/scan/"},
 			wantStatus: jobs.StatusFailed,
 			wantStored: "scan",
 		},
@@ -261,7 +266,7 @@ func TestProcess(t *testing.T) {
 			sendErr:    tooLarge,
 			wantSends:  2,
 			wantAttach: "scan",
-			wantNotice: []string{"too large to send by email", testBaseURL + "/scan/"},
+			wantNotice: []string{"larger than the 2.2 MB", testBaseURL + "/scan/"},
 			wantStatus: jobs.StatusReady,
 			wantStored: "scan",
 		},
@@ -271,7 +276,7 @@ func TestProcess(t *testing.T) {
 			sendErr:    tooLarge,
 			wantSends:  2,
 			wantAttach: "scan",
-			wantNotice: []string{"too large to send by email", adviceLine},
+			wantNotice: []string{"larger than the 2.2 MB", adviceLine},
 		},
 		{
 			name:       "send failure fails the job",
@@ -366,6 +371,50 @@ func TestSubjectFallsBackToScanAndDate(t *testing.T) {
 	want := "Scan " + job.ReceivedAt.Format("2006-01-02")
 	if got := mailer.sent()[0].msg.Subject; got != want {
 		t.Errorf("subject = %q, want %q", got, want)
+	}
+}
+
+// A job that fails *because* its context expired - the 30 minute budget, or
+// a SIGTERM - is exactly when the recipients have nothing else to go on, so
+// the notice must not inherit the context that killed the job.
+func TestNoticeSurvivesACancelledJobContext(t *testing.T) {
+	st := newStore(t)
+	mailer := &fakeMailer{}
+	p := New(Options{
+		Store: st, OCR: &fakeOCR{err: context.Canceled}, Mailer: mailer,
+		Workers: 1, Logger: testLogger(),
+	})
+
+	job := commit(t, st, jobs.Capabilities{Email: true, OCR: true}, "Invoice", "scan")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	p.process(ctx, job)
+
+	msgs := mailer.sent()
+	if len(msgs) != 1 {
+		t.Fatalf("Send calls = %d, want exactly one notice", len(msgs))
+	}
+	if len(msgs[0].msg.Attachments) != 0 {
+		t.Errorf("notice has %d attachments, want none", len(msgs[0].msg.Attachments))
+	}
+	if !strings.Contains(msgs[0].msg.Body, reasonOCRFailed) {
+		t.Errorf("notice body %q does not say why", msgs[0].msg.Body)
+	}
+}
+
+// The email step works from the worker's own copy of the job, so OCR has to
+// refresh the size there as well as the path: the too-large notice adds
+// those sizes up and quotes the total back to the user.
+func TestRunOCRRefreshesTheDocumentSize(t *testing.T) {
+	st := newStore(t)
+	p := New(Options{Store: st, OCR: &fakeOCR{}, Workers: 1, Logger: testLogger()})
+
+	job := commit(t, st, jobs.Capabilities{Web: true, OCR: true}, "", "scan")
+	if err := p.runOCR(context.Background(), &job); err != nil {
+		t.Fatalf("runOCR: %v", err)
+	}
+	if want := int64(len("OCR:scan")); job.Documents[0].Size != want {
+		t.Errorf("Size after OCR = %d, want %d (the searchable PDF, not the original)", job.Documents[0].Size, want)
 	}
 }
 

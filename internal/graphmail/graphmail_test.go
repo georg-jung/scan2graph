@@ -13,6 +13,7 @@ import (
 	"net/mail"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -71,6 +72,23 @@ func TestSend_MessageShape(t *testing.T) {
 			},
 			wantSubject: "Two scans",
 			wantPDFs:    []wantPDF{{"a.pdf", pdfA}, {"b.pdf", pdfB}},
+		},
+		{
+			name: "non-ASCII attachment filename",
+			msg: graphmail.Message{
+				To: []string{"alice@corp.example"}, Subject: "Scan", Body: "Your scan is attached.\n",
+				Attachments: []graphmail.Attachment{{Name: "Bericht für Müller.pdf", Path: pathA}},
+			},
+			wantSubject: "Scan",
+			wantPDFs:    []wantPDF{{"Bericht für Müller.pdf", pdfA}},
+		},
+		{
+			name: "notice body with several lines",
+			msg: graphmail.Message{
+				To: []string{"alice@corp.example"}, Subject: "Scan not delivered",
+				Body: "Text recognition failed.\n\nYou can download it here:\nhttps://scan.example.invalid/scan/abc\n",
+			},
+			wantSubject: "Scan not delivered",
 		},
 		{
 			name:        "non-ASCII subject",
@@ -138,10 +156,14 @@ func TestSend_MessageShape(t *testing.T) {
 				t.Errorf("Subject = %q, want %q", gotSubject, tc.wantSubject)
 			}
 
+			// The body goes in with plain "\n" line breaks and must come out
+			// with the CRLFs the rest of the message uses.
+			wantBody := strings.ReplaceAll(tc.msg.Body, "\n", "\r\n")
+
 			if len(tc.wantPDFs) == 0 {
 				body, _ := io.ReadAll(m.Body)
-				if string(body) != tc.msg.Body {
-					t.Errorf("body = %q, want %q", body, tc.msg.Body)
+				if string(body) != wantBody {
+					t.Errorf("body = %q, want %q", body, wantBody)
 				}
 				return
 			}
@@ -157,8 +179,8 @@ func TestSend_MessageShape(t *testing.T) {
 				t.Fatalf("read text part: %v", err)
 			}
 			textBody, _ := io.ReadAll(textPart)
-			if string(textBody) != tc.msg.Body {
-				t.Errorf("text part = %q, want %q", textBody, tc.msg.Body)
+			if string(textBody) != wantBody {
+				t.Errorf("text part = %q, want %q", textBody, wantBody)
 			}
 
 			for _, want := range tc.wantPDFs {
@@ -176,12 +198,10 @@ func TestSend_MessageShape(t *testing.T) {
 				if err != nil {
 					t.Fatalf("parse Content-Disposition for %s: %v", want.name, err)
 				}
-				gotName, err := wd.DecodeHeader(dparams["filename"])
-				if err != nil {
-					t.Fatalf("decode filename for %s: %v", want.name, err)
-				}
-				if gotName != want.name {
-					t.Errorf("attachment filename = %q, want %q", gotName, want.name)
+				// Compared raw: a filename parameter is RFC 2231 encoded, and a
+				// receiving parser hands back an RFC 2047 encoded word verbatim.
+				if dparams["filename"] != want.name {
+					t.Errorf("attachment filename = %q, want %q", dparams["filename"], want.name)
 				}
 				decoded, err := io.ReadAll(base64.NewDecoder(base64.StdEncoding, p))
 				if err != nil {
@@ -195,6 +215,49 @@ func TestSend_MessageShape(t *testing.T) {
 				t.Errorf("message carries an unexpected extra part (err = %v)", err)
 			}
 		})
+	}
+}
+
+// A subject the store let through at its 200 rune cap must not produce a
+// header line past RFC 5322's 998 octet limit: mime.QEncoding joins its
+// encoded words with a plain space, which is not a fold.
+func TestSend_LongSubjectIsFolded(t *testing.T) {
+	subject := strings.Repeat("請求書", 66) + "領収" // 200 runes, ~600 octets encoded well past 998
+
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	c := &graphmail.Client{HTTP: srv.Client(), BaseURL: srv.URL, Sender: testSender}
+	if err := c.Send(context.Background(), graphmail.Message{
+		To: []string{"alice@corp.example"}, Subject: subject, Body: "Your scan is attached.\n",
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	raw, err := base64.StdEncoding.DecodeString(string(gotBody))
+	if err != nil {
+		t.Fatalf("request body did not base64-decode: %v", err)
+	}
+	for i, line := range strings.Split(string(raw), "\r\n") {
+		if len(line) > 998 {
+			t.Fatalf("line %d is %d octets, RFC 5322 allows at most 998", i+1, len(line))
+		}
+	}
+
+	m, err := mail.ReadMessage(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("folded message no longer parses: %v", err)
+	}
+	got, err := (&mime.WordDecoder{}).DecodeHeader(m.Header.Get("Subject"))
+	if err != nil {
+		t.Fatalf("decode Subject header: %v", err)
+	}
+	if got != subject {
+		t.Errorf("Subject did not survive folding:\n got %q\nwant %q", got, subject)
 	}
 }
 
@@ -239,7 +302,11 @@ func TestSend_HTTPBehavior(t *testing.T) {
 	}
 
 	for _, tc := range cases {
+		// In parallel: every retry now waits out at least msapi's base
+		// backoff, so running these four one after another would be the
+		// slowest thing in the suite.
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			var n int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				i := int(atomic.AddInt32(&n, 1)) - 1
@@ -292,6 +359,49 @@ func TestSend_TooLarge(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&requests); got != 0 {
 		t.Errorf("requests = %d, want 0 (no request should be made)", got)
+	}
+}
+
+// A scan that cannot fit must be refused from the file size alone. Composing
+// the message first would hold the whole thing base64-encoded in memory,
+// twice over, just to throw it away.
+func TestSend_TooLargeAttachmentIsNeverComposed(t *testing.T) {
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	// Sparse, so the test costs no disk and no time; only its size matters.
+	path := filepath.Join(t.TempDir(), "huge.pdf")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(graphmail.MaxAttachmentBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	c := &graphmail.Client{HTTP: srv.Client(), BaseURL: srv.URL, Sender: testSender}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	err = c.Send(context.Background(), graphmail.Message{
+		To: []string{"alice@corp.example"}, Subject: "Scan", Body: "hi\n",
+		Attachments: []graphmail.Attachment{{Name: "huge.pdf", Path: path}},
+	})
+	runtime.ReadMemStats(&after)
+
+	if !errors.Is(err, graphmail.ErrTooLarge) {
+		t.Fatalf("err = %v, want ErrTooLarge", err)
+	}
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > graphmail.MaxAttachmentBytes {
+		t.Errorf("Send allocated %d bytes for a message it refuses to send, want well under the %d byte scan",
+			grew, graphmail.MaxAttachmentBytes)
+	}
+	if got := atomic.LoadInt32(&requests); got != 0 {
+		t.Errorf("requests = %d, want 0", got)
 	}
 }
 
