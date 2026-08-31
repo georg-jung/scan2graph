@@ -16,6 +16,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"mime"
 	"net/http"
 	"os"
 	"slices"
@@ -233,9 +234,12 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request, sess *se
 	defer f.Close()
 
 	// DisplayName is sanitized by the job store: no quotes, backslashes,
-	// slashes or control characters, so it is safe inside the quoted string.
+	// FormatMediaType emits RFC 2231's filename* when the sanitized display
+	// name is not plain ASCII, which is the form the standards want and Go's
+	// own parser reads back.
 	w.Header().Set("Content-Type", "application/pdf")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+d.DisplayName+`"`)
+	w.Header().Set("Content-Disposition",
+		mime.FormatMediaType("attachment", map[string]string{"filename": d.DisplayName}))
 	w.Header().Set("Content-Length", strconv.FormatInt(d.Size, 10))
 	_, _ = io.Copy(w, f)
 }

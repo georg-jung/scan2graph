@@ -46,8 +46,12 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		s.signInFailed(w, "no sign-in is in progress", nil)
 		return
 	}
+	// Every part must be present: an empty state would be "equal" to a
+	// callback that carries no state at all, and an empty nonce to an ID
+	// token with no nonce claim, so a forged "||" cookie would satisfy both
+	// checks by being absent rather than by matching.
 	parts := strings.Split(c.Value, "|")
-	if len(parts) != 3 {
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		s.signInFailed(w, "malformed sign-in cookie", nil)
 		return
 	}

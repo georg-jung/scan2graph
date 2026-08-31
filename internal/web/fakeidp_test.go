@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -41,6 +42,10 @@ type fakeIDP struct {
 	// Token, if set, may change the signed ID token before it is handed out
 	// (tampering with the signature).
 	Token func(string) string
+
+	// Exchanges counts calls to the token endpoint, so a test can assert
+	// that a rejected callback never got as far as redeeming its code.
+	Exchanges atomic.Int64
 
 	t      *testing.T
 	key    *rsa.PrivateKey
@@ -149,6 +154,7 @@ func (f *fakeIDP) authorize(w http.ResponseWriter, r *http.Request) {
 // token is the back channel: one-shot code, real PKCE check, real client
 // authentication, and a real signature over the ID token.
 func (f *fakeIDP) token(w http.ResponseWriter, r *http.Request) {
+	f.Exchanges.Add(1)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return

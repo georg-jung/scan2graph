@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -260,6 +261,40 @@ func TestCallbackRejectsBadState(t *testing.T) {
 	assertSignInRejected(t, h, c, resp)
 }
 
+// TestCallbackRejectsEmptySignInCookie covers a forged cookie whose parts are
+// all empty. Both the state and the nonce check compare against what the
+// cookie holds, so empty values would be satisfied by a callback that carries
+// no state and an ID token that carries no nonce - passing by absence rather
+// than by matching.
+func TestCallbackRejectsEmptySignInCookie(t *testing.T) {
+	h := newHarness(t)
+	c := h.client()
+	// Start a real sign-in so a code exists, then replace the cookie.
+	callback, err := url.Parse(h.startSignIn(c))
+	if err != nil {
+		t.Fatalf("parse callback URL: %v", err)
+	}
+	u, err := url.Parse(h.ts.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	c.Jar.SetCookies(u, []*http.Cookie{{Name: authCookie, Value: "||", Path: authPath}})
+
+	q := callback.Query()
+	q.Del("state")
+	callback.RawQuery = q.Encode()
+
+	resp, _ := h.get(c, callback.String())
+	assertSignInRejected(t, h, c, resp)
+
+	// The cookie is what the state and nonce are checked against, so a
+	// forged one must be refused before its code is worth anything: no
+	// exchange with the provider at all.
+	if n := h.idp.Exchanges.Load(); n != 0 {
+		t.Errorf("token endpoint called %d times for a forged sign-in cookie, want 0", n)
+	}
+}
+
 func TestCallbackRejectsTamperedIDToken(t *testing.T) {
 	h := newHarness(t)
 	// Flip one bit of the signature; header and claims stay untouched and
@@ -482,7 +517,6 @@ func TestDownload(t *testing.T) {
 	}
 	for header, want := range map[string]string{
 		"Content-Type":           "application/pdf",
-		"Content-Disposition":    `attachment; filename="invoice.pdf"`,
 		"Content-Length":         "25",
 		"X-Content-Type-Options": "nosniff",
 		"Cache-Control":          "no-store",
@@ -490,6 +524,16 @@ func TestDownload(t *testing.T) {
 		if got := resp.Header.Get(header); got != want {
 			t.Errorf("download %s = %q, want %q", header, got, want)
 		}
+	}
+
+	// Asserted by parsing rather than by string: the encoding is the
+	// standard library's business, the disposition and the filename are ours.
+	disposition, params, err := mime.ParseMediaType(resp.Header.Get("Content-Disposition"))
+	if err != nil {
+		t.Fatalf("Content-Disposition %q: %v", resp.Header.Get("Content-Disposition"), err)
+	}
+	if disposition != "attachment" || params["filename"] != "invoice.pdf" {
+		t.Errorf("Content-Disposition = %q %v, want attachment with filename invoice.pdf", disposition, params)
 	}
 }
 
