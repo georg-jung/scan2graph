@@ -168,12 +168,25 @@ func (s *session) Data(r io.Reader) error {
 		_, err = io.Copy(io.Discard, src)
 	}
 
-	// Re-take the lock: a concurrent Reset (RSET, QUIT, dropped connection)
-	// bumped the generation, and then nothing of this transaction may be
-	// committed.
-	current := s.endTransaction(gen)
+	docs := make([]jobs.NewDocument, len(result.PDFs))
+	var totalBytes int64
+	for i, p := range result.PDFs {
+		docs[i] = jobs.NewDocument{DisplayName: p.DisplayName, Path: p.Path}
+		totalBytes += p.Size
+	}
+
+	// Hand the transaction over under the lock, so a concurrent Reset (RSET,
+	// QUIT, a dropped connection) either aborts this transaction or finds it
+	// already committed -- never both, and never neither. Today go-smtp keeps
+	// its command loop parked between the reader reaching EOF and Data
+	// returning, so the race cannot actually occur; holding the lock across
+	// the handover means this stays correct without depending on that.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.staging = nil
+
 	switch {
-	case !current:
+	case s.generation != gen:
 		staging.Abort()
 		s.reject("data", errAborted)
 		return errAborted
@@ -182,13 +195,6 @@ func (s *session) Data(r io.Reader) error {
 		se := extractError(err)
 		s.reject("data", se)
 		return se
-	}
-
-	docs := make([]jobs.NewDocument, len(result.PDFs))
-	var totalBytes int64
-	for i, p := range result.PDFs {
-		docs[i] = jobs.NewDocument{DisplayName: p.DisplayName, Path: p.Path}
-		totalBytes += p.Size
 	}
 
 	job, err := staging.Commit(jobs.NewJob{
@@ -220,16 +226,6 @@ func (s *session) Data(r io.Reader) error {
 		"job_id", job.ID,
 	)
 	return nil
-}
-
-// endTransaction drops the session's reference to the staging Data reserved
-// and reports whether the transaction Data started (generation gen) is still
-// the current one. A false result means Reset ran in the meantime.
-func (s *session) endTransaction(gen uint64) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.staging = nil
-	return s.generation == gen
 }
 
 // reject logs one rejection line: reason and reply code, never the address,
