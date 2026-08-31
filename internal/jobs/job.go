@@ -134,19 +134,13 @@ func SanitizeDisplayName(name string) string {
 		name += ".pdf"
 	}
 
-	name = truncateKeepingExtension(name, maxRunes)
+	// Truncate to at most maxRunes runes, keeping the ".pdf" suffix just
+	// guaranteed above.
+	if r := []rune(name); len(r) > maxRunes {
+		name = string(r[:maxRunes-len(".pdf")]) + ".pdf"
+	}
 	if name == "" {
 		return fallback
 	}
 	return name
-}
-
-// truncateKeepingExtension truncates s to at most max runes, keeping the
-// ".pdf" suffix SanitizeDisplayName has already guaranteed.
-func truncateKeepingExtension(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	return string(r[:max-len(".pdf")]) + ".pdf"
 }

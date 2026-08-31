@@ -3,7 +3,6 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"strconv"
@@ -19,11 +18,6 @@ import (
 type loader struct {
 	getenv func(string) string
 	errs   []error
-
-	// conflicted remembers which variable names failed resolution because
-	// both X and X_FILE were set, so a later "X is required" check does not
-	// pile a second, less useful error message on top of that one.
-	conflicted map[string]bool
 }
 
 func newLoader(getenv func(string) string) *loader {
@@ -46,46 +40,18 @@ func (l *loader) errorf(format string, args ...any) {
 // value. Setting both name and name+"_FILE" is a startup error. ok is false
 // when neither is set, or when reading/validating failed; in the failure
 // case an error has already been recorded.
-// maxFileValueBytes bounds a *_FILE indirection: secrets and JSON maps are
-// small, and a misconfigured path (a log file, /dev/zero) must not be read
-// into memory in full.
-const maxFileValueBytes = 1 << 20
-
-// readFileLimited reads at most limit bytes from path and fails if the file
-// is larger, so an operator learns about the mistake instead of the process
-// growing until it is killed.
-func readFileLimited(path string, limit int64) ([]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("file is larger than %d bytes", limit)
-	}
-	return data, nil
-}
-
 func (l *loader) resolve(name string) (value string, ok bool) {
 	direct := l.getenv(name)
 	fileVar := name + "_FILE"
 	filePath := l.getenv(fileVar)
 
 	if direct != "" && filePath != "" {
-		if l.conflicted == nil {
-			l.conflicted = make(map[string]bool)
-		}
-		l.conflicted[name] = true
 		l.errorf("%s and %s are both set; set only one", name, fileVar)
 		return "", false
 	}
 
 	if filePath != "" {
-		data, err := readFileLimited(filePath, maxFileValueBytes)
+		data, err := os.ReadFile(filePath)
 		if err != nil {
 			// Report the path and the OS error only - never the file's
 			// content, since this indirection exists for secrets.
@@ -102,11 +68,10 @@ func (l *loader) resolve(name string) (value string, ok bool) {
 }
 
 // resolveRequired is like resolve, but records a well-worded "is required"
-// error (naming why) when the variable is unset - unless resolve already
-// reported a more specific problem (the X/X_FILE conflict) for it.
+// error (naming why) when the variable is unset.
 func (l *loader) resolveRequired(name, reason string) (value string, ok bool) {
 	v, ok := l.resolve(name)
-	if ok || l.conflicted[name] {
+	if ok {
 		return v, ok
 	}
 	if reason == "" {
@@ -148,15 +113,6 @@ func (l *loader) durationValue(name string, def time.Duration) (d time.Duration,
 		return def, false
 	}
 	return d, true
-}
-
-// durationPositive resolves a duration that must be greater than zero.
-func (l *loader) durationPositive(name string, def time.Duration) time.Duration {
-	d, resolved := l.durationValue(name, def)
-	if resolved && d <= 0 {
-		l.errorf("%s: must be > 0, got %s", name, d)
-	}
-	return d
 }
 
 // durationAtLeast resolves a duration that must be at least min.

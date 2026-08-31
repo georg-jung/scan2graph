@@ -26,16 +26,15 @@ type Capabilities struct {
 }
 
 // Limits bounds resource usage for incoming SMTP messages and the pipeline.
+//
+// A decoded attachment is always smaller than the message that carried it,
+// so MaxMessageBytes already bounds PDF sizes without a separate cap. MIME
+// part/depth/count caps are constants in the MIME package instead (work
+// package 2), and OCR concurrency follows the worker count.
 type Limits struct {
 	MaxMessageBytes   int64 // SMTP DATA cap
-	MaxMIMEParts      int
-	MaxMIMEDepth      int
-	MaxPDFsPerMessage int
-	MaxPDFBytes       int64 // per decoded attachment
-	MaxTotalPDFBytes  int64 // per message
 	MaxJobs           int   // queued + in-flight + web-visible jobs
 	MaxConcurrentJobs int   // pipeline workers
-	MaxConcurrentOCR  int   // Document Intelligence in-flight cap
 }
 
 // Config is scan2graph's fully validated, effective configuration. Build one
@@ -77,8 +76,8 @@ type Config struct {
 	GraphBaseURL, GraphScope, GraphSender string
 	DIEndpoint, DIAPIVersion, DIScope     string
 
-	JobTTL, SessionTTL time.Duration
-	Limits             Limits
+	JobTTL time.Duration
+	Limits Limits
 }
 
 // Load builds a Config from environment variables, reading each one through
@@ -106,9 +105,12 @@ func Load(getenv func(string) string) (*Config, error) {
 	c.Profiles = l.profiles()
 	c.RecipientAliases = l.aliases(c.Profiles)
 
-	anyEmail := anyCapability(c.Profiles, func(cp Capabilities) bool { return cp.Email })
-	anyWeb := anyCapability(c.Profiles, func(cp Capabilities) bool { return cp.Web })
-	anyOCR := anyCapability(c.Profiles, func(cp Capabilities) bool { return cp.OCR })
+	var anyEmail, anyWeb, anyOCR bool
+	for _, cp := range c.Profiles {
+		anyEmail = anyEmail || cp.Email
+		anyWeb = anyWeb || cp.Web
+		anyOCR = anyOCR || cp.OCR
+	}
 	anyProfile := len(c.Profiles) > 0
 
 	c.AllowedRecipientDomains = l.domains(anyEmail)
@@ -135,7 +137,6 @@ func Load(getenv func(string) string) (*Config, error) {
 	c.GraphScope = l.stringDefault("S2G_GRAPH_SCOPE", "https://graph.microsoft.com/.default")
 
 	c.JobTTL = l.durationAtLeast("S2G_JOB_TTL", 90*time.Minute, time.Minute)
-	c.SessionTTL = l.durationPositive("S2G_SESSION_TTL", 8*time.Hour)
 
 	c.Limits = l.limits()
 
@@ -273,47 +274,18 @@ func validDomain(d string) bool {
 }
 
 // graphSender resolves and validates S2G_GRAPH_SENDER, required whenever
-// required is true. It accepts either a mailbox address (normalized like any
-// other address) or an Entra object id (a plain UUID, kept verbatim - it is
-// not an address and must not be lowercased).
+// required is true: a mailbox address, normalized like any other address.
 func (l *loader) graphSender(required bool) string {
 	raw := l.requiredIf("S2G_GRAPH_SENDER", required, `at least one sender profile has "email" enabled`)
 	if raw == "" {
 		return ""
 	}
-	if isUUID(raw) {
-		return raw
-	}
 	n := NormalizeAddress(raw)
 	if n == "" {
-		l.errorf("S2G_GRAPH_SENDER: %q is not a valid address or Entra object id (UUID)", raw)
+		l.errorf("S2G_GRAPH_SENDER: %q is not a valid address", raw)
 		return ""
 	}
 	return n
-}
-
-// isUUID reports whether s is a UUID in canonical 8-4-4-4-12 hyphenated hex
-// form (case-insensitive), e.g. an Entra object id.
-func isUUID(s string) bool {
-	if len(s) != 36 {
-		return false
-	}
-	for i, r := range s {
-		if i == 8 || i == 13 || i == 18 || i == 23 {
-			if r != '-' {
-				return false
-			}
-			continue
-		}
-		if !isHexDigit(r) {
-			return false
-		}
-	}
-	return true
-}
-
-func isHexDigit(r rune) bool {
-	return (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
 }
 
 // smtpAuth resolves and validates the SMTP AUTH configuration:
@@ -387,24 +359,11 @@ func (l *loader) tenantURL(name, tenantID, defaultPathSuffix string) string {
 }
 
 func (l *loader) limits() Limits {
-	lim := Limits{
+	return Limits{
 		MaxMessageBytes:   l.int64Positive("S2G_MAX_MESSAGE_BYTES", 33554432),
-		MaxMIMEParts:      l.intPositive("S2G_MAX_MIME_PARTS", 100),
-		MaxMIMEDepth:      l.intPositive("S2G_MAX_MIME_DEPTH", 10),
-		MaxPDFsPerMessage: l.intPositive("S2G_MAX_PDFS_PER_MESSAGE", 10),
-		MaxPDFBytes:       l.int64Positive("S2G_MAX_PDF_BYTES", 26214400),
-		MaxTotalPDFBytes:  l.int64Positive("S2G_MAX_TOTAL_PDF_BYTES", 33554432),
 		MaxJobs:           l.intPositive("S2G_MAX_JOBS", 32),
 		MaxConcurrentJobs: l.intPositive("S2G_MAX_CONCURRENT_JOBS", 2),
-		MaxConcurrentOCR:  l.intPositive("S2G_MAX_CONCURRENT_OCR", 2),
 	}
-	if lim.MaxPDFBytes > lim.MaxTotalPDFBytes {
-		l.errorf("S2G_MAX_PDF_BYTES (%d) must be <= S2G_MAX_TOTAL_PDF_BYTES (%d)", lim.MaxPDFBytes, lim.MaxTotalPDFBytes)
-	}
-	if lim.MaxTotalPDFBytes > lim.MaxMessageBytes {
-		l.errorf("S2G_MAX_TOTAL_PDF_BYTES (%d) must be <= S2G_MAX_MESSAGE_BYTES (%d)", lim.MaxTotalPDFBytes, lim.MaxMessageBytes)
-	}
-	return lim
 }
 
 func (l *loader) logLevel() slog.Level {
@@ -438,30 +397,6 @@ func (l *loader) logFormat() string {
 		return "json"
 	}
 	return v
-}
-
-func anyCapability(profiles map[string]Capabilities, pred func(Capabilities) bool) bool {
-	for _, cp := range profiles {
-		if pred(cp) {
-			return true
-		}
-	}
-	return false
-}
-
-// AnyEmail reports whether at least one profile has the email capability.
-func (c *Config) AnyEmail() bool {
-	return anyCapability(c.Profiles, func(cp Capabilities) bool { return cp.Email })
-}
-
-// AnyWeb reports whether at least one profile has the web capability.
-func (c *Config) AnyWeb() bool {
-	return anyCapability(c.Profiles, func(cp Capabilities) bool { return cp.Web })
-}
-
-// AnyOCR reports whether at least one profile has the ocr capability.
-func (c *Config) AnyOCR() bool {
-	return anyCapability(c.Profiles, func(cp Capabilities) bool { return cp.OCR })
 }
 
 // Profile looks up the sender profile for an SMTP envelope sender address.
@@ -578,8 +513,7 @@ func (c *Config) LogValue() slog.Value {
 		slog.String("di_endpoint", c.DIEndpoint),
 		slog.String("di_api_version", c.DIAPIVersion),
 		slog.String("di_scope", c.DIScope),
-		slog.Duration("job_ttl", c.JobTTL),
-		slog.Duration("session_ttl", c.SessionTTL),
+		slog.String("job_ttl", c.JobTTL.String()),
 		slog.Any("limits", c.Limits),
 	)
 }

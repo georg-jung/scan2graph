@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
@@ -23,8 +22,6 @@ import (
 var version = "dev"
 
 func main() {
-	slog.SetDefault(newLogger("json", slog.LevelInfo))
-
 	cfg, err := config.Load(os.Getenv)
 	if err != nil {
 		// Configuration errors are for humans reading container logs, and
@@ -70,12 +67,7 @@ func run(cfg *config.Config) error {
 		}
 	}()
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		store.Run(ctx)
-	}()
+	go store.Run(ctx)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -100,9 +92,7 @@ func run(cfg *config.Config) error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	shutdownErr := srv.Shutdown(shutdownCtx)
-	wg.Wait()
-	return shutdownErr
+	return srv.Shutdown(shutdownCtx)
 }
 
 // announceSMTPCredentials tells the operator how the SMTP listener is

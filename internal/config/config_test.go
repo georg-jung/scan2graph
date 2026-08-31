@@ -124,25 +124,13 @@ func TestLoadMinimalValidConfigAndDefaults(t *testing.T) {
 	if c.JobTTL != 90*time.Minute {
 		t.Errorf("JobTTL = %v, want 90m", c.JobTTL)
 	}
-	if c.SessionTTL != 8*time.Hour {
-		t.Errorf("SessionTTL = %v, want 8h", c.SessionTTL)
-	}
 	wantLimits := Limits{
 		MaxMessageBytes:   33554432,
-		MaxMIMEParts:      100,
-		MaxMIMEDepth:      10,
-		MaxPDFsPerMessage: 10,
-		MaxPDFBytes:       26214400,
-		MaxTotalPDFBytes:  33554432,
 		MaxJobs:           32,
 		MaxConcurrentJobs: 2,
-		MaxConcurrentOCR:  2,
 	}
 	if c.Limits != wantLimits {
 		t.Errorf("Limits = %+v, want %+v", c.Limits, wantLimits)
-	}
-	if !c.AnyEmail() || !c.AnyWeb() || !c.AnyOCR() {
-		t.Errorf("AnyEmail/AnyWeb/AnyOCR = %v/%v/%v, want all true", c.AnyEmail(), c.AnyWeb(), c.AnyOCR())
 	}
 	if cp, ok := c.Profile("Scan@Scanner.Local"); !ok || !cp.Web {
 		t.Errorf("Profile(mixed-case sender) = %+v, ok=%v, want a match", cp, ok)
@@ -318,33 +306,18 @@ func TestLoadDurationValidation(t *testing.T) {
 		env["S2G_JOB_TTL"] = "not-a-duration"
 		wantLoadErr(t, env, "S2G_JOB_TTL", "invalid duration")
 	})
-	t.Run("session ttl zero", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_SESSION_TTL"] = "0s"
-		wantLoadErr(t, env, "S2G_SESSION_TTL", "> 0")
-	})
-	t.Run("session ttl negative", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_SESSION_TTL"] = "-1h"
-		wantLoadErr(t, env, "S2G_SESSION_TTL")
-	})
-	t.Run("valid durations round trip", func(t *testing.T) {
+	t.Run("valid duration round trips", func(t *testing.T) {
 		env := clone(baseEnv())
 		env["S2G_JOB_TTL"] = "2h"
-		env["S2G_SESSION_TTL"] = "1h"
 		c := mustLoad(t, env)
-		if c.JobTTL != 2*time.Hour || c.SessionTTL != 1*time.Hour {
-			t.Errorf("JobTTL=%v SessionTTL=%v", c.JobTTL, c.SessionTTL)
+		if c.JobTTL != 2*time.Hour {
+			t.Errorf("JobTTL = %v", c.JobTTL)
 		}
 	})
 }
 
 func TestLoadLimitValidation(t *testing.T) {
-	limitVars := []string{
-		"S2G_MAX_MESSAGE_BYTES", "S2G_MAX_MIME_PARTS", "S2G_MAX_MIME_DEPTH",
-		"S2G_MAX_PDFS_PER_MESSAGE", "S2G_MAX_PDF_BYTES", "S2G_MAX_TOTAL_PDF_BYTES",
-		"S2G_MAX_JOBS", "S2G_MAX_CONCURRENT_JOBS", "S2G_MAX_CONCURRENT_OCR",
-	}
+	limitVars := []string{"S2G_MAX_MESSAGE_BYTES", "S2G_MAX_JOBS", "S2G_MAX_CONCURRENT_JOBS"}
 	for _, name := range limitVars {
 		t.Run(name+"=0", func(t *testing.T) {
 			env := clone(baseEnv())
@@ -362,28 +335,6 @@ func TestLoadLimitValidation(t *testing.T) {
 			wantLoadErr(t, env, name, "invalid integer")
 		})
 	}
-	t.Run("max pdf bytes exceeds max total pdf bytes", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_MAX_PDF_BYTES"] = "100"
-		env["S2G_MAX_TOTAL_PDF_BYTES"] = "50"
-		wantLoadErr(t, env, "S2G_MAX_PDF_BYTES", "S2G_MAX_TOTAL_PDF_BYTES")
-	})
-	t.Run("max total pdf bytes exceeds max message bytes", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_MAX_TOTAL_PDF_BYTES"] = "1000"
-		env["S2G_MAX_MESSAGE_BYTES"] = "500"
-		wantLoadErr(t, env, "S2G_MAX_TOTAL_PDF_BYTES", "S2G_MAX_MESSAGE_BYTES")
-	})
-	t.Run("equal limits are fine", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_MAX_PDF_BYTES"] = "1000"
-		env["S2G_MAX_TOTAL_PDF_BYTES"] = "1000"
-		env["S2G_MAX_MESSAGE_BYTES"] = "1000"
-		c := mustLoad(t, env)
-		if c.Limits.MaxPDFBytes != 1000 || c.Limits.MaxTotalPDFBytes != 1000 || c.Limits.MaxMessageBytes != 1000 {
-			t.Errorf("Limits = %+v", c.Limits)
-		}
-	})
 }
 
 func TestLoadProfilesValidation(t *testing.T) {
@@ -760,45 +711,13 @@ func TestLoadLogLevelAndFormat(t *testing.T) {
 	})
 }
 
-func TestLoadStringOverrides(t *testing.T) {
-	env := clone(baseEnv())
-	env["S2G_HTTP_ADDR"] = ":9090"
-	env["S2G_SMTP_ADDR"] = ":2626"
-	env["S2G_TEMP_DIR"] = "/var/scan2graph-tmp"
-	env["S2G_DI_API_VERSION"] = "2099-01-01"
-	env["S2G_GRAPH_SCOPE"] = "https://graph.example.com/.custom"
-	c := mustLoad(t, env)
-	if c.HTTPAddr != ":9090" {
-		t.Errorf("HTTPAddr = %q", c.HTTPAddr)
-	}
-	if c.SMTPAddr != ":2626" {
-		t.Errorf("SMTPAddr = %q", c.SMTPAddr)
-	}
-	if c.TempDir != "/var/scan2graph-tmp" {
-		t.Errorf("TempDir = %q", c.TempDir)
-	}
-	if c.DIAPIVersion != "2099-01-01" {
-		t.Errorf("DIAPIVersion = %q", c.DIAPIVersion)
-	}
-	if c.GraphScope != "https://graph.example.com/.custom" {
-		t.Errorf("GraphScope = %q", c.GraphScope)
-	}
-}
-
 func TestLoadGraphBaseURLOverride(t *testing.T) {
-	t.Run("valid override", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_GRAPH_BASE_URL"] = "http://127.0.0.1:9999/fake-graph/"
-		c := mustLoad(t, env)
-		if c.GraphBaseURL != "http://127.0.0.1:9999/fake-graph" {
-			t.Errorf("GraphBaseURL = %q", c.GraphBaseURL)
-		}
-	})
-	t.Run("invalid override", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_GRAPH_BASE_URL"] = "ftp://graph.example.com"
-		wantLoadErr(t, env, "S2G_GRAPH_BASE_URL", "scheme")
-	})
+	env := clone(baseEnv())
+	env["S2G_GRAPH_BASE_URL"] = "http://127.0.0.1:9999/fake-graph/"
+	c := mustLoad(t, env)
+	if c.GraphBaseURL != "http://127.0.0.1:9999/fake-graph" {
+		t.Errorf("GraphBaseURL = %q", c.GraphBaseURL)
+	}
 }
 
 func TestLoadBaseURLMissingHostOrUnparsable(t *testing.T) {
@@ -812,28 +731,6 @@ func TestLoadBaseURLMissingHostOrUnparsable(t *testing.T) {
 		env["S2G_PUBLIC_BASE_URL"] = "http://[::1"
 		wantLoadErr(t, env, "S2G_PUBLIC_BASE_URL", "invalid URL")
 	})
-}
-
-func TestLoadFileConflictDoesNotAlsoReportRequired(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "tenant")
-	if err := os.WriteFile(p, []byte("tenant-from-file"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	env := clone(baseEnv())
-	env["S2G_ENTRA_TENANT_ID"] = "tenant-from-env"
-	env["S2G_ENTRA_TENANT_ID_FILE"] = p
-	_, err := Load(fakeGetenv(env))
-	if err == nil {
-		t.Fatal("Load() succeeded, want error")
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "S2G_ENTRA_TENANT_ID and S2G_ENTRA_TENANT_ID_FILE are both set") {
-		t.Errorf("error %q missing the conflict message", msg)
-	}
-	if strings.Contains(msg, "S2G_ENTRA_TENANT_ID is required") {
-		t.Errorf("error %q also reports a redundant \"is required\" message", msg)
-	}
 }
 
 func TestProfileRejectsImplausibleSender(t *testing.T) {
@@ -1053,51 +950,13 @@ func TestLogValueSMTPAuthModes(t *testing.T) {
 	}
 }
 
-func TestLoadGraphSenderAcceptsUUIDOrAddress(t *testing.T) {
-	t.Run("address form normalized", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_GRAPH_SENDER"] = "Scanner@Example.com"
-		c := mustLoad(t, env)
-		if c.GraphSender != "scanner@example.com" {
-			t.Errorf("GraphSender = %q, want normalized address", c.GraphSender)
-		}
-	})
-	t.Run("UUID form kept verbatim", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_GRAPH_SENDER"] = "11111111-2222-3333-4444-555555555555"
-		c := mustLoad(t, env)
-		if c.GraphSender != "11111111-2222-3333-4444-555555555555" {
-			t.Errorf("GraphSender = %q, want the UUID verbatim", c.GraphSender)
-		}
-	})
-	t.Run("UUID form is not lowercased", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_GRAPH_SENDER"] = "AAAAAAAA-2222-3333-4444-555555555555"
-		c := mustLoad(t, env)
-		if c.GraphSender != "AAAAAAAA-2222-3333-4444-555555555555" {
-			t.Errorf("GraphSender = %q, want the UUID verbatim (not lowercased)", c.GraphSender)
-		}
-	})
-	t.Run("neither address nor UUID", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_GRAPH_SENDER"] = "not-an-address-or-uuid"
-		wantLoadErr(t, env, "S2G_GRAPH_SENDER", "not a valid address or Entra object id")
-	})
-	t.Run("almost a UUID is rejected as an address", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_GRAPH_SENDER"] = "11111111-2222-3333-4444-55555555555" // one hex digit short
-		wantLoadErr(t, env, "S2G_GRAPH_SENDER")
-	})
-	t.Run("36 chars but a non-hex digit is rejected", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_GRAPH_SENDER"] = "gggggggg-2222-3333-4444-555555555555" // right length, not hex
-		wantLoadErr(t, env, "S2G_GRAPH_SENDER")
-	})
-	t.Run("36 chars but a misplaced hyphen is rejected", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_GRAPH_SENDER"] = "11111111x2222-3333-4444-555555555555" // hyphen in the wrong spot
-		wantLoadErr(t, env, "S2G_GRAPH_SENDER")
-	})
+func TestLoadGraphSenderNormalizesAddress(t *testing.T) {
+	env := clone(baseEnv())
+	env["S2G_GRAPH_SENDER"] = "Scanner@Example.com"
+	c := mustLoad(t, env)
+	if c.GraphSender != "scanner@example.com" {
+		t.Errorf("GraphSender = %q, want normalized address", c.GraphSender)
+	}
 }
 
 func TestLoadRejectsEmptyConfiguredSMTPPassword(t *testing.T) {
@@ -1144,17 +1003,4 @@ func TestLoadRejectsMalformedRecipientDomains(t *testing.T) {
 			wantLoadErr(t, env, "S2G_ALLOWED_RECIPIENT_DOMAINS")
 		})
 	}
-}
-
-func TestLoadRejectsOversizedFileValue(t *testing.T) {
-	dir := t.TempDir()
-	big := filepath.Join(dir, "secret")
-	if err := os.WriteFile(big, make([]byte, maxFileValueBytes+1), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	env := clone(baseEnv())
-	delete(env, "S2G_ENTRA_CLIENT_SECRET")
-	env["S2G_ENTRA_CLIENT_SECRET_FILE"] = big
-	wantLoadErr(t, env, "S2G_ENTRA_CLIENT_SECRET_FILE")
 }

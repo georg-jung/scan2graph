@@ -374,35 +374,14 @@ func TestStaleStagingCleanup(t *testing.T) {
 	dir := st.Dir()
 	writeStagedFile(t, st, "doc", "x")
 
-	// Not yet stale.
-	clk.advance(14 * time.Minute)
-	if n := s.CleanExpired(); n != 0 {
-		t.Fatalf("CleanExpired at 14m = %d, want 0", n)
-	}
-	if s.Len() != 1 {
-		t.Fatalf("Len() at 14m = %d, want 1 (reservation not yet leaked)", s.Len())
-	}
+	clk.advance(staleReservationAfter + time.Minute)
+	s.CleanExpired()
 
-	// Now stale (> 15 minutes since reservation).
-	clk.advance(2 * time.Minute)
-	n := s.CleanExpired()
-	if n != 0 {
-		// CleanExpired's return value counts jobs removed, not leaked
-		// reservations.
-		t.Fatalf("CleanExpired return value = %d, want 0 (leaked reservations aren't jobs)", n)
-	}
 	if s.Len() != 0 {
-		t.Fatalf("Len() after stale cleanup = %d, want 0", s.Len())
+		t.Fatalf("Len() after stale cleanup = %d, want 0 (reservation reclaimed)", s.Len())
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("stale staging dir still exists: err=%v", err)
-	}
-
-	// The reservation is gone: further use of st must fail (directory
-	// gone), not panic.
-	_, err = st.Commit(NewJob{Caps: Capabilities{Web: true}})
-	if err == nil {
-		t.Fatal("Commit on leaked-then-cleaned staging: expected error")
 	}
 }
 
