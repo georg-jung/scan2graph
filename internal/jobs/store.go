@@ -34,8 +34,9 @@ type Options struct {
 	// It is created (0700) if it does not already exist.
 	Root string
 
-	// TTL is how long a committed job stays visible before CleanExpired
-	// removes it. ExpiresAt = ReceivedAt + TTL, set at commit.
+	// TTL is how long a job stays visible before CleanExpired removes it.
+	// ExpiresAt is ReceivedAt + TTL at commit, and starts again from the
+	// moment the job becomes ready (see SetStatus).
 	TTL time.Duration
 
 	// MaxJobs bounds outstanding reservations plus committed jobs.
@@ -211,6 +212,19 @@ func (s *Store) commitReservation(id string, job Job, dir string, files map[stri
 	return nil
 }
 
+// live reports whether a job is still there to be seen. It is the single
+// definition of "expired" in this package: every reader and the sweep use
+// it, so a job can never be hidden from the web UI while its files are
+// still on disk, or the other way round.
+//
+// A job a worker is holding is always live: the download window starts when
+// the pipeline finishes with it (see SetStatus), so until then the deadline
+// on the record is the arrival one and has nothing to say yet. The worker's
+// own budget bounds how long that can last, so nothing leaks for ever.
+func live(j Job, now time.Time) bool {
+	return j.Status == StatusProcessing || now.Before(j.ExpiresAt)
+}
+
 // Get returns a deep copy of the job with the given id. Expired jobs are
 // reported as missing even before CleanExpired has removed them, so callers
 // never have to repeat the TTL check themselves.
@@ -218,7 +232,7 @@ func (s *Store) Get(id string) (Job, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec, ok := s.jobs[id]
-	if !ok || !s.now().Before(rec.job.ExpiresAt) {
+	if !ok || !live(rec.job, s.now()) {
 		return Job{}, false
 	}
 	return cloneJob(rec.job), true
@@ -249,7 +263,7 @@ func (s *Store) ListForUser(identities []string) []Job {
 	out := make([]Job, 0, len(s.jobs))
 	for _, rec := range s.jobs {
 		j := rec.job
-		if !j.Caps.Web || !now.Before(j.ExpiresAt) {
+		if !j.Caps.Web || !live(j, now) {
 			continue
 		}
 		recipient := false
@@ -285,6 +299,15 @@ func (s *Store) SetStatus(id string, st Status, errMsg string) error {
 		rec.job.Error = errMsg
 	} else {
 		rec.job.Error = ""
+	}
+	// The TTL is how long a finished scan can be picked up, so it starts
+	// when the job reaches its final state. Measured from arrival instead,
+	// work slower than the TTL would produce a job that is finished and
+	// expired in the same instant, invisible to the person it was scanned
+	// for - and a failed job needs the window as much as a ready one,
+	// because its notice mail links to the scan it could not deliver.
+	if st == StatusReady || st == StatusFailed {
+		rec.job.ExpiresAt = s.now().Add(s.ttl)
 	}
 	return nil
 }
@@ -400,13 +423,7 @@ func (s *Store) CleanExpired() int {
 
 	s.mu.Lock()
 	for id, rec := range s.jobs {
-		// A job a worker is holding keeps its files: deleting them mid-flight
-		// would lose a scan that is about to be delivered. The worker's own
-		// budget bounds how long that can last, so nothing leaks for ever.
-		if rec.job.Status == StatusProcessing {
-			continue
-		}
-		if !now.Before(rec.job.ExpiresAt) {
+		if !live(rec.job, now) {
 			expiredJobs = append(expiredJobs, removal{id, rec.dir})
 			delete(s.jobs, id)
 		}
