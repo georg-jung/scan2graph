@@ -1112,6 +1112,24 @@ func TestLoadRejectsEmptyConfiguredSMTPPassword(t *testing.T) {
 	wantLoadErr(t, env, "S2G_SMTP_PASSWORD")
 }
 
+func TestLoadRejectsDuplicateJSONKeys(t *testing.T) {
+	t.Run("profiles", func(t *testing.T) {
+		env := clone(baseEnv())
+		env["S2G_PROFILES"] = `{"scan@example.com":{"email":true},"scan@example.com":{"web":true}}`
+		wantLoadErr(t, env, "S2G_PROFILES")
+	})
+	t.Run("aliases", func(t *testing.T) {
+		env := clone(baseEnv())
+		env["S2G_RECIPIENT_ALIASES"] = `{"a@example.com":"b@example.com","a@example.com":"c@example.com"}`
+		wantLoadErr(t, env, "S2G_RECIPIENT_ALIASES")
+	})
+	t.Run("not an object", func(t *testing.T) {
+		env := clone(baseEnv())
+		env["S2G_PROFILES"] = `["scan@example.com"]`
+		wantLoadErr(t, env, "S2G_PROFILES")
+	})
+}
+
 func TestLoadRejectsTrailingJSON(t *testing.T) {
 	env := clone(baseEnv())
 	env["S2G_PROFILES"] = `{"a@example.com":{"web":true}}{"b@example.com":{"web":true}}`

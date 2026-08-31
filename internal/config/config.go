@@ -150,8 +150,8 @@ func Load(getenv func(string) string) (*Config, error) {
 // NormalizeAddress; unknown JSON fields, invalid keys, all-false capability
 // sets and keys that collide after normalization are all errors.
 func (l *loader) profiles() map[string]Capabilities {
-	var raw map[string]Capabilities
-	if !l.decodeJSONObject("S2G_PROFILES", &raw) {
+	raw, ok := decodeStringMap[Capabilities](l, "S2G_PROFILES")
+	if !ok {
 		return nil
 	}
 
@@ -185,8 +185,8 @@ func (l *loader) profiles() map[string]Capabilities {
 // normalization, is an error. An alias whose key equals its value is legal
 // (pointless, but harmless).
 func (l *loader) aliases(profiles map[string]Capabilities) map[string]string {
-	var raw map[string]string
-	if !l.decodeJSONObject("S2G_RECIPIENT_ALIASES", &raw) {
+	raw, ok := decodeStringMap[string](l, "S2G_RECIPIENT_ALIASES")
+	if !ok {
 		return nil
 	}
 

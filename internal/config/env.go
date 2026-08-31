@@ -281,23 +281,59 @@ func (l *loader) baseURLDefault(name, def string, schemes ...string) string {
 	return v
 }
 
-// decodeJSONObject resolves name (defaulting to "{}" when unset) and decodes
-// it into dst, rejecting unknown object fields so a typo in a nested key
-// fails loudly at startup instead of being silently ignored.
-func (l *loader) decodeJSONObject(name string, dst any) (ok bool) {
+// decodeStringMap resolves name (defaulting to an empty object when unset)
+// and decodes it as a JSON object with string keys. Unlike a plain
+// json.Unmarshal into a map it rejects duplicate keys, unknown fields in the
+// values and trailing data, so a mangled or typo'd configuration value fails
+// at startup instead of silently taking the last of two entries.
+func decodeStringMap[V any](l *loader, name string) (map[string]V, bool) {
 	raw, set := l.resolve(name)
 	if !set {
 		raw = "{}"
 	}
+
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
+
+	if tok, err := dec.Token(); err != nil {
 		l.errorf("%s: invalid JSON: %v", name, err)
-		return false
+		return nil, false
+	} else if d, ok := tok.(json.Delim); !ok || d != '{' {
+		l.errorf("%s: must be a JSON object", name)
+		return nil, false
+	}
+
+	out := make(map[string]V)
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			l.errorf("%s: invalid JSON: %v", name, err)
+			return nil, false
+		}
+		key, ok := tok.(string)
+		if !ok {
+			l.errorf("%s: must be a JSON object", name)
+			return nil, false
+		}
+		var v V
+		if err := dec.Decode(&v); err != nil {
+			l.errorf("%s: key %q: invalid value: %v", name, key, err)
+			return nil, false
+		}
+		if _, dup := out[key]; dup {
+			l.errorf("%s: duplicate key %q", name, key)
+			return nil, false
+		}
+		out[key] = v
+	}
+
+	if _, err := dec.Token(); err != nil {
+		l.errorf("%s: invalid JSON: %v", name, err)
+		return nil, false
 	}
 	if dec.More() {
 		l.errorf("%s: trailing data after the JSON object", name)
-		return false
+		return nil, false
 	}
-	return true
+	return out, true
 }

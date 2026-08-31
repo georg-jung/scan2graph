@@ -208,6 +208,21 @@ func TestCommitRejectsPathOutsideStagingDir(t *testing.T) {
 		t.Fatal("Commit: expected error for ../ escape, got nil")
 	}
 
+	// So must a file that merely sits in the staging directory without
+	// having been created through it - that is how a symlinked subdirectory
+	// would smuggle an external file in.
+	planted := filepath.Join(st.Dir(), "planted.pdf")
+	if err := os.WriteFile(planted, []byte("x"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_, err = st.Commit(NewJob{
+		Caps:      Capabilities{Web: true},
+		Documents: []NewDocument{{DisplayName: "planted.pdf", Path: planted}},
+	})
+	if err == nil {
+		t.Fatal("Commit: expected error for a file the staging did not create, got nil")
+	}
+
 	st.Abort()
 }
 
@@ -528,10 +543,15 @@ func TestReplaceDocument(t *testing.T) {
 	}
 	docID := job.Documents[0].ID
 
-	newPath := filepath.Join(filepath.Dir(oldPath), "ocred.pdf")
-	if err := os.WriteFile(newPath, []byte("searchable pdf content"), 0600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
+	nf, err := s.CreateFile(job.ID, "ocr")
+	if err != nil {
+		t.Fatalf("CreateFile: %v", err)
 	}
+	if _, err := nf.WriteString("searchable pdf content"); err != nil {
+		t.Fatalf("WriteString: %v", err)
+	}
+	nf.Close()
+	newPath := nf.Name()
 
 	if err := s.ReplaceDocument(job.ID, docID, newPath, true); err != nil {
 		t.Fatalf("ReplaceDocument: %v", err)
@@ -567,13 +587,25 @@ func TestReplaceDocument(t *testing.T) {
 		t.Errorf("ReplaceDocument(unknown doc) = %v, want ErrNotFound", err)
 	}
 
-	// Path outside the job directory must be rejected.
+	// A file the store did not create for this job must be rejected, even
+	// when it sits inside the job's own directory (e.g. planted through a
+	// symlinked subdirectory).
+	planted := filepath.Join(filepath.Dir(newPath), "planted.pdf")
+	if err := os.WriteFile(planted, []byte("x"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := s.ReplaceDocument(job.ID, docID, planted, true); err == nil {
+		t.Error("ReplaceDocument with a file the store did not create: expected error, got nil")
+	}
 	outside := filepath.Join(t.TempDir(), "evil.pdf")
 	if err := os.WriteFile(outside, []byte("x"), 0600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	if err := s.ReplaceDocument(job.ID, docID, outside, true); err == nil {
 		t.Error("ReplaceDocument with outside path: expected error, got nil")
+	}
+	if _, err := s.CreateFile("no-such-job", "ocr"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("CreateFile(unknown job) = %v, want ErrNotFound", err)
 	}
 }
 

@@ -114,12 +114,21 @@ func announceSMTPCredentials(cfg *config.Config) {
 		slog.Warn("SMTP AUTH is disabled (S2G_SMTP_ALLOW_ANONYMOUS=true); " +
 			"anyone who can reach the SMTP port can submit scans")
 	case cfg.SMTPPasswordGenerated:
-		slog.Warn("no SMTP password configured, generated an ephemeral one",
-			"smtp_username", cfg.SMTPUsername,
-			"smtp_password", cfg.SMTPPassword,
-			"note", "this password changes on every restart; configure S2G_SMTP_PASSWORD "+
-				"(or S2G_SMTP_PASSWORD_FILE) to keep it stable, or set "+
-				"S2G_SMTP_ALLOW_ANONYMOUS=true to run without SMTP AUTH")
+		// Printed directly, not logged: this is the operator's only chance to
+		// learn the password, so it must survive S2G_LOG_LEVEL=error.
+		fmt.Fprintf(os.Stderr,
+			"\n"+
+				"  ┌─ SMTP AUTH ─────────────────────────────────────────────────\n"+
+				"  │ No SMTP password configured, generated an ephemeral one:\n"+
+				"  │\n"+
+				"  │     username: %s\n"+
+				"  │     password: %s\n"+
+				"  │\n"+
+				"  │ It changes on every restart. Set S2G_SMTP_PASSWORD (or\n"+
+				"  │ S2G_SMTP_PASSWORD_FILE) to keep it stable, or set\n"+
+				"  │ S2G_SMTP_ALLOW_ANONYMOUS=true to run without SMTP AUTH.\n"+
+				"  └─────────────────────────────────────────────────────────────\n\n",
+			cfg.SMTPUsername, cfg.SMTPPassword)
 	default:
 		slog.Info("SMTP AUTH enabled", "smtp_username", cfg.SMTPUsername)
 	}
