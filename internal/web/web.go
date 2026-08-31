@@ -225,6 +225,16 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request, sess *se
 	}
 	d := j.Documents[i]
 
+	// While the pipeline still owns the job, OCR replaces these files: the
+	// path in this snapshot may already be gone, and the file that is still
+	// there is the pre-OCR original, which we must never hand out. The detail
+	// page hides the links until then; this covers a guessed or bookmarked
+	// URL. A failed job keeps its downloads - the notice email links to them.
+	if j.Status == jobs.StatusPending || j.Status == jobs.StatusProcessing {
+		http.Error(w, "the scan is still being processed", http.StatusConflict)
+		return
+	}
+
 	f, err := os.Open(d.Path)
 	if err != nil {
 		s.log.Error("web: cannot open document file", "job_id", j.ID, "err", err)

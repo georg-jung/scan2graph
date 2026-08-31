@@ -189,6 +189,12 @@ func (h *harness) addJob(subject string, recipients []string, caps jobs.Capabili
 	if err != nil {
 		h.t.Fatalf("Commit: %v", err)
 	}
+	// Ready, like a job the pipeline has finished with: that is the state the
+	// UI normally sees, and the one in which downloads are allowed.
+	if err := h.store.SetStatus(j.ID, jobs.StatusReady, ""); err != nil {
+		h.t.Fatalf("SetStatus: %v", err)
+	}
+	j.Status = jobs.StatusReady
 	return j
 }
 
@@ -534,6 +540,40 @@ func TestDownload(t *testing.T) {
 	}
 	if disposition != "attachment" || params["filename"] != "invoice.pdf" {
 		t.Errorf("Content-Disposition = %q %v, want attachment with filename invoice.pdf", disposition, params)
+	}
+}
+
+// TestDownloadWaitsForProcessing guards the window in which OCR replaces a
+// job's files underneath the web UI: neither the page nor a direct URL may
+// hand out the pre-OCR original.
+func TestDownloadWaitsForProcessing(t *testing.T) {
+	h := newHarness(t)
+	j := h.addJob("My invoice", []string{ann}, webCaps, "%PDF-1.7 the original")
+	url := h.ts.URL + "/scan/" + j.ID + "/" + j.Documents[0].ID
+	c := h.signedIn()
+
+	for _, st := range []jobs.Status{jobs.StatusPending, jobs.StatusProcessing} {
+		if err := h.store.SetStatus(j.ID, st, ""); err != nil {
+			t.Fatalf("SetStatus: %v", err)
+		}
+		resp, body := h.get(c, url)
+		if resp.StatusCode != http.StatusConflict {
+			t.Errorf("download of a %s scan: status %d, want 409", st, resp.StatusCode)
+		}
+		if strings.Contains(body, "the original") {
+			t.Errorf("download of a %s scan served the pre-OCR file", st)
+		}
+		if _, page := h.get(c, h.ts.URL+"/scan/"+j.ID); strings.Contains(page, url[len(h.ts.URL):]) {
+			t.Errorf("detail page of a %s scan still links the download:\n%s", st, page)
+		}
+	}
+
+	// A failed job keeps its downloads: the notice email links to them.
+	if err := h.store.SetStatus(j.ID, jobs.StatusFailed, "Text recognition failed."); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	if resp, body := h.get(c, url); resp.StatusCode != http.StatusOK || body != "%PDF-1.7 the original" {
+		t.Errorf("download of a failed scan: status %d, body %q", resp.StatusCode, body)
 	}
 }
 

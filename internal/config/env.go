@@ -223,6 +223,22 @@ func (l *loader) baseURL(name string, required bool, reason string, schemes ...s
 	return v
 }
 
+// rootBaseURL is baseURL for a URL that must address the root of a host.
+// The web UI's own links and its OIDC redirect are root-relative, so a base
+// URL carrying a path would send the browser to pages the appliance does not
+// serve. It runs on its own hostname, so a prefix has nothing to gain.
+func (l *loader) rootBaseURL(name string, required bool, reason string, schemes ...string) string {
+	v := l.baseURL(name, required, reason, schemes...)
+	if v == "" {
+		return ""
+	}
+	if u, err := url.Parse(v); err == nil && u.Path != "" {
+		l.errorf("%s: must address the root of a host, got the path %q; give scan2graph its own hostname", name, u.Path)
+		return ""
+	}
+	return v
+}
+
 // baseURLDefault is like baseURL but always has a default value, so the
 // variable is validated whether the operator set it explicitly or not.
 func (l *loader) baseURLDefault(name, def string, schemes ...string) string {

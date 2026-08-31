@@ -166,6 +166,11 @@ func TestLoadPublicBaseURLValidation(t *testing.T) {
 		env["S2G_PUBLIC_BASE_URL"] = "https://scan2graph.example.com/#frag"
 		wantLoadErr(t, env, "S2G_PUBLIC_BASE_URL", "fragment")
 	})
+	t.Run("path", func(t *testing.T) {
+		env := clone(baseEnv())
+		env["S2G_PUBLIC_BASE_URL"] = "https://scan2graph.example.com/scans"
+		wantLoadErr(t, env, "S2G_PUBLIC_BASE_URL", "root of a host")
+	})
 	t.Run("trailing slash stripped", func(t *testing.T) {
 		env := clone(baseEnv())
 		env["S2G_PUBLIC_BASE_URL"] = "https://scan2graph.example.com/"
