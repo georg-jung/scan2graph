@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"strconv"
@@ -238,52 +239,29 @@ func (l *loader) baseURLDefault(name, def string, schemes ...string) string {
 }
 
 // decodeStringMap resolves name (defaulting to an empty object when unset)
-// and decodes it as a JSON object with string keys. Unlike a plain
-// json.Unmarshal into a map it rejects duplicate keys, unknown fields in the
-// values and trailing data, so a mangled or typo'd configuration value fails
-// at startup instead of silently taking the last of two entries.
+// and decodes it as a JSON object with string keys. It rejects duplicate
+// keys at any depth, unknown fields in the values and trailing data, so a
+// mangled or typo'd configuration value fails at startup instead of quietly
+// taking the last of two entries.
 func decodeStringMap[V any](l *loader, name string) (map[string]V, bool) {
 	raw, set := l.resolve(name)
 	if !set {
 		raw = "{}"
 	}
 
-	dec := json.NewDecoder(strings.NewReader(raw))
-	dec.DisallowUnknownFields()
-
-	if tok, err := dec.Token(); err != nil {
+	switch dup, err := duplicateJSONKey(strings.NewReader(raw)); {
+	case err != nil:
 		l.errorf("%s: invalid JSON: %v", name, err)
 		return nil, false
-	} else if d, ok := tok.(json.Delim); !ok || d != '{' {
-		l.errorf("%s: must be a JSON object", name)
+	case dup != "":
+		l.errorf("%s: duplicate key %q", name, dup)
 		return nil, false
 	}
 
-	out := make(map[string]V)
-	for dec.More() {
-		tok, err := dec.Token()
-		if err != nil {
-			l.errorf("%s: invalid JSON: %v", name, err)
-			return nil, false
-		}
-		key, ok := tok.(string)
-		if !ok {
-			l.errorf("%s: must be a JSON object", name)
-			return nil, false
-		}
-		var v V
-		if err := dec.Decode(&v); err != nil {
-			l.errorf("%s: key %q: invalid value: %v", name, key, err)
-			return nil, false
-		}
-		if _, dup := out[key]; dup {
-			l.errorf("%s: duplicate key %q", name, key)
-			return nil, false
-		}
-		out[key] = v
-	}
-
-	if _, err := dec.Token(); err != nil {
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var out map[string]V
+	if err := dec.Decode(&out); err != nil {
 		l.errorf("%s: invalid JSON: %v", name, err)
 		return nil, false
 	}
@@ -291,5 +269,57 @@ func decodeStringMap[V any](l *loader, name string) (map[string]V, bool) {
 		l.errorf("%s: trailing data after the JSON object", name)
 		return nil, false
 	}
+	if out == nil {
+		out = make(map[string]V)
+	}
 	return out, true
+}
+
+// duplicateJSONKey returns the first object key that occurs twice in the
+// same object anywhere in the JSON value read from r, or "" if there is
+// none. encoding/json itself silently keeps the last of two entries, which
+// would turn a configuration typo into a profile that quietly does
+// something else.
+func duplicateJSONKey(r io.Reader) (string, error) {
+	dec := json.NewDecoder(r)
+
+	var value func() (string, error)
+	value = func() (string, error) {
+		tok, err := dec.Token()
+		if err != nil {
+			return "", err
+		}
+		delim, ok := tok.(json.Delim)
+		if !ok {
+			return "", nil // a scalar has no keys
+		}
+
+		if delim == '{' {
+			seen := make(map[string]bool)
+			for dec.More() {
+				keyTok, err := dec.Token()
+				if err != nil {
+					return "", err
+				}
+				key, _ := keyTok.(string)
+				if seen[key] {
+					return key, nil
+				}
+				seen[key] = true
+				if dup, err := value(); dup != "" || err != nil {
+					return dup, err
+				}
+			}
+		} else {
+			for dec.More() {
+				if dup, err := value(); dup != "" || err != nil {
+					return dup, err
+				}
+			}
+		}
+		_, err = dec.Token() // the closing } or ]
+		return "", err
+	}
+
+	return value()
 }

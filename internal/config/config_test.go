@@ -972,6 +972,11 @@ func TestLoadRejectsDuplicateJSONKeys(t *testing.T) {
 		env["S2G_RECIPIENT_ALIASES"] = `{"a@example.com":"b@example.com","a@example.com":"c@example.com"}`
 		wantLoadErr(t, env, "S2G_RECIPIENT_ALIASES")
 	})
+	t.Run("inside a capability object", func(t *testing.T) {
+		env := clone(baseEnv())
+		env["S2G_PROFILES"] = `{"scan@example.com":{"email":true,"email":false,"web":true}}`
+		wantLoadErr(t, env, "S2G_PROFILES", `duplicate key "email"`)
+	})
 	t.Run("not an object", func(t *testing.T) {
 		env := clone(baseEnv())
 		env["S2G_PROFILES"] = `["scan@example.com"]`
