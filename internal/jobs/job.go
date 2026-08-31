@@ -81,6 +81,37 @@ func cloneJob(j Job) Job {
 	return out
 }
 
+// SanitizeSubject turns a decoded, possibly hostile MIME subject into
+// something safe to put back into an outgoing Subject: header and to show in
+// the web UI. Non-printable runes are dropped -- control characters, and
+// with them the CR/LF a subject would otherwise inject its own headers with
+// -- whitespace of any kind becomes a plain space and runs of it collapse,
+// and the result is trimmed, valid UTF-8 and at most 200 runes, so a
+// megabyte-sized subject cannot be parked in memory for a whole TTL. May
+// legitimately return "".
+func SanitizeSubject(subject string) string {
+	const maxRunes = 200
+
+	subject = strings.ToValidUTF8(subject, "")
+
+	var b strings.Builder
+	b.Grow(len(subject))
+	for _, r := range subject {
+		switch {
+		case unicode.IsSpace(r):
+			b.WriteRune(' ') // a folded or multi-line subject keeps its words apart
+		case unicode.IsPrint(r):
+			b.WriteRune(r)
+		}
+	}
+
+	subject = strings.Join(strings.Fields(b.String()), " ")
+	if r := []rune(subject); len(r) > maxRunes {
+		subject = strings.TrimSpace(string(r[:maxRunes]))
+	}
+	return subject
+}
+
 // SanitizeDisplayName turns an arbitrary, possibly hostile attachment
 // filename into something safe to show in the web UI and to echo back in a
 // Content-Disposition header: directory components are stripped, control

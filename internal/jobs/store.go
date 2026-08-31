@@ -593,7 +593,7 @@ func (st *Staging) Commit(n NewJob) (Job, error) {
 		ExpiresAt:  now.Add(st.store.ttl),
 		Profile:    n.Profile,
 		Caps:       n.Caps,
-		Subject:    n.Subject,
+		Subject:    SanitizeSubject(n.Subject),
 		Recipients: append([]string(nil), n.Recipients...),
 		Documents:  docs,
 		Status:     StatusPending,

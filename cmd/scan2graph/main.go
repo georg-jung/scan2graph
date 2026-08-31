@@ -14,8 +14,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/emersion/go-smtp"
+
 	"github.com/georg-jung/scan2graph/internal/config"
 	"github.com/georg-jung/scan2graph/internal/jobs"
+	"github.com/georg-jung/scan2graph/internal/smtpin"
 )
 
 // version is set at build time (-ldflags "-X main.version=...").
@@ -70,6 +73,16 @@ func run(cfg *config.Config) error {
 
 	go store.Run(ctx)
 
+	smtpSrv := smtpin.New(cfg, store, pendingHandler{}, slog.Default())
+	smtpErrCh := make(chan error, 1)
+	go func() {
+		slog.Info("smtp listening", "addr", cfg.SMTPAddr)
+		if err := smtpSrv.ListenAndServe(); err != nil && !errors.Is(err, smtp.ErrServerClosed) {
+			smtpErrCh <- fmt.Errorf("smtp server: %w", err)
+		}
+	}()
+	defer smtpSrv.Close()
+
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           newHTTPHandler(),
@@ -87,6 +100,8 @@ func run(cfg *config.Config) error {
 	select {
 	case err := <-errCh:
 		return err
+	case err := <-smtpErrCh:
+		return err
 	case <-ctx.Done():
 		slog.Info("shutdown signal received")
 	}
@@ -94,6 +109,19 @@ func run(cfg *config.Config) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// pendingHandler accepts jobs and leaves them alone: the processing pipeline
+// (OCR, Graph delivery, cleanup) lands in the next work package. Until then a
+// job stays pending and disappears with its TTL, which is exactly what the
+// ephemeral model promises anyway.
+type pendingHandler struct{}
+
+func (pendingHandler) Enqueue(job jobs.Job) error {
+	slog.Info("job accepted, no processing pipeline yet",
+		"job_id", job.ID, "documents", len(job.Documents),
+		"email", job.Caps.Email, "web", job.Caps.Web, "ocr", job.Caps.OCR)
+	return nil
 }
 
 // announceDefaultProfile explains what happens to a scan when no sender

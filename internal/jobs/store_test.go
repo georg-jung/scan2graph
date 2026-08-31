@@ -840,6 +840,62 @@ func TestSanitizeDisplayName(t *testing.T) {
 	})
 }
 
+func TestSanitizeSubject(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain", "Scan from the hallway printer", "Scan from the hallway printer"},
+		{"empty", "", ""},
+		{"header injection", "Scan\r\nBcc: evil@example.com", "Scan Bcc: evil@example.com"},
+		{"bare newline", "one\ntwo", "one two"},
+		{"ansi escapes", "\x1b[31mred\x1b[0m", "[31mred[0m"},
+		{"nul and control bytes", "a\x00\x01\x1fb", "ab"},
+		{"invalid utf8", "\xff\xfeScan", "Scan"},
+		{"tabs and padding collapse", "  Scan\t\tvom   Drucker  ", "Scan vom Drucker"},
+		{"unicode preserved", "Grüße 文件", "Grüße 文件"},
+		{"whitespace only", " \t\r\n ", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SanitizeSubject(tt.in)
+			if got != tt.want {
+				t.Errorf("SanitizeSubject(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+
+	t.Run("capped at 200 runes", func(t *testing.T) {
+		got := SanitizeSubject(strings.Repeat("日", 8<<20))
+		if n := len([]rune(got)); n != 200 {
+			t.Fatalf("length = %d runes, want 200", n)
+		}
+	})
+}
+
+// TestCommitSanitizesSubject checks that the sanitizing happens in the store,
+// so it holds for every producer and not just the SMTP one.
+func TestCommitSanitizesSubject(t *testing.T) {
+	s, _ := newTestStore(t, Options{})
+	st, err := s.Reserve()
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	path := writeStagedFile(t, st, "doc", "x")
+
+	job, err := st.Commit(NewJob{
+		Subject:   "Scan\r\nBcc: evil@example.com",
+		Documents: []NewDocument{{DisplayName: "scan.pdf", Path: path}},
+	})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if want := "Scan Bcc: evil@example.com"; job.Subject != want {
+		t.Errorf("Subject = %q, want %q", job.Subject, want)
+	}
+}
+
 func TestNewValidatesOptions(t *testing.T) {
 	if _, err := New(Options{TTL: time.Hour, MaxJobs: 1}); err == nil {
 		t.Error("New with empty Root: expected error")
