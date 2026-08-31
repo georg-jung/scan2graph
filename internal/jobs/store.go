@@ -400,6 +400,12 @@ func (s *Store) CleanExpired() int {
 
 	s.mu.Lock()
 	for id, rec := range s.jobs {
+		// A job a worker is holding keeps its files: deleting them mid-flight
+		// would lose a scan that is about to be delivered. The worker's own
+		// budget bounds how long that can last, so nothing leaks for ever.
+		if rec.job.Status == StatusProcessing {
+			continue
+		}
 		if !now.Before(rec.job.ExpiresAt) {
 			expiredJobs = append(expiredJobs, removal{id, rec.dir})
 			delete(s.jobs, id)

@@ -968,3 +968,42 @@ func TestNewRemovesLeftoversFromAPreviousProcess(t *testing.T) {
 		t.Errorf("Len() = %d after restart, want 0", second.Len())
 	}
 }
+
+func TestCleanExpiredKeepsJobsBeingProcessed(t *testing.T) {
+	s, clk := newTestStore(t, Options{TTL: time.Hour})
+
+	st, err := s.Reserve()
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	path := writeStagedFile(t, st, "doc", "a scan a worker is still holding")
+	job, err := st.Commit(NewJob{
+		Caps:      Capabilities{Web: true},
+		Documents: []NewDocument{{DisplayName: "a.pdf", Path: path}},
+	})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if err := s.SetStatus(job.ID, StatusProcessing, ""); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+
+	clk.advance(2 * time.Hour)
+	if n := s.CleanExpired(); n != 0 {
+		t.Fatalf("CleanExpired removed %d jobs, want 0 while one is processing", n)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("file of a processing job was removed: %v", err)
+	}
+
+	// Once the worker is done with it, the job expires normally.
+	if err := s.SetStatus(job.ID, StatusReady, ""); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	if n := s.CleanExpired(); n != 1 {
+		t.Fatalf("CleanExpired removed %d jobs, want 1", n)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("file survived expiry: err=%v", err)
+	}
+}
