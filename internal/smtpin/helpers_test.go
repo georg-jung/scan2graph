@@ -27,18 +27,19 @@ func testLogger() *slog.Logger {
 // credentials. set overrides/adds env vars; unset removes them (needed for
 // e.g. the anonymous-mode tests, where a plain "" value would itself be a
 // config error).
-// testSMTPPassword is a fixture value, not a credential: it only ever
-// travels through a fake getenv inside these tests.
-const testSMTPPassword = "smtp-fixture-value"
+// testSecret is the one fixture value these tests use wherever the
+// configuration wants a credential. It is not a secret: it never leaves the
+// fake getenv below.
+const testSecret = "fixture-not-a-secret"
 
 func testConfig(t *testing.T, set map[string]string, unset ...string) *config.Config {
 	t.Helper()
 	env := map[string]string{
 		"S2G_ENTRA_TENANT_ID":           "tenant-id",
 		"S2G_ENTRA_CLIENT_ID":           "client-id",
-		"S2G_ENTRA_CLIENT_SECRET":       "client-secret",
+		"S2G_ENTRA_CLIENT_SECRET":       testSecret,
 		"S2G_SMTP_USERNAME":             "scanner",
-		"S2G_SMTP_PASSWORD":             testSMTPPassword,
+		"S2G_SMTP_PASSWORD":             testSecret,
 		"S2G_GRAPH_SENDER":              "scans@corp.example",
 		"S2G_ALLOWED_RECIPIENT_DOMAINS": "corp.example",
 		"S2G_PUBLIC_BASE_URL":           "https://scan2graph.example",
