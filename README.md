@@ -84,9 +84,13 @@ after successful delivery.
 
 ## Security assumptions
 
-* The SMTP listener is meant for a **restricted LAN segment** and therefore has
-  no AUTH and no TLS. Incoming data is nevertheless treated as untrusted and is
-  subject to strict size, nesting and count limits.
+* The SMTP listener is meant for a **restricted LAN segment** and speaks plain
+  TCP without TLS, because that is all these devices can do. It does support
+  SMTP AUTH (PLAIN/LOGIN); if you do not configure credentials, scan2graph
+  generates an ephemeral password at startup and prints it. Running without
+  authentication is possible but has to be opted into explicitly.
+  Incoming data is treated as untrusted regardless, and is subject to strict
+  size, nesting and count limits.
 * scan2graph is **not** a mail relay: it only ever sends *new* messages, to
   envelope recipients that pass a mandatory recipient-domain allowlist.
 * The web UI requires Entra sign-in; every download re-checks server-side that
