@@ -15,9 +15,13 @@ import (
 	"time"
 
 	"github.com/emersion/go-smtp"
+	"golang.org/x/oauth2/clientcredentials"
 
 	"github.com/georg-jung/scan2graph/internal/config"
+	"github.com/georg-jung/scan2graph/internal/docintel"
+	"github.com/georg-jung/scan2graph/internal/graphmail"
 	"github.com/georg-jung/scan2graph/internal/jobs"
+	"github.com/georg-jung/scan2graph/internal/pipeline"
 	"github.com/georg-jung/scan2graph/internal/smtpin"
 )
 
@@ -73,7 +77,21 @@ func run(cfg *config.Config) error {
 
 	go store.Run(ctx)
 
-	smtpSrv := smtpin.New(cfg, store, pendingHandler{}, slog.Default())
+	pipe := pipeline.New(pipeline.Options{
+		Store:   store,
+		OCR:     newOCR(ctx, cfg),
+		Mailer:  newMailer(ctx, cfg),
+		BaseURL: cfg.PublicBaseURL,
+		Workers: cfg.Limits.MaxConcurrentJobs,
+		Logger:  slog.Default(),
+	})
+	pipeDone := make(chan struct{})
+	go func() {
+		defer close(pipeDone)
+		pipe.Run(ctx)
+	}()
+
+	smtpSrv := smtpin.New(cfg, store, pipe, slog.Default())
 	smtpErrCh := make(chan error, 1)
 	go func() {
 		slog.Info("smtp listening", "addr", cfg.SMTPAddr)
@@ -108,20 +126,55 @@ func run(cfg *config.Config) error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	err = srv.Shutdown(shutdownCtx)
+
+	// The SMTP listener is already closing (deferred above), so no new job can
+	// arrive; wait for the workers to notice the cancelled context. Whatever
+	// they were doing is lost either way - that is the ephemeral contract.
+	<-pipeDone
+	return err
 }
 
-// pendingHandler accepts jobs and leaves them alone: the processing pipeline
-// (OCR, Graph delivery, cleanup) lands in the next work package. Until then a
-// job stays pending and disappears with its TTL, which is exactly what the
-// ephemeral model promises anyway.
-type pendingHandler struct{}
+// newOCR builds the Document Intelligence client, or returns nil when no
+// profile asks for OCR. The token source caches and refreshes on its own.
+// It returns the interface type on purpose: a nil *docintel.Client in an
+// interface field would not compare equal to nil.
+func newOCR(ctx context.Context, cfg *config.Config) pipeline.OCR {
+	if cfg.DIEndpoint == "" {
+		return nil
+	}
+	return &docintel.Client{
+		HTTP:       msClient(ctx, cfg, cfg.DIScope),
+		Endpoint:   cfg.DIEndpoint,
+		APIVersion: cfg.DIAPIVersion,
+	}
+}
 
-func (pendingHandler) Enqueue(job jobs.Job) error {
-	slog.Info("job accepted, no processing pipeline yet",
-		"job_id", job.ID, "documents", len(job.Documents),
-		"email", job.Caps.Email, "web", job.Caps.Web, "ocr", job.Caps.OCR)
-	return nil
+// newMailer builds the Graph client, or returns nil when no profile asks for
+// email delivery. Interface-typed for the same reason as newOCR.
+func newMailer(ctx context.Context, cfg *config.Config) pipeline.Mailer {
+	if cfg.GraphSender == "" {
+		return nil
+	}
+	return &graphmail.Client{
+		HTTP:    msClient(ctx, cfg, cfg.GraphScope),
+		BaseURL: cfg.GraphBaseURL,
+		Sender:  cfg.GraphSender,
+	}
+}
+
+// msClient returns an HTTP client that attaches an app-only access token for
+// one scope, acquired with the Entra app registration and refreshed as needed.
+func msClient(ctx context.Context, cfg *config.Config, scope string) *http.Client {
+	cc := &clientcredentials.Config{
+		ClientID:     cfg.ClientID,
+		ClientSecret: cfg.ClientSecret,
+		TokenURL:     cfg.TokenURL,
+		Scopes:       []string{scope},
+	}
+	c := cc.Client(ctx)
+	c.Timeout = 5 * time.Minute
+	return c
 }
 
 // announceDefaultProfile explains what happens to a scan when no sender
