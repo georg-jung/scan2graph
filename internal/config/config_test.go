@@ -996,7 +996,7 @@ func TestLoadRejectsMalformedRecipientDomains(t *testing.T) {
 }
 
 func TestLoadDefaultProfile(t *testing.T) {
-	t.Run("every sender gets email and web", func(t *testing.T) {
+	t.Run("every sender gets the default profile", func(t *testing.T) {
 		env := clone(baseEnv())
 		delete(env, "S2G_PROFILES")
 		delete(env, "S2G_DI_ENDPOINT")
@@ -1033,19 +1033,48 @@ func TestLoadDefaultProfile(t *testing.T) {
 		}
 	})
 
-	t.Run("requires a graph sender and a domain allowlist", func(t *testing.T) {
+	t.Run("capabilities follow the configuration", func(t *testing.T) {
+		for _, tc := range []struct {
+			name    string
+			without []string
+			want    Capabilities
+		}{
+			{"everything configured", nil, Capabilities{Email: true, Web: true, OCR: true}},
+			{"no graph sender", []string{"S2G_GRAPH_SENDER"}, Capabilities{Web: true, OCR: true}},
+			{"no base URL", []string{"S2G_PUBLIC_BASE_URL"}, Capabilities{Email: true, OCR: true}},
+			{"no document intelligence", []string{"S2G_DI_ENDPOINT"}, Capabilities{Email: true, Web: true}},
+			{"web only", []string{"S2G_GRAPH_SENDER", "S2G_DI_ENDPOINT"}, Capabilities{Web: true}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				env := clone(baseEnv())
+				delete(env, "S2G_PROFILES")
+				for _, name := range tc.without {
+					delete(env, name)
+				}
+				c, err := Load(fakeGetenv(env))
+				if err != nil {
+					t.Fatalf("Load() = %v", err)
+				}
+				if c.DefaultProfile != tc.want {
+					t.Errorf("DefaultProfile = %+v, want %+v", c.DefaultProfile, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("a graph sender without an allowlist is an error", func(t *testing.T) {
+		env := clone(baseEnv())
+		delete(env, "S2G_PROFILES")
+		delete(env, "S2G_ALLOWED_RECIPIENT_DOMAINS")
+		wantLoadErr(t, env, "S2G_ALLOWED_RECIPIENT_DOMAINS", "open mail relay")
+	})
+
+	t.Run("no delivery path at all is an error", func(t *testing.T) {
 		env := clone(baseEnv())
 		delete(env, "S2G_PROFILES")
 		delete(env, "S2G_GRAPH_SENDER")
-		delete(env, "S2G_ALLOWED_RECIPIENT_DOMAINS")
-		wantLoadErr(t, env, "S2G_GRAPH_SENDER", "S2G_ALLOWED_RECIPIENT_DOMAINS", "S2G_PROFILES is not configured")
-	})
-
-	t.Run("requires a public base URL", func(t *testing.T) {
-		env := clone(baseEnv())
-		delete(env, "S2G_PROFILES")
 		delete(env, "S2G_PUBLIC_BASE_URL")
-		wantLoadErr(t, env, "S2G_PUBLIC_BASE_URL", "S2G_PROFILES is not configured")
+		wantLoadErr(t, env, "no way to deliver a scan")
 	})
 
 	t.Run("configured profiles still reject unknown senders", func(t *testing.T) {

@@ -46,8 +46,12 @@ different purposes, and it never looks at the MIME `From:`/`To:` headers.
 * **Envelope sender → feature profile.** Configure one printer sender address
   per feature combination, for example `scan-web-ocr@scanner.local`. Once
   profiles are configured, unknown senders are rejected. Profiles are
-  optional: with none configured, every sender gets email + web, plus OCR if
-  a Document Intelligence endpoint is configured.
+  optional: with none configured, every sender gets the same treatment, and
+  each capability is on exactly when the configuration it needs is present —
+  email once a Graph sender and a recipient-domain allowlist are configured,
+  web downloads once the public base URL is, OCR once the Document
+  Intelligence endpoint is. scan2graph prints the resulting profile at
+  startup, so it is never a mystery why a feature is off.
 * **Envelope recipients → users.** The recipient addresses are matched against
   the signed-in Entra user (email / UPN, plus an optional alias mapping for
   printers that can only store shortened addresses).

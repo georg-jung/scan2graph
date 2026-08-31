@@ -51,6 +51,7 @@ func run(cfg *config.Config) error {
 	defer stop()
 
 	slog.Info("starting scan2graph", "version", version, "config", cfg)
+	announceDefaultProfile(cfg)
 	announceSMTPCredentials(cfg)
 
 	store, err := jobs.New(jobs.Options{
@@ -93,6 +94,36 @@ func run(cfg *config.Config) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// announceDefaultProfile explains what happens to a scan when no sender
+// profiles are configured, since then the enabled features are inferred from
+// which other settings are present. Printed rather than logged: an operator
+// who ends up without OCR or without email delivery needs to see why, at any
+// log level.
+func announceDefaultProfile(cfg *config.Config) {
+	if len(cfg.Profiles) > 0 {
+		return
+	}
+	feature := func(on bool, name, hint string) string {
+		if on {
+			return fmt.Sprintf("  │     %-14s on\n", name+":")
+		}
+		return fmt.Sprintf("  │     %-14s off - %s\n", name+":", hint)
+	}
+	fmt.Fprint(os.Stderr,
+		"\n"+
+			"  ┌─ Sender profiles ───────────────────────────────────────────\n"+
+			"  │ No S2G_PROFILES configured, so every scanner address gets\n"+
+			"  │ the same treatment:\n"+
+			"  │\n"+
+			feature(cfg.DefaultProfile.Email, "email", "set S2G_GRAPH_SENDER")+
+			feature(cfg.DefaultProfile.Web, "web downloads", "set S2G_PUBLIC_BASE_URL")+
+			feature(cfg.DefaultProfile.OCR, "OCR", "set S2G_DI_ENDPOINT")+
+			"  │\n"+
+			"  │ Set S2G_PROFILES to give the printer's sender addresses\n"+
+			"  │ different feature combinations.\n"+
+			"  └─────────────────────────────────────────────────────────────\n\n")
 }
 
 // announceSMTPCredentials tells the operator how the SMTP listener is

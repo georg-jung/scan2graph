@@ -62,9 +62,10 @@ type Config struct {
 	// empty, in which case DefaultProfile applies to every sender.
 	Profiles map[string]Capabilities
 	// DefaultProfile is what every sender gets when no profiles are
-	// configured: email and web, plus OCR when a Document Intelligence
-	// endpoint is configured. It is the zero value when Profiles is not
-	// empty.
+	// configured: each capability is enabled exactly when the configuration
+	// it needs is present (a Graph sender plus a recipient allowlist for
+	// email, a public base URL for web, a Document Intelligence endpoint for
+	// OCR). It is the zero value when Profiles is not empty.
 	DefaultProfile Capabilities
 	// RecipientAliases maps a canonical alias address to the canonical
 	// identity address it stands for. Applied exactly once by Canonical.
@@ -118,29 +119,34 @@ func Load(getenv func(string) string) (*Config, error) {
 		anyOCR = anyOCR || cp.OCR
 	}
 
-	// Without profiles, OCR is on exactly when a Document Intelligence
-	// endpoint is configured, so the endpoint is only ever *required* by an
-	// explicit profile that asks for it.
+	// Each of these is required only when an explicit profile asks for the
+	// capability it serves. Without profiles they are all optional, and
+	// whichever ones are configured decide what the default profile does.
 	c.DIEndpoint = l.baseURL("S2G_DI_ENDPOINT", anyOCR,
 		`at least one sender profile has "ocr" enabled`, "https")
 	c.DIAPIVersion = l.stringDefault("S2G_DI_API_VERSION", "2024-11-30")
 	c.DIScope = l.stringDefault("S2G_DI_SCOPE", "https://cognitiveservices.azure.com/.default")
 
-	emailReason := `at least one sender profile has "email" enabled`
-	webReason := `at least one sender profile has "web" enabled`
+	c.AllowedRecipientDomains = l.domains(anyEmail, `at least one sender profile has "email" enabled`)
+	c.PublicBaseURL = l.baseURL("S2G_PUBLIC_BASE_URL", anyWeb,
+		`at least one sender profile has "web" enabled`, "http", "https")
+	c.GraphSender = l.graphSender(anyEmail, `at least one sender profile has "email" enabled`)
+
 	if len(c.Profiles) == 0 {
-		anyEmail, anyWeb = true, true
-		anyOCR = c.DIEndpoint != ""
-		c.DefaultProfile = Capabilities{Email: anyEmail, Web: anyWeb, OCR: anyOCR}
-		emailReason = "S2G_PROFILES is not configured, so the default profile emails every scan (configure S2G_PROFILES to change that)"
-		webReason = "S2G_PROFILES is not configured, so the default profile publishes every scan in the web UI (configure S2G_PROFILES to change that)"
+		// A configured Graph sender is an unambiguous statement of intent,
+		// so a missing allowlist is an error rather than "email quietly off".
+		if c.GraphSender != "" && len(c.AllowedRecipientDomains) == 0 {
+			l.errorf("S2G_ALLOWED_RECIPIENT_DOMAINS is required because S2G_GRAPH_SENDER is configured: without a recipient domain allowlist scan2graph would be an open mail relay")
+		}
+		c.DefaultProfile = Capabilities{
+			Email: c.GraphSender != "" && len(c.AllowedRecipientDomains) > 0,
+			Web:   c.PublicBaseURL != "",
+			OCR:   c.DIEndpoint != "",
+		}
+		if !c.DefaultProfile.Email && !c.DefaultProfile.Web {
+			l.errorf("scan2graph has no way to deliver a scan: configure S2G_PUBLIC_BASE_URL for the web UI, and/or S2G_GRAPH_SENDER with S2G_ALLOWED_RECIPIENT_DOMAINS for email delivery (or define S2G_PROFILES explicitly)")
+		}
 	}
-
-	c.AllowedRecipientDomains = l.domains(anyEmail, emailReason)
-
-	c.PublicBaseURL = l.baseURL("S2G_PUBLIC_BASE_URL", anyWeb, webReason, "http", "https")
-
-	c.GraphSender = l.graphSender(anyEmail, emailReason)
 
 	const identityReason = "scan2graph always needs an Entra app registration (for the web UI's OIDC login and for app-only Graph/Document Intelligence tokens)"
 	c.TenantID = l.requiredIf("S2G_ENTRA_TENANT_ID", true, identityReason)
