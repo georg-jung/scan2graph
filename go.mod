@@ -1,3 +1,3 @@
 module github.com/georg-jung/scan2graph
 
-go 1.24
+go 1.27

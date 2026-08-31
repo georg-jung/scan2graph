@@ -44,8 +44,14 @@ device and a list of destination addresses. scan2graph uses them for two
 different purposes, and it never looks at the MIME `From:`/`To:` headers.
 
 * **Envelope sender → feature profile.** Configure one printer sender address
-  per feature combination, for example `scan-web-ocr@scanner.local`. Unknown
-  senders are rejected.
+  per feature combination, for example `scan-web-ocr@scanner.local`. Once
+  profiles are configured, unknown senders are rejected. Profiles are
+  optional: with none configured, every sender gets the same treatment, and
+  each capability is on exactly when the configuration it needs is present —
+  email once a Graph sender and a recipient-domain allowlist are configured,
+  web downloads once the public base URL is, OCR once the Document
+  Intelligence endpoint is. scan2graph prints the resulting profile at
+  startup, so it is never a mystery why a feature is off.
 * **Envelope recipients → users.** The recipient addresses are matched against
   the signed-in Entra user (email / UPN, plus an optional alias mapping for
   printers that can only store shortened addresses).
@@ -84,9 +90,13 @@ after successful delivery.
 
 ## Security assumptions
 
-* The SMTP listener is meant for a **restricted LAN segment** and therefore has
-  no AUTH and no TLS. Incoming data is nevertheless treated as untrusted and is
-  subject to strict size, nesting and count limits.
+* The SMTP listener is meant for a **restricted LAN segment** and speaks plain
+  TCP without TLS, because that is all these devices can do. It does support
+  SMTP AUTH (PLAIN/LOGIN); if you do not configure credentials, scan2graph
+  generates an ephemeral password at startup and prints it. Running without
+  authentication is possible but has to be opted into explicitly.
+  Incoming data is treated as untrusted regardless, and is subject to strict
+  size, nesting and count limits.
 * scan2graph is **not** a mail relay: it only ever sends *new* messages, to
   envelope recipients that pass a mandatory recipient-domain allowlist.
 * The web UI requires Entra sign-in; every download re-checks server-side that
