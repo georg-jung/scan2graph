@@ -1,0 +1,17 @@
+{{define "content" -}}
+<p><a href="/">&larr; All scans</a></p>
+<h1>{{if .Scan.Subject}}{{.Scan.Subject}}{{else}}Scan{{end}}</h1>
+<p class="muted small">Received {{.Scan.Received}} from {{.Scan.Profile}} &middot;
+  <span class="status {{.Scan.Status}}">{{.Scan.Status}}</span> &middot; {{.Scan.Expires}}</p>
+{{if .Scan.Error}}<p class="error">{{.Scan.Error}}</p>{{end}}
+{{if .StatusURL}}<p class="muted small">Still being processed – this page updates itself.</p>{{end}}
+{{if .Documents}}
+<ul class="docs">
+{{range .Documents}}
+  <li><a href="{{.URL}}" download>{{.Name}}</a> <span class="muted small">{{.Size}}</span></li>
+{{end}}
+</ul>
+{{else}}
+<p class="muted">This scan has no documents.</p>
+{{end}}
+{{- end}}
