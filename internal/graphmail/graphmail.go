@@ -14,23 +14,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
-	"strconv"
-	"time"
+
+	"github.com/georg-jung/scan2graph/internal/msapi"
 )
 
 // maxGraphMessageBytes is Graph's documented limit on the MIME sendMail
 // request body (~4 MB). A constant, not configuration: it is a property of
 // the API, not something an operator can usefully change.
 const maxGraphMessageBytes = 4 * 1024 * 1024
-
-// maxAttempts bounds the retry loop, including the first try.
-const maxAttempts = 4
 
 // ErrTooLarge is returned by Send when the composed message would exceed
 // Graph's size limit. The caller sends a notice instead.
@@ -66,114 +61,29 @@ func (c *Client) Send(ctx context.Context, m Message) error {
 	if err != nil {
 		return err
 	}
-	if n := base64.StdEncoding.EncodedLen(len(raw)); n > maxGraphMessageBytes {
-		return fmt.Errorf("graphmail: message is %d bytes encoded, limit is %d: %w", n, maxGraphMessageBytes, ErrTooLarge)
-	}
 	body := make([]byte, base64.StdEncoding.EncodedLen(len(raw)))
+	if len(body) > maxGraphMessageBytes {
+		return fmt.Errorf("graphmail: message is %d bytes encoded, limit is %d: %w", len(body), maxGraphMessageBytes, ErrTooLarge)
+	}
 	base64.StdEncoding.Encode(body, raw)
 	return c.post(ctx, body)
 }
 
-// post sends the already-encoded body to sendMail, retrying transient
-// failures. 429 and 5xx are retried, honouring Retry-After; any other 4xx
-// is permanent. Context cancellation always wins and is never retried.
+// post sends the already-encoded body to sendMail through the shared msapi
+// retry loop, wrapping any error so it is clear which service failed.
 func (c *Client) post(ctx context.Context, body []byte) error {
 	endpoint := c.BaseURL + "/users/" + url.PathEscape(c.Sender) + "/sendMail"
-
-	var lastErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
+	resp, err := (&msapi.Client{HTTP: c.HTTP}).Do(ctx, func(ctx context.Context) (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
-			return fmt.Errorf("graphmail: build request: %w", err)
+			return nil, err
 		}
 		req.Header.Set("Content-Type", "text/plain")
-
-		resp, err := c.HTTP.Do(req)
-		if err != nil {
-			if cerr := ctx.Err(); cerr != nil {
-				return cerr
-			}
-			lastErr = fmt.Errorf("graphmail: send: %w", err)
-			if attempt == maxAttempts {
-				return lastErr
-			}
-			if err := wait(ctx, 0); err != nil {
-				return err
-			}
-			continue
-		}
-
-		if resp.StatusCode == http.StatusAccepted {
-			resp.Body.Close()
-			return nil
-		}
-
-		lastErr = graphError(resp)
-		retryAfter := resp.Header.Get("Retry-After")
-		resp.Body.Close()
-
-		if !retryableStatus(resp.StatusCode) || attempt == maxAttempts {
-			return lastErr
-		}
-		if err := wait(ctx, retryDelay(retryAfter)); err != nil {
-			return err
-		}
+		return req, nil
+	})
+	if err != nil {
+		return fmt.Errorf("graphmail: %w", err)
 	}
-	return lastErr
-}
-
-func retryableStatus(code int) bool {
-	return code == http.StatusTooManyRequests || code >= 500
-}
-
-// retryDelay parses a Retry-After header (seconds, or an HTTP date) and
-// defaults to no extra wait when it is absent or unparseable -- attempts
-// are already bounded by maxAttempts.
-func retryDelay(h string) time.Duration {
-	if h == "" {
-		return 0
-	}
-	if secs, err := strconv.Atoi(h); err == nil {
-		if secs < 0 {
-			return 0
-		}
-		return time.Duration(secs) * time.Second
-	}
-	if t, err := http.ParseTime(h); err == nil {
-		if d := time.Until(t); d > 0 {
-			return d
-		}
-	}
-	return 0
-}
-
-// wait pauses for d, or returns ctx's error if it is cancelled first.
-func wait(ctx context.Context, d time.Duration) error {
-	if d <= 0 {
-		return ctx.Err()
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-t.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// graphError turns a non-202 response into an error, pulling Graph's
-// error.code/error.message out of the JSON body when present.
-func graphError(resp *http.Response) error {
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	var parsed struct {
-		Error struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if json.Unmarshal(data, &parsed) == nil && parsed.Error.Message != "" {
-		return fmt.Errorf("graphmail: graph error %s: %s: %s", resp.Status, parsed.Error.Code, parsed.Error.Message)
-	}
-	return fmt.Errorf("graphmail: graph error %s", resp.Status)
+	resp.Body.Close()
+	return nil
 }

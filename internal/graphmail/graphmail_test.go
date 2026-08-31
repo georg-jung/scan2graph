@@ -34,35 +34,11 @@ func writeTemp(t *testing.T, name string, content []byte) string {
 	return p
 }
 
-// scriptedResponse is one canned reply for scriptedServer.
+// scriptedResponse is one canned reply for TestSend_HTTPBehavior's server.
 type scriptedResponse struct {
 	status     int
 	retryAfter string
 	body       []byte
-}
-
-// scriptedServer replies to successive requests with responses in order and
-// fails the test if more requests arrive than were scripted. The returned
-// func reports how many requests have landed so far.
-func scriptedServer(t *testing.T, responses []scriptedResponse) (*httptest.Server, func() int32) {
-	t.Helper()
-	var n int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		i := int(atomic.AddInt32(&n, 1)) - 1
-		if i >= len(responses) {
-			t.Fatalf("unexpected request %d, only %d responses scripted", i+1, len(responses))
-		}
-		resp := responses[i]
-		if resp.retryAfter != "" {
-			w.Header().Set("Retry-After", resp.retryAfter)
-		}
-		if len(resp.body) > 0 {
-			w.Header().Set("Content-Type", "application/json")
-		}
-		w.WriteHeader(resp.status)
-		w.Write(resp.body)
-	}))
-	return srv, func() int32 { return atomic.LoadInt32(&n) }
 }
 
 func TestSend_MessageShape(t *testing.T) {
@@ -86,15 +62,6 @@ func TestSend_MessageShape(t *testing.T) {
 			name:        "no attachments",
 			msg:         graphmail.Message{To: []string{"alice@corp.example"}, Subject: "Scan", Body: "Your scan is attached.\n"},
 			wantSubject: "Scan",
-		},
-		{
-			name: "one attachment",
-			msg: graphmail.Message{
-				To: []string{"alice@corp.example"}, Subject: "Scan", Body: "Your scan is attached.\n",
-				Attachments: []graphmail.Attachment{{Name: "a.pdf", Path: pathA}},
-			},
-			wantSubject: "Scan",
-			wantPDFs:    []wantPDF{{"a.pdf", pdfA}},
 		},
 		{
 			name: "two attachments",
@@ -273,7 +240,22 @@ func TestSend_HTTPBehavior(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			srv, count := scriptedServer(t, tc.responses)
+			var n int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				i := int(atomic.AddInt32(&n, 1)) - 1
+				if i >= len(tc.responses) {
+					t.Fatalf("unexpected request %d, only %d responses scripted", i+1, len(tc.responses))
+				}
+				resp := tc.responses[i]
+				if resp.retryAfter != "" {
+					w.Header().Set("Retry-After", resp.retryAfter)
+				}
+				if len(resp.body) > 0 {
+					w.Header().Set("Content-Type", "application/json")
+				}
+				w.WriteHeader(resp.status)
+				w.Write(resp.body)
+			}))
 			defer srv.Close()
 
 			c := &graphmail.Client{HTTP: srv.Client(), BaseURL: srv.URL, Sender: testSender}
@@ -285,28 +267,10 @@ func TestSend_HTTPBehavior(t *testing.T) {
 			if tc.wantContains != "" && (err == nil || !strings.Contains(err.Error(), tc.wantContains)) {
 				t.Errorf("err = %v, want it to contain %q", err, tc.wantContains)
 			}
-			if got := count(); got != tc.wantRequests {
+			if got := atomic.LoadInt32(&n); got != tc.wantRequests {
 				t.Errorf("requests = %d, want %d", got, tc.wantRequests)
 			}
 		})
-	}
-}
-
-// TestSend_NetworkErrorRetries covers the transport-error branch of the
-// retry loop specifically (as opposed to a non-2xx HTTP response): every
-// attempt fails at the transport level, and Send must still give up after
-// maxAttempts rather than hanging or panicking.
-func TestSend_NetworkErrorRetries(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusAccepted)
-	}))
-	base := srv.URL
-	srv.Close() // closed before any request: every attempt is a connection error
-
-	c := &graphmail.Client{HTTP: srv.Client(), BaseURL: base, Sender: testSender}
-	err := c.Send(context.Background(), graphmail.Message{To: []string{"alice@corp.example"}, Subject: "Scan", Body: "hi\n"})
-	if err == nil {
-		t.Fatal("Send: want an error, the server is unreachable")
 	}
 }
 

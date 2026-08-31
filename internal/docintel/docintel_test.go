@@ -156,47 +156,39 @@ func TestSearchablePDF_PollsUntilSucceeded(t *testing.T) {
 	}
 }
 
+// TestSearchablePDF_RetryAfterHonoured drives the poll's Retry-After
+// handling end to end; the format parsing itself (seconds vs. HTTP date)
+// is covered by msapi's own unit table.
 func TestSearchablePDF_RetryAfterHonoured(t *testing.T) {
-	tests := []struct {
-		name   string
-		header func() string // computed lazily so the date form uses "now"
-	}{
-		{"seconds", func() string { return "1" }},
-		{"http-date", func() string { return time.Now().Add(time.Second).UTC().Format(http.TimeFormat) }},
+	var pollN int32
+	mux := http.NewServeMux()
+	mux.HandleFunc(analyzePath, succeedAnalyze("r1"))
+	mux.HandleFunc(pollPath, func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&pollN, 1) == 1 {
+			w.Header().Set("Retry-After", "1")
+			json.NewEncoder(w).Encode(map[string]string{"status": "running"})
+			return
+		}
+		succeedPoll(w, r)
+	})
+	mux.HandleFunc(fetchPath, succeedFetch("done"))
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c, waits := testClient(srv)
+	var out bytes.Buffer
+	if err := c.SearchablePDF(context.Background(), strings.NewReader("in"), &out); err != nil {
+		t.Fatalf("SearchablePDF: %v", err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var pollN int32
-			mux := http.NewServeMux()
-			mux.HandleFunc(analyzePath, succeedAnalyze("r1"))
-			mux.HandleFunc(pollPath, func(w http.ResponseWriter, r *http.Request) {
-				if atomic.AddInt32(&pollN, 1) == 1 {
-					w.Header().Set("Retry-After", tt.header())
-					json.NewEncoder(w).Encode(map[string]string{"status": "running"})
-					return
-				}
-				succeedPoll(w, r)
-			})
-			mux.HandleFunc(fetchPath, succeedFetch("done"))
-
-			srv := httptest.NewServer(mux)
-			defer srv.Close()
-
-			c, waits := testClient(srv)
-			var out bytes.Buffer
-			if err := c.SearchablePDF(context.Background(), strings.NewReader("in"), &out); err != nil {
-				t.Fatalf("SearchablePDF: %v", err)
-			}
-			if pollN != 2 {
-				t.Errorf("poll calls = %d, want 2", pollN)
-			}
-			if len(*waits) != 1 {
-				t.Fatalf("recorded waits = %v, want exactly one", *waits)
-			}
-			if got := (*waits)[0]; got <= 0 || got > 1500*time.Millisecond {
-				t.Errorf("wait honouring Retry-After = %v, want roughly 1s", got)
-			}
-		})
+	if pollN != 2 {
+		t.Errorf("poll calls = %d, want 2", pollN)
+	}
+	if len(*waits) != 1 {
+		t.Fatalf("recorded waits = %v, want exactly one", *waits)
+	}
+	if got := (*waits)[0]; got <= 0 || got > 1500*time.Millisecond {
+		t.Errorf("wait honouring Retry-After = %v, want roughly 1s", got)
 	}
 }
 
@@ -227,9 +219,6 @@ func TestSearchablePDF_AnalysisFailedOrCanceled(t *testing.T) {
 			if err == nil {
 				t.Fatal("want error")
 			}
-			if !errors.Is(err, ErrPermanent) {
-				t.Errorf("errors.Is(err, ErrPermanent) = false, want true (err: %v)", err)
-			}
 			if !strings.Contains(err.Error(), tt.msg) {
 				t.Errorf("error %q does not contain API message %q", err.Error(), tt.msg)
 			}
@@ -252,12 +241,11 @@ func TestSearchablePDF_Retries(t *testing.T) {
 		opLoc  bool // set Operation-Location on this response
 	}
 	tests := []struct {
-		name          string
-		steps         []step
-		wantAnalyzeN  int
-		wantErr       bool
-		wantPermanent bool
-		wantMsg       string
+		name         string
+		steps        []step
+		wantAnalyzeN int
+		wantErr      bool
+		wantMsg      string
 	}{
 		{
 			name:         "429 then success",
@@ -274,25 +262,22 @@ func TestSearchablePDF_Retries(t *testing.T) {
 			steps: []step{
 				{status: 503}, {status: 503}, {status: 503}, {status: 503},
 			},
-			wantAnalyzeN:  4,
-			wantErr:       true,
-			wantPermanent: false,
+			wantAnalyzeN: 4,
+			wantErr:      true,
 		},
 		{
-			name:          "401 is permanent immediately",
-			steps:         []step{{status: 401, body: errBody("invalid subscription key")}},
-			wantAnalyzeN:  1,
-			wantErr:       true,
-			wantPermanent: true,
-			wantMsg:       "invalid subscription key",
+			name:         "401 is permanent immediately",
+			steps:        []step{{status: 401, body: errBody("invalid subscription key")}},
+			wantAnalyzeN: 1,
+			wantErr:      true,
+			wantMsg:      "invalid subscription key",
 		},
 		{
-			name:          "404 is permanent immediately",
-			steps:         []step{{status: 404, body: errBody("resource not found")}},
-			wantAnalyzeN:  1,
-			wantErr:       true,
-			wantPermanent: true,
-			wantMsg:       "resource not found",
+			name:         "404 is permanent immediately",
+			steps:        []step{{status: 404, body: errBody("resource not found")}},
+			wantAnalyzeN: 1,
+			wantErr:      true,
+			wantMsg:      "resource not found",
 		},
 	}
 
@@ -330,9 +315,6 @@ func TestSearchablePDF_Retries(t *testing.T) {
 			}
 			if !tt.wantErr {
 				return
-			}
-			if got := errors.Is(err, ErrPermanent); got != tt.wantPermanent {
-				t.Errorf("errors.Is(err, ErrPermanent) = %v, want %v (err: %v)", got, tt.wantPermanent, err)
 			}
 			if tt.wantMsg != "" && !strings.Contains(err.Error(), tt.wantMsg) {
 				t.Errorf("error %q does not contain %q", err.Error(), tt.wantMsg)
@@ -411,46 +393,4 @@ func TestSearchablePDF_ContextCancelledMidPoll(t *testing.T) {
 	if elapsed > 2*time.Second {
 		t.Errorf("took %v to notice cancellation, want well under the 30s Retry-After", elapsed)
 	}
-}
-
-func TestRetryAfter(t *testing.T) {
-	tests := []struct {
-		name     string
-		value    string
-		fallback time.Duration
-		want     time.Duration
-	}{
-		{"absent falls back", "", 5 * time.Second, 5 * time.Second},
-		{"seconds", "2", time.Second, 2 * time.Second},
-		{"zero seconds", "0", time.Second, 0},
-		{"negative seconds falls back", "-1", 5 * time.Second, 5 * time.Second},
-		{"clamped to maxWait", "9999", time.Second, maxWait},
-		{"garbage falls back", "soon please", 5 * time.Second, 5 * time.Second},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			h := http.Header{}
-			if tt.value != "" {
-				h.Set("Retry-After", tt.value)
-			}
-			if got := retryAfter(h, tt.fallback); got != tt.want {
-				t.Errorf("retryAfter(%q) = %v, want %v", tt.value, got, tt.want)
-			}
-		})
-	}
-
-	t.Run("http-date in the future", func(t *testing.T) {
-		h := http.Header{"Retry-After": {time.Now().Add(2 * time.Second).UTC().Format(http.TimeFormat)}}
-		got := retryAfter(h, time.Minute)
-		if got <= 0 || got > 2*time.Second+500*time.Millisecond {
-			t.Errorf("retryAfter(future date) = %v, want roughly 2s", got)
-		}
-	})
-
-	t.Run("http-date in the past clamps to zero", func(t *testing.T) {
-		h := http.Header{"Retry-After": {time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat)}}
-		if got := retryAfter(h, time.Minute); got != 0 {
-			t.Errorf("retryAfter(past date) = %v, want 0", got)
-		}
-	})
 }

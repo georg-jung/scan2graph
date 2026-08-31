@@ -33,10 +33,6 @@ const jobTimeout = 30 * time.Minute
 // outstanding scans; this only keeps a burst from being dropped.
 const queuePerWorker = 8
 
-// ErrQueueFull is returned by Enqueue when every queue slot is taken. The
-// SMTP layer turns it into a 451 so the device retries.
-var ErrQueueFull = errors.New("pipeline: queue is full")
-
 // User-visible failure reasons. They are stored on the job (the web UI shows
 // them) and used as the notice text, so they never name an internal error, a
 // path or a token.
@@ -48,7 +44,7 @@ const (
 
 // OCR turns a PDF into a searchable one. Implemented by *docintel.Client.
 type OCR interface {
-	SearchablePDF(ctx context.Context, pdf io.Reader, out io.Writer) error
+	SearchablePDF(ctx context.Context, pdf io.ReadSeeker, out io.Writer) error
 }
 
 // Mailer sends one composed message. Implemented by *graphmail.Client.
@@ -80,9 +76,9 @@ type Pipeline struct {
 	queue   chan jobs.Job
 }
 
-// New creates a Pipeline. Workers below one is treated as one.
+// New creates a Pipeline. opts.Workers must be at least one; config
+// validation already guarantees that.
 func New(opts Options) *Pipeline {
-	workers := max(opts.Workers, 1)
 	log := opts.Logger
 	if log == nil {
 		log = slog.Default()
@@ -92,21 +88,21 @@ func New(opts Options) *Pipeline {
 		ocr:     opts.OCR,
 		mailer:  opts.Mailer,
 		baseURL: opts.BaseURL,
-		workers: workers,
+		workers: opts.Workers,
 		log:     log,
-		queue:   make(chan jobs.Job, workers*queuePerWorker),
+		queue:   make(chan jobs.Job, opts.Workers*queuePerWorker),
 	}
 }
 
 // Enqueue hands an accepted job to the workers. It is called from inside an
 // SMTP transaction while the printer waits, so it never blocks: a full queue
-// returns ErrQueueFull immediately.
+// returns an error immediately.
 func (p *Pipeline) Enqueue(job jobs.Job) error {
 	select {
 	case p.queue <- job:
 		return nil
 	default:
-		return ErrQueueFull
+		return errors.New("pipeline: queue is full")
 	}
 }
 

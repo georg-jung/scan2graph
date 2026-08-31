@@ -77,10 +77,28 @@ func run(cfg *config.Config) error {
 
 	go store.Run(ctx)
 
+	var ocr pipeline.OCR // interface-typed: a nil *docintel.Client would not be nil here
+	if cfg.DIEndpoint != "" {
+		ocr = &docintel.Client{
+			HTTP:       msClient(ctx, cfg, cfg.DIScope),
+			Endpoint:   cfg.DIEndpoint,
+			APIVersion: cfg.DIAPIVersion,
+		}
+	}
+
+	var mailer pipeline.Mailer // same reason: interface-typed even when nil
+	if cfg.GraphSender != "" {
+		mailer = &graphmail.Client{
+			HTTP:    msClient(ctx, cfg, cfg.GraphScope),
+			BaseURL: cfg.GraphBaseURL,
+			Sender:  cfg.GraphSender,
+		}
+	}
+
 	pipe := pipeline.New(pipeline.Options{
 		Store:   store,
-		OCR:     newOCR(ctx, cfg),
-		Mailer:  newMailer(ctx, cfg),
+		OCR:     ocr,
+		Mailer:  mailer,
 		BaseURL: cfg.PublicBaseURL,
 		Workers: cfg.Limits.MaxConcurrentJobs,
 		Logger:  slog.Default(),
@@ -91,12 +109,13 @@ func run(cfg *config.Config) error {
 		pipe.Run(ctx)
 	}()
 
+	errCh := make(chan error, 2)
+
 	smtpSrv := smtpin.New(cfg, store, pipe, slog.Default())
-	smtpErrCh := make(chan error, 1)
 	go func() {
 		slog.Info("smtp listening", "addr", cfg.SMTPAddr)
 		if err := smtpSrv.ListenAndServe(); err != nil && !errors.Is(err, smtp.ErrServerClosed) {
-			smtpErrCh <- fmt.Errorf("smtp server: %w", err)
+			errCh <- fmt.Errorf("smtp server: %w", err)
 		}
 	}()
 	defer smtpSrv.Close()
@@ -107,7 +126,6 @@ func run(cfg *config.Config) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	errCh := make(chan error, 1)
 	go func() {
 		slog.Info("http listening", "addr", cfg.HTTPAddr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -117,8 +135,6 @@ func run(cfg *config.Config) error {
 
 	select {
 	case err := <-errCh:
-		return err
-	case err := <-smtpErrCh:
 		return err
 	case <-ctx.Done():
 		slog.Info("shutdown signal received")
@@ -133,34 +149,6 @@ func run(cfg *config.Config) error {
 	// they were doing is lost either way - that is the ephemeral contract.
 	<-pipeDone
 	return err
-}
-
-// newOCR builds the Document Intelligence client, or returns nil when no
-// profile asks for OCR. The token source caches and refreshes on its own.
-// It returns the interface type on purpose: a nil *docintel.Client in an
-// interface field would not compare equal to nil.
-func newOCR(ctx context.Context, cfg *config.Config) pipeline.OCR {
-	if cfg.DIEndpoint == "" {
-		return nil
-	}
-	return &docintel.Client{
-		HTTP:       msClient(ctx, cfg, cfg.DIScope),
-		Endpoint:   cfg.DIEndpoint,
-		APIVersion: cfg.DIAPIVersion,
-	}
-}
-
-// newMailer builds the Graph client, or returns nil when no profile asks for
-// email delivery. Interface-typed for the same reason as newOCR.
-func newMailer(ctx context.Context, cfg *config.Config) pipeline.Mailer {
-	if cfg.GraphSender == "" {
-		return nil
-	}
-	return &graphmail.Client{
-		HTTP:    msClient(ctx, cfg, cfg.GraphScope),
-		BaseURL: cfg.GraphBaseURL,
-		Sender:  cfg.GraphSender,
-	}
 }
 
 // msClient returns an HTTP client that attaches an app-only access token for
