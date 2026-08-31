@@ -338,11 +338,6 @@ func TestLoadLimitValidation(t *testing.T) {
 }
 
 func TestLoadProfilesValidation(t *testing.T) {
-	t.Run("missing entirely", func(t *testing.T) {
-		env := clone(baseEnv())
-		delete(env, "S2G_PROFILES")
-		wantLoadErr(t, env, "S2G_PROFILES")
-	})
 	t.Run("malformed json", func(t *testing.T) {
 		env := clone(baseEnv())
 		env["S2G_PROFILES"] = `{not valid json`
@@ -356,17 +351,12 @@ func TestLoadProfilesValidation(t *testing.T) {
 	t.Run("invalid key", func(t *testing.T) {
 		env := clone(baseEnv())
 		env["S2G_PROFILES"] = `{"not-an-address":{"email":true}}`
-		wantLoadErr(t, env, "S2G_PROFILES", "not a valid address", "must define at least one valid profile")
+		wantLoadErr(t, env, "S2G_PROFILES", "not a valid address")
 	})
 	t.Run("all capabilities false", func(t *testing.T) {
 		env := clone(baseEnv())
 		env["S2G_PROFILES"] = `{"scan@scanner.local":{"email":false,"web":false,"ocr":false}}`
-		wantLoadErr(t, env, "S2G_PROFILES", "no capability enabled", "must define at least one valid profile")
-	})
-	t.Run("empty object", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_PROFILES"] = `{}`
-		wantLoadErr(t, env, "S2G_PROFILES", "must define at least one valid profile")
+		wantLoadErr(t, env, "S2G_PROFILES", "no capability enabled")
 	})
 	t.Run("duplicate keys after normalization", func(t *testing.T) {
 		env := clone(baseEnv())
@@ -1003,4 +993,68 @@ func TestLoadRejectsMalformedRecipientDomains(t *testing.T) {
 			wantLoadErr(t, env, "S2G_ALLOWED_RECIPIENT_DOMAINS")
 		})
 	}
+}
+
+func TestLoadDefaultProfile(t *testing.T) {
+	t.Run("every sender gets email and web", func(t *testing.T) {
+		env := clone(baseEnv())
+		delete(env, "S2G_PROFILES")
+		delete(env, "S2G_DI_ENDPOINT")
+
+		c, err := Load(fakeGetenv(env))
+		if err != nil {
+			t.Fatalf("Load() = %v", err)
+		}
+		want := Capabilities{Email: true, Web: true, OCR: false}
+		if c.DefaultProfile != want {
+			t.Errorf("DefaultProfile = %+v, want %+v", c.DefaultProfile, want)
+		}
+		for _, sender := range []string{"anything@scanner.local", "Copier@Printer.Example"} {
+			cp, ok := c.Profile(sender)
+			if !ok || cp != want {
+				t.Errorf("Profile(%q) = %+v, %t; want %+v, true", sender, cp, ok, want)
+			}
+		}
+		if _, ok := c.Profile("not-an-address"); ok {
+			t.Error("Profile(\"not-an-address\") = ok, want rejected")
+		}
+	})
+
+	t.Run("ocr follows the Document Intelligence endpoint", func(t *testing.T) {
+		env := clone(baseEnv())
+		delete(env, "S2G_PROFILES")
+
+		c, err := Load(fakeGetenv(env))
+		if err != nil {
+			t.Fatalf("Load() = %v", err)
+		}
+		if !c.DefaultProfile.OCR {
+			t.Error("DefaultProfile.OCR = false, want true when S2G_DI_ENDPOINT is set")
+		}
+	})
+
+	t.Run("requires a graph sender and a domain allowlist", func(t *testing.T) {
+		env := clone(baseEnv())
+		delete(env, "S2G_PROFILES")
+		delete(env, "S2G_GRAPH_SENDER")
+		delete(env, "S2G_ALLOWED_RECIPIENT_DOMAINS")
+		wantLoadErr(t, env, "S2G_GRAPH_SENDER", "S2G_ALLOWED_RECIPIENT_DOMAINS", "S2G_PROFILES is not configured")
+	})
+
+	t.Run("requires a public base URL", func(t *testing.T) {
+		env := clone(baseEnv())
+		delete(env, "S2G_PROFILES")
+		delete(env, "S2G_PUBLIC_BASE_URL")
+		wantLoadErr(t, env, "S2G_PUBLIC_BASE_URL", "S2G_PROFILES is not configured")
+	})
+
+	t.Run("configured profiles still reject unknown senders", func(t *testing.T) {
+		c, err := Load(fakeGetenv(baseEnv()))
+		if err != nil {
+			t.Fatalf("Load() = %v", err)
+		}
+		if _, ok := c.Profile("someone-else@scanner.local"); ok {
+			t.Error("Profile(unknown sender) = ok, want rejected when profiles are configured")
+		}
+	})
 }

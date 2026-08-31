@@ -58,8 +58,14 @@ type Config struct {
 	SMTPPasswordGenerated bool
 
 	// Profiles maps a canonical envelope-sender address to the capabilities
-	// it enables. Keys are normalized with NormalizeAddress.
+	// it enables. Keys are normalized with NormalizeAddress. It may be
+	// empty, in which case DefaultProfile applies to every sender.
 	Profiles map[string]Capabilities
+	// DefaultProfile is what every sender gets when no profiles are
+	// configured: email and web, plus OCR when a Document Intelligence
+	// endpoint is configured. It is the zero value when Profiles is not
+	// empty.
+	DefaultProfile Capabilities
 	// RecipientAliases maps a canonical alias address to the canonical
 	// identity address it stands for. Applied exactly once by Canonical.
 	RecipientAliases map[string]string
@@ -111,24 +117,35 @@ func Load(getenv func(string) string) (*Config, error) {
 		anyWeb = anyWeb || cp.Web
 		anyOCR = anyOCR || cp.OCR
 	}
-	anyProfile := len(c.Profiles) > 0
 
-	c.AllowedRecipientDomains = l.domains(anyEmail)
-
-	c.PublicBaseURL = l.baseURL("S2G_PUBLIC_BASE_URL", anyWeb,
-		`at least one sender profile has "web" enabled`, "http", "https")
-
-	c.GraphSender = l.graphSender(anyEmail)
-
+	// Without profiles, OCR is on exactly when a Document Intelligence
+	// endpoint is configured, so the endpoint is only ever *required* by an
+	// explicit profile that asks for it.
 	c.DIEndpoint = l.baseURL("S2G_DI_ENDPOINT", anyOCR,
 		`at least one sender profile has "ocr" enabled`, "https")
 	c.DIAPIVersion = l.stringDefault("S2G_DI_API_VERSION", "2024-11-30")
 	c.DIScope = l.stringDefault("S2G_DI_SCOPE", "https://cognitiveservices.azure.com/.default")
 
-	const identityReason = "at least one sender profile is configured (tenant, client id and client secret are needed for OIDC login and app-only client-credential tokens)"
-	c.TenantID = l.requiredIf("S2G_ENTRA_TENANT_ID", anyProfile, identityReason)
-	c.ClientID = l.requiredIf("S2G_ENTRA_CLIENT_ID", anyProfile, identityReason)
-	c.ClientSecret = l.requiredIf("S2G_ENTRA_CLIENT_SECRET", anyProfile, identityReason)
+	emailReason := `at least one sender profile has "email" enabled`
+	webReason := `at least one sender profile has "web" enabled`
+	if len(c.Profiles) == 0 {
+		anyEmail, anyWeb = true, true
+		anyOCR = c.DIEndpoint != ""
+		c.DefaultProfile = Capabilities{Email: anyEmail, Web: anyWeb, OCR: anyOCR}
+		emailReason = "S2G_PROFILES is not configured, so the default profile emails every scan (configure S2G_PROFILES to change that)"
+		webReason = "S2G_PROFILES is not configured, so the default profile publishes every scan in the web UI (configure S2G_PROFILES to change that)"
+	}
+
+	c.AllowedRecipientDomains = l.domains(anyEmail, emailReason)
+
+	c.PublicBaseURL = l.baseURL("S2G_PUBLIC_BASE_URL", anyWeb, webReason, "http", "https")
+
+	c.GraphSender = l.graphSender(anyEmail, emailReason)
+
+	const identityReason = "scan2graph always needs an Entra app registration (for the web UI's OIDC login and for app-only Graph/Document Intelligence tokens)"
+	c.TenantID = l.requiredIf("S2G_ENTRA_TENANT_ID", true, identityReason)
+	c.ClientID = l.requiredIf("S2G_ENTRA_CLIENT_ID", true, identityReason)
+	c.ClientSecret = l.requiredIf("S2G_ENTRA_CLIENT_SECRET", true, identityReason)
 
 	c.AuthorityURL = l.tenantURL("S2G_ENTRA_AUTHORITY_URL", c.TenantID, "/v2.0")
 	c.TokenURL = l.tenantURL("S2G_ENTRA_TOKEN_URL", c.TenantID, "/oauth2/v2.0/token")
@@ -146,10 +163,12 @@ func Load(getenv func(string) string) (*Config, error) {
 	return c, nil
 }
 
-// profiles resolves and validates S2G_PROFILES: a required JSON object
+// profiles resolves and validates S2G_PROFILES: an optional JSON object
 // mapping envelope-sender address to Capabilities. Keys are normalized with
 // NormalizeAddress; unknown JSON fields, invalid keys, all-false capability
-// sets and keys that collide after normalization are all errors.
+// sets and keys that collide after normalization are all errors. An empty
+// result means "no profiles configured", which makes Config.DefaultProfile
+// apply to every sender.
 func (l *loader) profiles() map[string]Capabilities {
 	raw, ok := decodeStringMap[Capabilities](l, "S2G_PROFILES")
 	if !ok {
@@ -172,9 +191,6 @@ func (l *loader) profiles() map[string]Capabilities {
 			continue
 		}
 		out[canon] = cp
-	}
-	if len(out) == 0 {
-		l.errorf("S2G_PROFILES must define at least one valid profile")
 	}
 	return out
 }
@@ -219,14 +235,14 @@ func (l *loader) aliases(profiles map[string]Capabilities) map[string]string {
 // domains resolves and validates S2G_ALLOWED_RECIPIENT_DOMAINS: an optional
 // comma-separated list of domains, lowercased and deduplicated. It is
 // required (and an error if it ends up empty) whenever required is true.
-func (l *loader) domains(required bool) []string {
+func (l *loader) domains(required bool, reason string) []string {
 	raw, ok := l.resolve("S2G_ALLOWED_RECIPIENT_DOMAINS")
 	var out []string
 	if ok {
 		out = l.parseDomains(raw)
 	}
 	if required && len(out) == 0 {
-		l.errorf(`S2G_ALLOWED_RECIPIENT_DOMAINS is required because at least one sender profile has "email" enabled: without a recipient domain allowlist scan2graph would be an open mail relay`)
+		l.errorf("S2G_ALLOWED_RECIPIENT_DOMAINS is required because %s: without a recipient domain allowlist scan2graph would be an open mail relay", reason)
 	}
 	return out
 }
@@ -275,8 +291,8 @@ func validDomain(d string) bool {
 
 // graphSender resolves and validates S2G_GRAPH_SENDER, required whenever
 // required is true: a mailbox address, normalized like any other address.
-func (l *loader) graphSender(required bool) string {
-	raw := l.requiredIf("S2G_GRAPH_SENDER", required, `at least one sender profile has "email" enabled`)
+func (l *loader) graphSender(required bool, reason string) string {
+	raw := l.requiredIf("S2G_GRAPH_SENDER", required, reason)
 	if raw == "" {
 		return ""
 	}
@@ -400,13 +416,17 @@ func (l *loader) logFormat() string {
 }
 
 // Profile looks up the sender profile for an SMTP envelope sender address.
-// It normalizes envelopeSender first; ok is false for an implausible
-// address or an address with no configured profile (the caller should
-// reject the SMTP transaction in both cases).
+// It normalizes envelopeSender first; ok is false for an implausible address
+// or an address with no configured profile (the caller should reject the
+// SMTP transaction in both cases). When no profiles are configured at all,
+// DefaultProfile applies to every plausible sender.
 func (c *Config) Profile(envelopeSender string) (Capabilities, bool) {
 	n := NormalizeAddress(envelopeSender)
 	if n == "" {
 		return Capabilities{}, false
+	}
+	if len(c.Profiles) == 0 {
+		return c.DefaultProfile, true
 	}
 	cp, ok := c.Profiles[n]
 	return cp, ok
@@ -489,6 +509,10 @@ func (c *Config) LogValue() slog.Value {
 	for _, addr := range names {
 		cp := c.Profiles[addr]
 		profiles = append(profiles, fmt.Sprintf("%s(email=%t,web=%t,ocr=%t)", addr, cp.Email, cp.Web, cp.OCR))
+	}
+	if len(profiles) == 0 {
+		cp := c.DefaultProfile
+		profiles = append(profiles, fmt.Sprintf("<any sender>(email=%t,web=%t,ocr=%t)", cp.Email, cp.Web, cp.OCR))
 	}
 
 	return slog.GroupValue(
