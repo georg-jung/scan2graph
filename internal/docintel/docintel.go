@@ -55,7 +55,11 @@ func (c *Client) SearchablePDF(ctx context.Context, pdf io.ReadSeeker, out io.Wr
 		if _, err := pdf.Seek(0, io.SeekStart); err != nil {
 			return nil, err
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.analyzeURL(), pdf)
+		// NopCloser, because the caller owns this reader: net/http closes a
+		// request body that happens to be an io.ReadCloser, and the caller's
+		// *os.File is one - so without this the seek above fails with
+		// "file already closed" on every retry.
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.analyzeURL(), io.NopCloser(pdf))
 		if err != nil {
 			return nil, err
 		}
