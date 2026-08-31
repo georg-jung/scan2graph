@@ -247,7 +247,7 @@ func TestProcess(t *testing.T) {
 			ocrErr:     errors.New("document intelligence said no"),
 			wantOCR:    1,
 			wantSends:  1,
-			wantNotice: []string{reasonOCRFailedWeb, "download the original scan", testBaseURL + "/scan/"},
+			wantNotice: []string{reasonOCRFailedWeb, "download the scan", testBaseURL + "/scan/"},
 			wantStatus: jobs.StatusFailed,
 			wantStored: "scan",
 		},

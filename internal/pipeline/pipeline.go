@@ -127,6 +127,13 @@ func (p *Pipeline) Run(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			for {
+				// Checked before the select: with both cases ready Go picks
+				// at random, so a full queue could otherwise start job after
+				// job that is already doomed, each spending its notice
+				// timeout, and push shutdown past the container's grace.
+				if ctx.Err() != nil {
+					return
+				}
 				select {
 				case <-ctx.Done():
 					return
@@ -276,7 +283,7 @@ func (p *Pipeline) notice(ctx context.Context, job jobs.Job, reason string) {
 
 	body := reason + "\n\n"
 	if job.Caps.Web && p.baseURL != "" {
-		body += fmt.Sprintf("You can download the original scan here for the next %d minutes:\n%s/scan/%s\n",
+		body += fmt.Sprintf("You can download the scan here for the next %d minutes:\n%s/scan/%s\n",
 			int(time.Until(job.ExpiresAt).Minutes()), p.baseURL, job.ID)
 	} else {
 		body += "Try scanning fewer pages or at a lower resolution, " +

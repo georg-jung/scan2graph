@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/emersion/go-smtp"
+	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 
 	"github.com/georg-jung/scan2graph/internal/config"
@@ -80,7 +81,7 @@ func run(cfg *config.Config) error {
 	var ocr pipeline.OCR // interface-typed: a nil *docintel.Client would not be nil here
 	if cfg.DIEndpoint != "" {
 		ocr = &docintel.Client{
-			HTTP:       msClient(ctx, cfg, cfg.DIScope),
+			HTTP:       msClient(cfg, cfg.DIScope),
 			Endpoint:   cfg.DIEndpoint,
 			APIVersion: cfg.DIAPIVersion,
 		}
@@ -89,7 +90,7 @@ func run(cfg *config.Config) error {
 	var mailer pipeline.Mailer // same reason: interface-typed even when nil
 	if cfg.GraphSender != "" {
 		mailer = &graphmail.Client{
-			HTTP:    msClient(ctx, cfg, cfg.GraphScope),
+			HTTP:    msClient(cfg, cfg.GraphScope),
 			BaseURL: cfg.GraphBaseURL,
 			Sender:  cfg.GraphSender,
 		}
@@ -103,10 +104,15 @@ func run(cfg *config.Config) error {
 		Workers: cfg.Limits.MaxConcurrentJobs,
 		Logger:  slog.Default(),
 	})
+	// The workers get their own context, cancelled only after the SMTP
+	// listener is closed: a scan accepted while they are already gone would
+	// be answered with 250 and then dropped on the floor.
+	pipeCtx, stopWorkers := context.WithCancel(context.Background())
+	defer stopWorkers()
 	pipeDone := make(chan struct{})
 	go func() {
 		defer close(pipeDone)
-		pipe.Run(ctx)
+		pipe.Run(pipeCtx)
 	}()
 
 	errCh := make(chan error, 2)
@@ -150,27 +156,38 @@ func run(cfg *config.Config) error {
 	defer cancel()
 	err = srv.Shutdown(shutdownCtx)
 
-	// No new job can arrive now; wait for the workers to notice the cancelled
-	// context. Whatever they were doing is lost either way - that is the
+	// Only now that nothing can hand them another scan do the workers wind
+	// down. Whatever they were doing is lost either way - that is the
 	// ephemeral contract.
+	stopWorkers()
 	<-pipeDone
 	return err
 }
 
 // msClient returns an HTTP client that attaches an app-only access token for
 // one scope, acquired with the Entra app registration and refreshed as needed.
-func msClient(ctx context.Context, cfg *config.Config, scope string) *http.Client {
+func msClient(cfg *config.Config, scope string) *http.Client {
+	base := &http.Client{
+		Timeout: 5 * time.Minute,
+		// Never follow a redirect: this client attaches the bearer token to
+		// whatever URL it is handed, so a 3xx could walk it to another origin.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	cc := &clientcredentials.Config{
 		ClientID:     cfg.ClientID,
 		ClientSecret: cfg.ClientSecret,
 		TokenURL:     cfg.TokenURL,
 		Scopes:       []string{scope},
 	}
-	c := cc.Client(ctx)
-	c.Timeout = 5 * time.Minute
-	// Never follow a redirect: this client attaches the bearer token to
-	// whatever URL it is handed, so a 3xx could walk it to another origin.
-	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	// Deliberately not the process context: oauth2 keeps whatever context it
+	// is given for every future token request, so cancelling it on SIGTERM
+	// would leave the shutdown notice unable to get a token - the one message
+	// that has to go out when everything else is failing. The base client's
+	// timeout is what bounds a hung Entra instead.
+	tokenCtx := context.WithValue(context.Background(), oauth2.HTTPClient, base)
+	c := cc.Client(tokenCtx)
+	c.Timeout = base.Timeout
+	c.CheckRedirect = base.CheckRedirect
 	return c
 }
 
