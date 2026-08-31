@@ -1,0 +1,32 @@
+# Example Compose file for scan2graph.
+#
+# Copy this next to a real .env (start from .env.example) and run:
+#   docker compose -f docker-compose.example.yml up -d
+#
+# scan2graph speaks plain HTTP and plain SMTP; see README.md for the reverse
+# proxy that terminates TLS in front of it and for the full environment
+# variable reference.
+services:
+  scan2graph:
+    image: ghcr.io/georg-jung/scan2graph:latest
+    restart: unless-stopped
+    env_file: .env
+
+    ports:
+      # HTTP is only for the reverse proxy running on this same host, so it
+      # is bound to loopback, not published on the LAN.
+      - "127.0.0.1:8080:8080"
+      # SMTP is what the printer connects to, so it has to be reachable from
+      # the rest of the LAN segment - adjust the address if this host has
+      # more than one interface and you want to restrict it further.
+      - "2525:2525"
+
+    # No database, no queue, no volume: nothing here needs to survive a restart.
+    read_only: true
+    tmpfs:
+      # The one directory scan2graph writes to (S2G_TEMP_DIR defaults to /tmp).
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
