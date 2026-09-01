@@ -39,7 +39,7 @@ export default defineConfig({
   // two processes live and die together.
   webServer: [
     {
-      command: `cd .. && go build -o e2e/.bin/fakes ./e2e/fakes && exec e2e/.bin/fakes -cert-file "${path.join(tmp, 'fake-ca.pem')}"`,
+      command: `cd .. && go build -o e2e/.bin/fakes ./e2e/fakes && exec e2e/.bin/fakes -cert-file "${path.join(tmp, 'fake-ca.pem')}" -secret "${FIXTURE_SECRET}"`,
       url: 'http://127.0.0.1:19000/idp/.well-known/openid-configuration',
       reuseExistingServer: false,
       timeout: 120_000,

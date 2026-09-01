@@ -32,16 +32,19 @@ import (
 // Fixture values, all obviously fake and all in one place: a secret scanner
 // has nothing to find and no handler invents a second literal.
 const (
-	fixtureSecret = "fixture-not-a-real-secret"
-	clientID      = "00000000-0000-0000-0000-000000000001"
-	redirectURI   = "http://127.0.0.1:18080/auth/callback"
-	appToken      = "fake-app-token"  // prefix; the scope is appended to it
-	userToken     = "fake-user-token" // throwaway, nothing here reads it
-	graphSender   = "scanner@corp.example"
-	graphScope    = "https://graph.microsoft.com/.default"
-	diScope       = "https://cognitiveservices.azure.com/.default"
-	keyID         = "fake-key"
+	clientID    = "00000000-0000-0000-0000-000000000001"
+	redirectURI = "http://127.0.0.1:18080/auth/callback"
+	appToken    = "fake-app-token"  // prefix; the scope is appended to it
+	userToken   = "fake-user-token" // throwaway, nothing here reads it
+	graphSender = "scanner@corp.example"
+	graphScope  = "https://graph.microsoft.com/.default"
+	diScope     = "https://cognitiveservices.azure.com/.default"
+	keyID       = "fake-key"
 )
+
+// fixtureSecret is the one credential this harness knows, supplied by the
+// suite through -secret.
+var fixtureSecret string
 
 // Listen addresses. Both the appliance under test (playwright.config.mjs)
 // and the suite's fake clients (e2e/lib/fakes.mjs) hardcode these too, so a
@@ -91,7 +94,14 @@ type fakes struct {
 
 func main() {
 	certFile := flag.String("cert-file", "./.tmp/fake-ca.pem", "where to write the certificate the appliance must trust")
+	// No default: the suite owns the fixture credential (e2e/lib/fakes.mjs)
+	// and hands it to both the appliance and this process, so there is one
+	// copy of it in the repository rather than one per language.
+	flag.StringVar(&fixtureSecret, "secret", "", "the client secret the appliance authenticates with")
 	flag.Parse()
+	if fixtureSecret == "" {
+		log.Fatal("fakes: -secret is required")
+	}
 
 	log.SetFlags(0)
 	log.SetPrefix("fakes: ")
@@ -173,6 +183,8 @@ func (f *fakes) clear() {
 	f.subs = []submission{}
 	f.messages = []graphMessage{}
 	f.analyses = map[string]*analysis{}
+	f.pending = map[string]pendingAuth{}
+	f.codes = map[string]grant{}
 }
 
 func (f *fakes) reset(w http.ResponseWriter, _ *http.Request) {

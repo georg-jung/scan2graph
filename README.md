@@ -118,11 +118,13 @@ flow) — there is nothing to register twice.
 3. **Certificates & secrets → New client secret.** The value is shown once;
    copy it into `S2G_ENTRA_CLIENT_SECRET` (or, preferably,
    `S2G_ENTRA_CLIENT_SECRET_FILE`).
-4. **API permissions → Add a permission → Microsoft Graph → Application
+4. **Only if a profile sends email** (i.e. you configure `S2G_GRAPH_SENDER`):
+   **API permissions → Add a permission → Microsoft Graph → Application
    permissions → `Mail.Send`**, then **Grant admin consent**. This is what
-   lets scan2graph's app-only token call `sendMail`. Sign-in itself needs no
-   extra permission: it only requests the standard OIDC `openid`, `profile`
-   and `email` scopes, none of which need consent.
+   lets scan2graph's app-only token call `sendMail`. A web-only deployment
+   never constructs a mailer and should not be granted it. Sign-in itself
+   needs no extra permission either: it only requests the standard OIDC
+   `openid`, `profile` and `email` scopes, none of which need consent.
 
 ## Azure Document Intelligence
 

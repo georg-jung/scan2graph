@@ -340,6 +340,11 @@ func TestTTLExpiryRemovesFilesFromDisk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
+	// Ready, because that is when the window starts: a job the pipeline has
+	// not finished with does not age at all.
+	if err := s.SetStatus(job.ID, StatusReady, ""); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
 
 	if n := s.CleanExpired(); n != 0 {
 		t.Fatalf("CleanExpired before TTL = %d, want 0", n)
@@ -401,6 +406,10 @@ func TestListForUserFiltering(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("Commit: %v", err)
+		}
+		// Finished, so the job is aging: an unfinished one never expires.
+		if err := s.SetStatus(job.ID, StatusReady, ""); err != nil {
+			t.Fatalf("SetStatus: %v", err)
 		}
 		return job
 	}

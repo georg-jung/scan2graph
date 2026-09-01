@@ -35,8 +35,9 @@ type Options struct {
 	Root string
 
 	// TTL is how long a job stays visible before CleanExpired removes it.
-	// ExpiresAt is ReceivedAt + TTL at commit, and starts again from the
-	// moment the job becomes ready (see SetStatus).
+	// ExpiresAt is ReceivedAt + TTL at commit, and starts again when the
+	// pipeline finishes with the job, whether it ended ready or failed
+	// (see SetStatus).
 	TTL time.Duration
 
 	// MaxJobs bounds outstanding reservations plus committed jobs.
@@ -217,12 +218,18 @@ func (s *Store) commitReservation(id string, job Job, dir string, files map[stri
 // it, so a job can never be hidden from the web UI while its files are
 // still on disk, or the other way round.
 //
-// A job a worker is holding is always live: the download window starts when
-// the pipeline finishes with it (see SetStatus), so until then the deadline
-// on the record is the arrival one and has nothing to say yet. The worker's
-// own budget bounds how long that can last, so nothing leaks for ever.
+// A job the pipeline has not finished with is always live: the download
+// window starts when it reaches a final state (see SetStatus), so until
+// then the deadline on the record is the arrival one and has nothing to say
+// yet. Nothing leaks: a queued job is always either taken by a worker or
+// deleted by the SMTP session that could not enqueue it, and a worker's own
+// budget bounds how long it can hold one.
 func live(j Job, now time.Time) bool {
-	return j.Status == StatusProcessing || now.Before(j.ExpiresAt)
+	switch j.Status {
+	case StatusPending, StatusProcessing:
+		return true
+	}
+	return now.Before(j.ExpiresAt)
 }
 
 // Get returns a deep copy of the job with the given id. Expired jobs are
