@@ -321,6 +321,19 @@ func extractCases() []extractCase {
 			wantErr: ErrNoPDF,
 		},
 		{
+			// The filename clause: a text part that names a file is a file.
+			name: "text part with a filename counts as attached",
+			msg: "Subject: Scan\n" +
+				"Content-Type: multipart/mixed; boundary=\"b\"\n" +
+				"\n" +
+				"--b\n" +
+				"Content-Type: text/plain; name=\"scan.txt\"\n" +
+				"\n" + "not a pdf\n" +
+				"--b--\n",
+			subject: "Scan",
+			wantErr: ErrNoPDF,
+		},
+		{
 			// A scanner that attaches its image inline, with neither a
 			// filename nor a disposition: still a file, so still a wrong
 			// format rather than a connection test.
@@ -339,14 +352,14 @@ func extractCases() []extractCase {
 			// The distinction the SMTP layer acts on: something was
 			// attached, so this is a printer sending the wrong format
 			// rather than somebody pressing "test connection".
-			name: "attachment without a filename still counts as attached",
+			name: "text attached by disposition alone counts as attached",
 			msg: "Subject: Scan\n" +
 				"Content-Type: multipart/mixed; boundary=\"b\"\n" +
 				"\n" +
 				"--b\n" +
-				"Content-Type: image/tiff\n" +
+				"Content-Type: text/plain\n" +
 				"Content-Disposition: attachment\n" +
-				"\n" + "II*\x00 not a pdf\n" +
+				"\n" + "not a pdf, but attached\n" +
 				"--b--\n",
 			subject: "Scan",
 			wantErr: ErrNoPDF,
@@ -528,7 +541,7 @@ func extractCases() []extractCase {
 				"\n" + string(pdfA) +
 				"--b--\n",
 			subject: "No boundary",
-			wantErr: ErrNoAttachments,
+			wantErr: ErrNoPDF,
 		},
 		{
 			// A Content-Type that does not parse is not a multipart, so the

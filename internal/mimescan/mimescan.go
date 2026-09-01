@@ -45,12 +45,9 @@ const (
 var (
 	ErrTooComplex = errors.New("mimescan: message exceeds structural limits")
 	ErrNoPDF      = errors.New("mimescan: no PDF attachment found")
-	// ErrNoAttachments is the message that carried nothing attached at all,
-	// which is what a printer sends when somebody presses "test connection".
-	// It is told apart from ErrNoPDF because the two deserve opposite
-	// answers: a test is fine, while a message whose attachments are all
-	// JPEGs is a printer set to the wrong format, and its sender needs to
-	// hear so.
+	// ErrNoAttachments is a message that carried nothing at all, as opposed
+	// to one whose attachments were simply not PDFs; the SMTP layer answers
+	// the two differently.
 	ErrNoAttachments = errors.New("mimescan: message has no attachments")
 	// ErrStorage wraps a failure to create or write an attachment file. It
 	// is about this machine, not about the message, so the caller must fail
@@ -143,7 +140,11 @@ func (e *extractor) walk(h textproto.MIMEHeader, body io.Reader, depth int) erro
 		return e.leaf(h, body, mt, params)
 	}
 	if params["boundary"] == "" {
-		return nil // unusable container, nothing to walk
+		// Unusable container: nothing to walk, but something was meant to be
+		// in there. Counting it keeps a broken message from being mistaken
+		// for the empty one a connection test sends.
+		e.attach++
+		return nil
 	}
 	mr := multipart.NewReader(body, params["boundary"])
 	for {
@@ -170,13 +171,9 @@ func (e *extractor) walk(h textproto.MIMEHeader, body io.Reader, depth int) erro
 // on why only the bytes decide) and skips it otherwise.
 func (e *extractor) leaf(h textproto.MIMEHeader, body io.Reader, mt string, params map[string]string) error {
 	name := e.filename(h, params)
-	// Counted before anything else can reject the part: the caller needs to
-	// know whether the message carried files at all, separately from whether
-	// any of them turned out to be a PDF. A part is a file if it names one,
-	// says it is one, or simply is not text - the last covers a scanner that
-	// attaches an image inline with neither a filename nor a disposition,
-	// which must still be told its format is wrong rather than quietly
-	// treated as a connection test.
+	// A part is a file if it names one, says it is one, or is simply not
+	// text; counted before any check can reject it, since the caller needs
+	// "carried files at all" separately from "carried a PDF".
 	disp, _, _ := mime.ParseMediaType(h.Get("Content-Disposition"))
 	if name != "" || disp == "attachment" || (mt != "" && !strings.HasPrefix(mt, "text/")) {
 		e.attach++
