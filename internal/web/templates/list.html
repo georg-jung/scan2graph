@@ -4,7 +4,7 @@
 {{if .Scans}}
 <div class="scroll">
 <table>
-<thead><tr><th>Received</th><th>Scan</th><th>Docs</th><th>Status</th><th>Expiry</th></tr></thead>
+<thead><tr><th>Received</th><th>Scan</th><th>Size</th><th>Status</th><th>Expiry</th></tr></thead>
 <tbody>
 {{range .Scans}}
 <tr>
@@ -13,7 +13,7 @@
     <a href="/scan/{{.ID}}">{{if .Subject}}{{.Subject}}{{else}}(no subject){{end}}</a>
     <div class="muted small">from {{.Profile}}</div>
   </td>
-  <td data-label="Docs">{{.Documents}}</td>
+  <td data-label="Size" class="nowrap small">{{.Size}}</td>
   <td data-label="Status" class="nowrap"><span class="status {{.Status}}">{{.Status}}</span></td>
   <td data-label="Expiry" class="nowrap muted small">{{.Expires}}</td>
 </tr>

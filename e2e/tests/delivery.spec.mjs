@@ -119,10 +119,12 @@ async function openScan(page, subject) {
   await expect(page.getByRole('heading', { name: subject })).toBeVisible();
 }
 
+// Every scan the suite sends carries exactly one PDF, so the detail page
+// offers it as a single download control rather than as a list.
 async function downloadDocument(page) {
   const [download] = await Promise.all([
     page.waitForEvent('download'),
-    page.locator('ul.docs a').click(),
+    page.locator('a.download').click(),
   ]);
   const chunks = [];
   for await (const chunk of await download.createReadStream()) chunks.push(chunk);

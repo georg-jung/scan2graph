@@ -178,7 +178,7 @@ func notFound(w http.ResponseWriter) { http.Error(w, "not found", http.StatusNot
 
 func (s *Server) handleList(w http.ResponseWriter, _ *http.Request, sess *session) {
 	found := s.store.ListForUser(sess.identities)
-	v := listView{page: pageFor("Scans", sess), Scans: make([]scanRow, 0, len(found))}
+	v := listView{page: s.pageFor("Scans", sess), Scans: make([]scanRow, 0, len(found))}
 	for _, j := range found {
 		v.Scans = append(v.Scans, s.row(j))
 		if j.Status == jobs.StatusPending || j.Status == jobs.StatusProcessing {
@@ -196,7 +196,7 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, sess *sess
 	}
 	row := s.row(j)
 	v := detailView{
-		page:      pageFor(row.Subject, sess),
+		page:      s.pageFor(row.Subject, sess),
 		Scan:      row,
 		Documents: make([]docRow, 0, len(j.Documents)),
 	}
@@ -257,6 +257,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request, sess *se
 // page is what every template's layout needs.
 type page struct {
 	Title    string
+	Brand    string // the operator's S2G_UI_TITLE, rendered escaped
 	User     string
 	SignedIn bool
 	Refresh  bool // set while a scan on the page is still being worked on
@@ -276,14 +277,14 @@ type detailView struct {
 // scanRow is one job as the templates see it: everything already formatted,
 // so the templates stay free of logic.
 type scanRow struct {
-	ID        string
-	Received  string
-	Profile   string
-	Subject   string
-	Documents int
-	Status    string
-	Expires   string
-	Error     string
+	ID       string
+	Received string
+	Profile  string
+	Subject  string
+	Size     string // "1.2 MB", or "2 files · 3.1 MB" for a rarer multi-document scan
+	Status   string
+	Expires  string
+	Error    string
 }
 
 type docRow struct {
@@ -292,20 +293,25 @@ type docRow struct {
 	URL  string
 }
 
-func pageFor(title string, sess *session) page {
-	return page{Title: title, User: sess.name, SignedIn: true}
+// pageFor builds the layout's data. sess is nil on the signed-out page.
+func (s *Server) pageFor(title string, sess *session) page {
+	p := page{Title: title, Brand: s.cfg.UITitle}
+	if sess != nil {
+		p.User, p.SignedIn = sess.name, true
+	}
+	return p
 }
 
 func (s *Server) row(j jobs.Job) scanRow {
 	return scanRow{
-		ID:        j.ID,
-		Received:  j.ReceivedAt.Format("2 Jan 15:04"),
-		Profile:   j.Profile,
-		Subject:   j.Subject,
-		Documents: len(j.Documents),
-		Status:    string(j.Status),
-		Expires:   expiresIn(j.ExpiresAt.Sub(s.now())),
-		Error:     j.Error,
+		ID:       j.ID,
+		Received: j.ReceivedAt.Format("2 Jan 15:04"),
+		Profile:  j.Profile,
+		Subject:  j.Subject,
+		Size:     scanSize(j.Documents),
+		Status:   string(j.Status),
+		Expires:  expiresIn(j.ExpiresAt.Sub(s.now())),
+		Error:    j.Error,
 	}
 }
 
@@ -332,6 +338,20 @@ func expiresIn(d time.Duration) string {
 	default:
 		return fmt.Sprintf("expires in %d h %d min", m/60, m%60)
 	}
+}
+
+// scanSize is what a scan weighs, said the way the 99% case wants to hear it:
+// one document is just its size, and only a rarer multi-document scan needs
+// to say how many there are.
+func scanSize(docs []jobs.Document) string {
+	var total int64
+	for _, d := range docs {
+		total += d.Size
+	}
+	if len(docs) == 1 {
+		return humanBytes(total)
+	}
+	return fmt.Sprintf("%d files · %s", len(docs), humanBytes(total))
 }
 
 func humanBytes(n int64) string {

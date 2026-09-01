@@ -4,12 +4,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{if .Title}}{{.Title}} – {{end}}scan2graph</title>
+<title>{{if .Title}}{{.Title}} – {{end}}{{.Brand}}</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <header>
-  <a class="brand" href="/">scan2graph</a>
+  <a class="brand" href="/">{{.Brand}}</a>
   {{if .SignedIn}}
   <form method="post" action="/auth/logout">
     <span class="muted">{{.User}}</span>

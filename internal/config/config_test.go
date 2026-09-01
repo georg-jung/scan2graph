@@ -706,6 +706,39 @@ func TestLoadLogLevelAndFormat(t *testing.T) {
 	})
 }
 
+func TestLoadUITitle(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		if got := mustLoad(t, baseEnv()).UITitle; got != "scan2graph" {
+			t.Errorf("UITitle = %q, want scan2graph", got)
+		}
+	})
+	t.Run("trimmed", func(t *testing.T) {
+		env := clone(baseEnv())
+		env["S2G_UI_TITLE"] = "  ACME Document Scanning  "
+		if got := mustLoad(t, env).UITitle; got != "ACME Document Scanning" {
+			t.Errorf("UITitle = %q, want the trimmed value", got)
+		}
+	})
+	t.Run("blank", func(t *testing.T) {
+		env := clone(baseEnv())
+		env["S2G_UI_TITLE"] = "   "
+		wantLoadErr(t, env, "S2G_UI_TITLE", "empty")
+	})
+	t.Run("too long", func(t *testing.T) {
+		env := clone(baseEnv())
+		// 61 runes, counted as runes and not as bytes.
+		env["S2G_UI_TITLE"] = strings.Repeat("ä", 61)
+		wantLoadErr(t, env, "S2G_UI_TITLE", "at most 60")
+	})
+	t.Run("60 runes are fine", func(t *testing.T) {
+		env := clone(baseEnv())
+		env["S2G_UI_TITLE"] = strings.Repeat("ä", 60)
+		if got := mustLoad(t, env).UITitle; got != strings.Repeat("ä", 60) {
+			t.Errorf("UITitle = %q, want the 60-rune value", got)
+		}
+	})
+}
+
 func TestLoadGraphBaseURLOverride(t *testing.T) {
 	env := clone(baseEnv())
 	env["S2G_GRAPH_BASE_URL"] = "http://127.0.0.1:9999/fake-graph/"

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Capabilities is the set of independent features a sender profile enables.
@@ -45,6 +46,7 @@ type Config struct {
 	TempDir            string
 	LogLevel           slog.Level
 	LogFormat          string
+	UITitle            string // what the web UI calls itself: page titles and header
 
 	// SMTPUsername/SMTPPassword are the SMTP AUTH PLAIN/LOGIN credentials
 	// the scanner must present. SMTPPassword is never logged. When
@@ -106,6 +108,7 @@ func Load(getenv func(string) string) (*Config, error) {
 	c.TempDir = l.stringDefault("S2G_TEMP_DIR", os.TempDir())
 	c.LogFormat = l.logFormat()
 	c.LogLevel = l.logLevel()
+	c.UITitle = l.uiTitle()
 
 	c.SMTPUsername, c.SMTPPassword, c.SMTPAllowAnonymous, c.SMTPPasswordGenerated = l.smtpAuth()
 
@@ -421,6 +424,26 @@ func (l *loader) logFormat() string {
 	return v
 }
 
+// uiTitle resolves S2G_UI_TITLE: the name the web UI goes by, in its page
+// titles and in the header. It is the operator's own wording, so all it has
+// to be is non-empty and short enough to leave the header intact.
+func (l *loader) uiTitle() string {
+	const def, maxRunes = "scan2graph", 60
+	raw, ok := l.resolve("S2G_UI_TITLE")
+	if !ok {
+		return def
+	}
+	switch v := strings.TrimSpace(raw); {
+	case v == "":
+		l.errorf("S2G_UI_TITLE is set but empty; unset it to use the default %q", def)
+	case utf8.RuneCountInString(v) > maxRunes:
+		l.errorf("S2G_UI_TITLE: must be at most %d characters, got %d", maxRunes, utf8.RuneCountInString(v))
+	default:
+		return v
+	}
+	return def
+}
+
 // Profile looks up the sender profile for an SMTP envelope sender address.
 // It normalizes envelopeSender first; ok is false for an implausible address
 // or an address with no configured profile (the caller should reject the
@@ -529,6 +552,7 @@ func (c *Config) LogValue() slog.Value {
 		slog.String("temp_dir", c.TempDir),
 		slog.String("log_level", c.LogLevel.String()),
 		slog.String("log_format", c.LogFormat),
+		slog.String("ui_title", c.UITitle),
 		slog.Any("profiles", profiles),
 		slog.Int("recipient_aliases", len(c.RecipientAliases)),
 		slog.Any("allowed_recipient_domains", c.AllowedRecipientDomains),
