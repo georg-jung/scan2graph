@@ -167,15 +167,22 @@ summary { cursor: pointer; color: var(--muted); font-size: .9rem; margin-bottom:
 .check input { width: auto; }
 code { font-size: .8rem; overflow-wrap: anywhere; }
 
-/* What the loader said, for the whole form rather than one box. */
-.problems {
+/* What the loader said, for the whole form rather than one box, and what
+   "Test the connection" found in the same box below it. The check box's
+   border stays neutral: it reports rather than complains, and only the
+   lines that failed are coloured. */
+.problems, .checks {
   margin-bottom: 1.5rem;
   padding: .1rem 1.1rem;
-  border: 1px solid var(--warn);
   border-radius: .75rem;
-  color: var(--warn);
 }
-.problems ul { padding-left: 1.1rem; }
+.problems ul, .checks ul { padding-left: 1.1rem; }
+.problems { border: 1px solid var(--warn); color: var(--warn); }
+.checks { border: 1px solid var(--line); background: var(--panel); }
+.checks li { overflow-wrap: anywhere; }
+.checks .pass { color: var(--ok); }
+.checks .fail { color: var(--warn); }
+.checks .skipped { color: var(--muted); }
 .actions { display: flex; flex-wrap: wrap; gap: .75rem; }
 .actions button { padding: .55rem 1.1rem; font-weight: 600; }
 .primary { background: var(--accent-fill); color: var(--on-accent); border-color: transparent; }

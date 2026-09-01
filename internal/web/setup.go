@@ -35,6 +35,10 @@ const (
 	// what the README tells the operator to mount.
 	setupFileName = "scan2graph.env"
 	setupBrand    = "scan2graph"
+	// setupFormsKept is how many rendered forms remember what was typed into
+	// them, oldest falling off first: the operator is looking at the newest,
+	// and growth on a page nobody else can reach is still growth.
+	setupFormsKept = 4
 )
 
 var setupTmpl = mustParse("setup.html")
@@ -49,15 +53,32 @@ type SetupOptions struct {
 
 type setupServer struct {
 	SetupOptions
-	// mu guards FileValues, which a successful save replaces while other
-	// request goroutines are rendering the form from it, and TokenHash,
-	// which every request reads and start writes exactly once. The two are
-	// not coupled to each other: the door closes when the wizard is claimed,
-	// long before there is any way to save anything, so all the mutex does
-	// for FileValues is hand a reader one whole generation of the map rather
-	// than half of two - no security answer turns on the order in which a
-	// save and the gate become visible.
+	// pending is what each rendered form handed back, newest last and keyed
+	// by that render's id; remember says why it exists and why it is per page.
+	pending []pendingForm
+	// file counts how many times a save has replaced FileValues, so a fold
+	// can say which file it was taken from.
+	file uint64
+	// mu guards FileValues and pending, which a successful save replaces
+	// while other request goroutines are rendering the form from them, and
+	// TokenHash, which every request reads and start writes exactly once.
+	// They are not coupled to each other: the door closes when the wizard is
+	// claimed, long before there is any way to save anything, so all the
+	// mutex does for the values is hand a reader one whole map rather than
+	// half of two - no security answer turns on the order in which a save and
+	// the gate become visible.
 	mu sync.Mutex
+}
+
+// pendingForm is one rendered page: the id it hands back, and what it shows.
+type pendingForm struct {
+	id     string
+	values map[string]string
+	// file is what FileValues had been replaced how many times when these
+	// values were folded. A fold is only good while the file it folded into
+	// is unchanged: a save during a slow "Test the connection" makes that
+	// test's answer stale, however new the page carrying it looks.
+	file uint64
 }
 
 // NewSetup returns a handler serving the wizard and nothing else: the form,
@@ -87,7 +108,8 @@ func NewSetup(opts SetupOptions) http.Handler {
 			})
 			return
 		}
-		render(slog.Default(), w, setupTmpl, s.view(s.values(nil), nil, nil))
+		current, _ := s.values(nil)
+		render(slog.Default(), w, setupTmpl, s.view(current, nil, nil))
 	})
 	mux.HandleFunc("POST /setup/start", s.start)
 	mux.HandleFunc("POST /setup", s.submit)
@@ -196,45 +218,61 @@ func (s *setupServer) submit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the submitted form is malformed or too large", http.StatusBadRequest)
 		return
 	}
-	values := s.values(r.PostForm)
+	values, file := s.values(r.PostForm)
 
 	// The real loader through the real precedence, so the wizard cannot
 	// disagree with the next start about what is valid.
-	_, err := config.Load(config.Layer(values, s.Getenv))
+	cfg, err := config.Load(config.Layer(values, s.Getenv))
 	general, byField := attribute(err)
+	var checks []checkResult
 	if len(general) == 0 && len(byField) == 0 {
-		if r.PostForm.Get("action") == "download" || s.Path == "" {
+		action := r.PostForm.Get("action")
+		switch {
+		case action == "test":
+			// Advice, not validation: this renders the form straight back,
+			// values and all, so a failing check is one the operator can read
+			// and then save anyway.
+			checks = runChecks(r.Context(), cfg)
+		case action == "download" || s.Path == "":
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.Header().Set("Content-Disposition", `attachment; filename="`+setupFileName+`"`)
 			_, _ = w.Write(serialize(values))
 			return
-		}
-		if err := s.save(values); err != nil {
-			slog.Default().Error("setup: writing the configuration file failed", "path", s.Path, "err", err)
-			general = []string{"Writing " + s.Path + " failed: " + err.Error()}
-		} else {
-			render(slog.Default(), w, setupTmpl, setupView{
-				page: page{Title: "Saved", Brand: setupBrand}, Saved: s.Path,
-			})
-			return
+		default:
+			if err := s.save(values); err == nil {
+				render(slog.Default(), w, setupTmpl, setupView{
+					page: page{Title: "Saved", Brand: setupBrand}, Saved: s.Path,
+				})
+				return
+			} else {
+				slog.Default().Error("setup: writing the configuration file failed", "path", s.Path, "err", err)
+				general = []string{"Writing " + s.Path + " failed: " + err.Error()}
+			}
 		}
 	}
-	render(slog.Default(), w, setupTmpl, s.view(values, general, byField))
+	v := s.view(values, general, byField)
+	v.Checks = checks
+	// Everything that reaches this render was handed back rather than saved,
+	// so the next press from the page it renders folds into it: the secret a
+	// check was just run against, and the one a validation failure would
+	// otherwise have cost the operator too.
+	s.remember(v.Form, values, file)
+	render(slog.Default(), w, setupTmpl, v)
 }
 
-// values folds a submission into the configuration file as it stands. An
+// values folds a submission into what the page it came from is showing. An
 // absent or empty field removes the setting and both of its spellings, so the
-// form can turn something off - except where the file holds an answer the
+// form can turn something off - except where that page holds an answer the
 // form cannot show, which a blank box keeps instead: a secret, and any
-// setting supplied by its S2G_..._FILE spelling. A nil form is "no submission
-// yet", which changes nothing.
-func (s *setupServer) values(form url.Values) map[string]string {
-	values := maps.Clone(s.fileValues())
+// setting supplied by its S2G_..._FILE spelling. A nil form changes nothing.
+func (s *setupServer) values(form url.Values) (map[string]string, uint64) {
+	base, file := s.base(form.Get("form"))
+	values := maps.Clone(base)
 	if values == nil {
 		values = make(map[string]string, len(setupFields))
 	}
 	if form == nil {
-		return values
+		return values, file
 	}
 	for _, f := range setupFields {
 		// A newline would end the KEY=value line; the JSON in a textarea does
@@ -263,7 +301,7 @@ func (s *setupServer) values(form url.Values) map[string]string {
 			delete(values, f.Name+"_FILE")
 		}
 	}
-	return values
+	return values, file
 }
 
 // save writes the configuration file and republishes what the wizard reads
@@ -281,18 +319,53 @@ func (s *setupServer) save(values map[string]string) error {
 	if err := writeFile(s.Path, serialize(values)); err != nil {
 		return err
 	}
-	s.FileValues = values
+	s.FileValues, s.pending, s.file = values, nil, s.file+1 // the file is the answer again, for every page
 	return nil
 }
 
-// fileValues and tokenHash are the rest of the locking: both fields are
-// replaced wholesale rather than written into - values clones the map before
-// folding a submission in - so every reader takes the mutex once to pick up
-// whichever generation is current.
-func (s *setupServer) fileValues() map[string]string {
+// base is what a submission folds into: what the page it names handed back,
+// or the file as it stands - which is what a form rendered by a plain GET
+// /setup gets, naming an id nothing is remembered under, and what every page
+// gets once a save has cleared them. It and tokenHash are the rest of the
+// locking: every map here is replaced wholesale rather than written into -
+// values clones one before folding into it - so a reader takes the mutex once
+// and leaves with a whole map rather than half of two.
+func (s *setupServer) base(id string) (map[string]string, uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.FileValues
+	// Asked here rather than when it was stored, because a save can land
+	// between the two: what matters is whether the fold is still current when
+	// something folds into it, not whether it was current when it was taken.
+	if i := slices.IndexFunc(s.pending, func(p pendingForm) bool { return p.id == id }); i >= 0 && s.pending[i].file == s.file {
+		return s.pending[i].values, s.file
+	}
+	return s.FileValues, s.file
+}
+
+// remember keeps the submission a render handed back, under the id of the
+// form it hands back with it, because the page cannot show a secret: the next
+// press from that page arrives with an empty box, which values() reads as
+// "keep what is configured". Without this that means the file, so a green
+// "Test the connection" followed by Save writes the expired secret back over
+// the one the operator just tested - and says "Saved". It is keyed by the
+// form because what an empty box keeps is what was typed into the page the
+// operator pressed Save on, and nothing else tells the wizard which page that
+// was: with a single slot for all of them, a second tab - or a slow check
+// answering after a quick one - decides the secret of a page it never
+// rendered.
+//
+// The id says which page; the file generation says whether the page is still
+// talking about the current file. Both are needed and they are different
+// questions: a save landing while a check is still running leaves that
+// check's page carrying an answer to a file that no longer exists, and no
+// amount of knowing which page it came from makes it current again. base
+// asks that second question, at the moment something folds into the values,
+// because that is the only moment when the answer cannot go stale afterwards.
+func (s *setupServer) remember(id string, values map[string]string, file uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pending = append(s.pending, pendingForm{id, values, file})
+	s.pending = s.pending[max(0, len(s.pending)-setupFormsKept):]
 }
 
 func (s *setupServer) tokenHash() []byte {
@@ -409,8 +482,14 @@ type setupView struct {
 	page
 	Groups []setupGroup
 	Errors []string // not attributable to one field, shown above the form
-	Path   string   // where Save would write; "" offers only the download
-	Saved  string   // where it went, on the success page
+	// Checks is what "Test the connection" found, shown above the form and
+	// only for the submission that asked for it.
+	Checks []checkResult
+	Path   string // where Save would write; "" offers only the download
+	Saved  string // where it went, on the success page
+	// Form is this render's id, handed back in a hidden field: it tells one
+	// open page from another, gates nothing, and losing it folds into the file.
+	Form string
 	// Claim replaces the form with the page that offers to claim the wizard,
 	// on the fresh install where nobody has yet.
 	Claim bool
@@ -432,8 +511,7 @@ type setupInput struct {
 }
 
 func (s *setupServer) view(values map[string]string, general []string, byField map[string]string) setupView {
-	v := setupView{page: page{Title: "Setup", Brand: setupBrand}, Path: s.Path, Errors: general}
-	file := s.fileValues()
+	v := setupView{page: page{Title: "Setup", Brand: setupBrand}, Path: s.Path, Errors: general, Form: rand.Text()}
 	for _, f := range setupFields {
 		in := setupInput{setupField: f, Value: values[f.Name]}
 		// The loader names the setting; the operator reads a label. Swapping
@@ -442,13 +520,10 @@ func (s *setupServer) view(values map[string]string, general []string, byField m
 		// mailbox: ... is not a valid address".
 		in.Error = strings.Replace(byField[f.Name], f.Name, f.Label, 1)
 		// Set drives the hint that says an empty box keeps what is there, so
-		// it has to mean exactly what values() does with a blank box: a
-		// secret, in either spelling, and any field the file supplies through
-		// its _FILE spelling. Both are facts about the file rather than about
-		// this submission - one typed into a form that then failed validation
-		// is gone either way, and inviting the operator to leave the box
-		// empty would lose it for good.
-		in.Set = file[f.Name+"_FILE"] != "" || (f.Kind == fieldSecret && file[f.Name] != "")
+		// it has to mean exactly what values() will do with a blank box on
+		// the next press from this page - which folds into these values,
+		// remember having stored them under the id being rendered.
+		in.Set = values[f.Name+"_FILE"] != "" || (f.Kind == fieldSecret && values[f.Name] != "")
 		switch f.Kind {
 		case fieldSecret:
 			// Never rendered back into the page.

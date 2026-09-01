@@ -92,3 +92,12 @@ func (f *fakes) analyzePDF(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, "%PDF-1.7\n% OCRED-BY-FAKE "+a.sha+
 		"\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n")
 }
+
+// documentModels is the one call the setup wizard's check makes: it proves
+// the endpoint, the TLS chain, the token and the scope together, for free.
+func (f *fakes) documentModels(w http.ResponseWriter, r *http.Request) {
+	if !authorized(w, r, diScope) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"value": []map[string]string{{"modelId": "prebuilt-read"}}})
+}

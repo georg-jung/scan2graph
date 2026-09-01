@@ -7,7 +7,10 @@ import { createConnection } from 'node:net';
 
 import { FIXTURE_SECRET } from './fakes.mjs';
 
-const SERVER = { host: '127.0.0.1', port: 12525 };
+// The appliance the harness configures listens here; setup.spec.mjs starts a
+// second one on a port of its own and passes it.
+const HOST = '127.0.0.1';
+const DEFAULT_PORT = 12525;
 const BOUNDARY = 'scan2graph-e2e-boundary';
 
 // sendScan plays one whole SMTP transaction and returns the reply code of
@@ -15,9 +18,9 @@ const BOUNDARY = 'scan2graph-e2e-boundary';
 // reply to the final dot). It never throws on a rejection - the dialogue
 // simply stops at the first 4xx/5xx, leaving the later fields undefined - so
 // a test can assert on the exact code.
-export async function sendScan({ from, to, subject, pdf, password = FIXTURE_SECRET }) {
+export async function sendScan({ from, to, subject, pdf, password = FIXTURE_SECRET, port = DEFAULT_PORT }) {
   const codes = {};
-  const s = new Session(await connect());
+  const s = new Session(await connect(port));
   try {
     await s.read(); // greeting
     await s.cmd('EHLO printer.local');
@@ -128,9 +131,9 @@ class Session {
   }
 }
 
-function connect() {
+function connect(port) {
   return new Promise((resolve, reject) => {
-    const socket = createConnection(SERVER);
+    const socket = createConnection({ host: HOST, port });
     socket.once('error', reject);
     socket.once('connect', () => resolve(socket));
   });

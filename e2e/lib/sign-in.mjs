@@ -4,8 +4,11 @@
 
 import { expect } from '@playwright/test';
 
-export async function signIn(page, who) {
-  await page.goto('/');
+// where is the appliance to sign in to; the default is the one this suite is
+// configured against, and setup.spec.mjs passes the one the wizard wrote a
+// configuration file for.
+export async function signIn(page, who, where = '/') {
+  await page.goto(where);
   await page.click(`#signin-${who}`);
   await expect(page.getByRole('heading', { name: 'Your scans' })).toBeVisible();
 }

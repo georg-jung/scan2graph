@@ -123,6 +123,19 @@ func (h *setupHarness) claimed() *http.Client {
 	return c
 }
 
+// formID is the hidden field a rendered form carries, which a browser hands
+// straight back on the next press: the wizard's name for the page in front of
+// the operator, and how it knows what an empty password box on that page
+// means.
+func (h *setupHarness) formID(body string) string {
+	h.t.Helper()
+	m := regexp.MustCompile(`name="form" value="([^"]+)"`).FindStringSubmatch(body)
+	if m == nil {
+		h.t.Fatalf("the rendered page carries no form id:\n%s", body)
+	}
+	return m[1]
+}
+
 // loads asserts the file the wizard wrote is one the appliance would actually
 // start from, read back through the real parser and the real loader.
 func loads(t *testing.T, path string) map[string]string {
@@ -312,7 +325,8 @@ func TestSetupRejectsAndAttributes(t *testing.T) {
 	h := newSetupHarness(t, SetupOptions{Path: filepath.Join(t.TempDir(), "scan2graph.env")})
 	form := validForm()
 	form.Set("S2G_LOG_LEVEL", "loud")
-	resp, body := h.post(h.claimed(), form)
+	c := h.claimed()
+	resp, body := h.post(c, form)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, want the form back with 200", resp.StatusCode)
 	}
@@ -332,10 +346,25 @@ func TestSetupRejectsAndAttributes(t *testing.T) {
 	if strings.Contains(body, "problems") {
 		t.Error("a field's own error was also listed above the form")
 	}
-	// The secret this submission carried is not in any file, so the page must
-	// not invite the operator to leave the box empty next time.
-	if strings.Contains(body, testClientSecret) || strings.Contains(body, "One is configured already") {
-		t.Error("the re-rendered form claims a secret is configured, or rendered one")
+	// The secret is never rendered back, but this page is holding it, so the
+	// hint offering to keep whatever an empty box would keep is the truth
+	// here - and correcting the one bad box must not cost the operator the
+	// secret they typed into the form that was rejected.
+	if strings.Contains(body, testClientSecret) {
+		t.Fatal("the re-rendered form rendered the client secret")
+	}
+	if !strings.Contains(body, "One is configured already") {
+		t.Error("the page does not offer to keep the secret it is holding")
+	}
+	fixed := validForm()
+	fixed.Set("form", h.formID(body))
+	fixed.Del("S2G_ENTRA_CLIENT_SECRET") // taking that offer up
+	fixed.Set("action", "save")
+	if _, body := h.post(c, fixed); !strings.Contains(body, "Saved") {
+		t.Fatalf("the corrected submission did not save: %s", body)
+	}
+	if got := loads(t, h.path)["S2G_ENTRA_CLIENT_SECRET"]; got != testClientSecret {
+		t.Errorf("the file holds %q, want the secret the rejected submission carried", got)
 	}
 }
 
@@ -541,7 +570,7 @@ func FuzzSetupFileRoundTrip(f *testing.F) {
 	}
 	s := &setupServer{}
 	f.Fuzz(func(t *testing.T, v string) {
-		values := s.values(url.Values{"S2G_UI_TITLE": {v}, "S2G_TEMP_DIR": {v}})
+		values, _ := s.values(url.Values{"S2G_UI_TITLE": {v}, "S2G_TEMP_DIR": {v}})
 		got := roundTrip(t, values)
 		if len(got) != len(values) {
 			t.Errorf("input %q: wrote %d settings, read back %d: %#v", v, len(values), len(got), got)
@@ -589,7 +618,7 @@ func FuzzSetupFilePreservesTheFileItRead(f *testing.F) {
 			t.Skip() // not a configuration file at all
 		}
 		s := &setupServer{SetupOptions: SetupOptions{FileValues: fileValues}}
-		values := s.values(url.Values{"S2G_UI_TITLE": {typed}})
+		values, _ := s.values(url.Values{"S2G_UI_TITLE": {typed}})
 		got := roundTrip(t, values)
 		if len(got) != len(values) {
 			t.Fatalf("file %q typed %q: wrote %d settings, read back %d: %#v", file, typed, len(values), len(got), got)
@@ -637,6 +666,54 @@ func TestSetupSecondSaveKeepsTheSecret(t *testing.T) {
 	}
 	if got := values["S2G_ENTRA_CLIENT_SECRET"]; got != testClientSecret {
 		t.Errorf("the second save reverted the client secret to %q, want the one the first save wrote", got)
+	}
+}
+
+// TestSetupTestThenSaveKeepsTheTestedSecret is the rotation an operator comes
+// to this wizard for: the file holds a secret Entra has stopped accepting,
+// they paste the new one, press "Test the connection" and are shown green
+// lines. The results render the form back with the password box empty - it is
+// a password box - so the Save they press next submits a blank secret, which
+// means "keep what is configured". What the wizard just handed back has to be
+// what that keeps, or the appliance keeps the expired secret and the page
+// says "Saved".
+func TestSetupTestThenSaveKeepsTheTestedSecret(t *testing.T) {
+	// The secret the tenant accepts from now on; the file still holds the
+	// expired one. Both are the one fixture credential with a word in front,
+	// the way the other tests here spell a second copy of it.
+	const rotated = "rotated-" + testClientSecret
+	stub := newMSStub(t)
+	stub.secret = rotated
+
+	form, file := testForm(stub)
+	file["S2G_ENTRA_CLIENT_SECRET"] = testClientSecret // expired, as the file has it
+
+	path := filepath.Join(t.TempDir(), setupFileName)
+	h := newSetupHarness(t, SetupOptions{FileValues: file, Path: path})
+	c := h.claimed()
+
+	// The operator pastes the new secret and presses Test.
+	form.Set("S2G_ENTRA_CLIENT_SECRET", rotated)
+	_, body := h.post(c, form)
+	if strings.Contains(body, `class="fail"`) {
+		t.Fatalf("the rotated secret did not pass its own check: %s", body)
+	}
+	if !strings.Contains(body, `id="S2G_ENTRA_CLIENT_SECRET" name="S2G_ENTRA_CLIENT_SECRET" value=""`) {
+		t.Fatal("the results page no longer empties the client secret box; this test is out of date")
+	}
+
+	// The browser submits that empty box on the next press, along with the
+	// hidden field naming the page it is on, so this is Save exactly as the
+	// operator performs it.
+	form.Set("form", h.formID(body))
+	form.Set("S2G_ENTRA_CLIENT_SECRET", "")
+	form.Set("action", "save")
+	if _, body := h.post(c, form); !strings.Contains(body, "Saved") {
+		t.Fatalf("the save did not go through: %s", body)
+	}
+	if got := loads(t, path)["S2G_ENTRA_CLIENT_SECRET"]; got != rotated {
+		t.Errorf("the file holds %q, want the secret the operator tested; "+
+			"a green Test followed by Save wrote the expired one back", got)
 	}
 }
 
@@ -1010,10 +1087,93 @@ func TestSetupConcurrentSavesAndReads(t *testing.T) {
 	}
 }
 
-// TestSetupConcurrentSavesAreRaceFree drives real concurrent saves and reads
-// over a socket, so -race sees FileValues being replaced while other
-// goroutines render the form from it. It asserts only that the file the
-// wizard leaves behind is one whole submission, never a blend of two.
+// TestSetupTwoPagesKeepTheirOwnSecret is what the form id is for. Two pages
+// are open at once - a second tab, or the Back button - and a different
+// secret has been typed into each, which "Test the connection" hands back
+// with the password box empty, because it always is. The Save that follows
+// means "keep what is configured", and what that keeps is what was typed into
+// the page the operator pressed it on: the other page is not an older answer
+// to be ordered against, it is a different question. Both save orders are
+// driven, because either page can be the one that rendered last.
+// A save landing while a check is still running leaves that check's page
+// holding an answer to a file that no longer exists. Saving from it must not
+// put the pre-save secret back: the id proves which page the values came
+// from, not that they are still about the current file.
+func TestSetupSaveDuringATestWins(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scan2graph.env")
+	s := &setupServer{SetupOptions: SetupOptions{Path: path, Getenv: noEnv}}
+
+	// The slow test folds first, and its results page will carry this id.
+	slow, slowFile := s.values(validForm())
+	slowPage := "the-slow-test's-page"
+
+	// The other tab saves a rotated secret while that test is still waiting.
+	rotated := validForm()
+	rotated.Set("S2G_ENTRA_CLIENT_SECRET", "rotated-"+testClientSecret)
+	saved, _ := s.values(rotated)
+	if err := s.save(saved); err != nil {
+		t.Fatal(err)
+	}
+
+	// Only now does the test answer and render its page.
+	s.remember(slowPage, slow, slowFile)
+
+	// Saving from that page, with the box blank as it must be.
+	blank := validForm()
+	blank.Del("S2G_ENTRA_CLIENT_SECRET")
+	blank.Set("form", slowPage)
+	next, _ := s.values(blank)
+	if got := next["S2G_ENTRA_CLIENT_SECRET"]; got != "rotated-"+testClientSecret {
+		t.Errorf("a blank box folded into %q, want the secret the save wrote", got)
+	}
+}
+
+func TestSetupTwoPagesKeepTheirOwnSecret(t *testing.T) {
+	secrets := [2]string{"first-" + testClientSecret, "second-" + testClientSecret}
+	for from := range secrets {
+		t.Run("saving from page "+strconv.Itoa(from+1), func(t *testing.T) {
+			stub := newMSStub(t)
+			form, file := testForm(stub)
+			file["S2G_ENTRA_CLIENT_SECRET"] = "stale-" + testClientSecret
+			path := filepath.Join(t.TempDir(), setupFileName)
+			h := newSetupHarness(t, SetupOptions{FileValues: file, Path: path})
+			c := h.claimed()
+
+			var page [2]string // what each render calls the page it hands back
+			for i, secret := range secrets {
+				form.Set("S2G_ENTRA_CLIENT_SECRET", secret)
+				_, body := h.post(c, form)
+				page[i] = h.formID(body)
+			}
+			if page[0] == page[1] {
+				t.Fatal("both renders carry the same form id, so neither page can have an answer of its own")
+			}
+
+			save := validForm()
+			save.Del("S2G_ENTRA_CLIENT_SECRET") // as the empty box arrives
+			save.Set("action", "save")
+			save.Set("form", page[from])
+			if _, body := h.post(c, save); !strings.Contains(body, "Saved") {
+				t.Fatalf("the save did not go through: %s", body)
+			}
+			if got := loads(t, path)["S2G_ENTRA_CLIENT_SECRET"]; got != secrets[from] {
+				t.Fatalf("the file holds %q, want what was typed into the page the save came from", got)
+			}
+
+			// That save answers for both pages: the other one is still on
+			// screen, and a press on it now keeps what is in the file rather
+			// than putting its own secret back over a completed save.
+			save.Set("form", page[1-from])
+			if _, body := h.post(c, save); !strings.Contains(body, "Saved") {
+				t.Fatalf("the save from the other page did not go through: %s", body)
+			}
+			if got := loads(t, path)["S2G_ENTRA_CLIENT_SECRET"]; got != secrets[from] {
+				t.Errorf("a save from the other page wrote %q; a save clears what every page remembered", got)
+			}
+		})
+	}
+}
+
 // Two overlapping saves must leave the file and what the wizard reads back
 // agreeing: landing on disk in one order and in memory in the other would let
 // a later blank box - which the page invites for a configured secret - write
@@ -1057,6 +1217,10 @@ func TestSetupOverlappingSavesAgreeWithTheFile(t *testing.T) {
 	}
 }
 
+// TestSetupConcurrentSavesAreRaceFree drives real concurrent saves and reads
+// over a socket, so -race sees FileValues being replaced while other
+// goroutines render the form from it. It asserts only that the file the
+// wizard leaves behind is one whole submission, never a blend of two.
 func TestSetupConcurrentSavesAreRaceFree(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "scan2graph.env")
 	h := newSetupHarness(t, SetupOptions{Path: path, TokenHash: sha256Of(setupToken)})
