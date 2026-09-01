@@ -39,7 +39,9 @@ anything; it overrides habit, not judgement.
 * Review order for every package, with fresh subagents that did not write the
   code: **overengineering review first**, apply the cuts, **then** the
   correctness review. Then open the PR.
-* Codex reviews PRs automatically; iterate on what it finds. Do not chase
+* Codex reviews PRs automatically; request a Copilot review on every PR as
+  well. The two read differently, and the finding that mattered most on work
+  package 3 came from Copilot alone. Iterate on what they find. Do not chase
   review convergence — a finding that costs more lines than the risk it
   removes should be declined, with the reasoning on the thread and the thread
   left open for the owner.

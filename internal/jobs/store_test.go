@@ -340,6 +340,11 @@ func TestTTLExpiryRemovesFilesFromDisk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
+	// Ready, because that is when the window starts: a job the pipeline has
+	// not finished with does not age at all.
+	if err := s.SetStatus(job.ID, StatusReady, ""); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
 
 	if n := s.CleanExpired(); n != 0 {
 		t.Fatalf("CleanExpired before TTL = %d, want 0", n)
@@ -401,6 +406,10 @@ func TestListForUserFiltering(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("Commit: %v", err)
+		}
+		// Finished, so the job is aging: an unfinished one never expires.
+		if err := s.SetStatus(job.ID, StatusReady, ""); err != nil {
+			t.Fatalf("SetStatus: %v", err)
 		}
 		return job
 	}
@@ -612,7 +621,7 @@ func TestReplaceDocumentSamePathKeepsFile(t *testing.T) {
 }
 
 func TestSetStatusAndError(t *testing.T) {
-	s, _ := newTestStore(t, Options{})
+	s, clk := newTestStore(t, Options{})
 	st, err := s.Reserve()
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
@@ -631,10 +640,16 @@ func TestSetStatusAndError(t *testing.T) {
 		t.Errorf("got Status=%q Error=%q, want Processing/\"\"", got.Status, got.Error)
 	}
 
+	// Well past the arrival deadline: a job that took this long to fail must
+	// still be reachable, because its notice mail links to it.
+	clk.advance(2 * time.Hour)
 	if err := s.SetStatus(job.ID, StatusFailed, "OCR failed permanently"); err != nil {
 		t.Fatalf("SetStatus: %v", err)
 	}
-	got, _ = s.Get(job.ID)
+	got, ok := s.Get(job.ID)
+	if !ok {
+		t.Fatal("a job that just failed is already expired")
+	}
 	if got.Status != StatusFailed || got.Error != "OCR failed permanently" {
 		t.Errorf("got Status=%q Error=%q, want Failed/\"OCR failed permanently\"", got.Status, got.Error)
 	}
@@ -978,8 +993,9 @@ func TestCleanExpiredKeepsJobsBeingProcessed(t *testing.T) {
 	}
 	path := writeStagedFile(t, st, "doc", "a scan a worker is still holding")
 	job, err := st.Commit(NewJob{
-		Caps:      Capabilities{Web: true},
-		Documents: []NewDocument{{DisplayName: "a.pdf", Path: path}},
+		Caps:       Capabilities{Web: true},
+		Recipients: []string{"alice@example.com"},
+		Documents:  []NewDocument{{DisplayName: "a.pdf", Path: path}},
 	})
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
@@ -995,11 +1011,30 @@ func TestCleanExpiredKeepsJobsBeingProcessed(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("file of a processing job was removed: %v", err)
 	}
+	// The readers agree with the sweep: a job whose files are still on disk
+	// must not read as gone in the web UI, however long the work has taken.
+	if _, ok := s.Get(job.ID); !ok {
+		t.Error("Get reports a processing job as expired while its files are kept")
+	}
+	if got := s.ListForUser([]string{"alice@example.com"}); len(got) != 1 {
+		t.Errorf("ListForUser returned %d jobs for a processing job, want 1", len(got))
+	}
 
-	// Once the worker is done with it, the job expires normally.
+	// Becoming ready starts the lifetime again, so a scan whose OCR outlived
+	// the TTL is still there to be picked up rather than ready and expired
+	// in the same instant.
 	if err := s.SetStatus(job.ID, StatusReady, ""); err != nil {
 		t.Fatalf("SetStatus: %v", err)
 	}
+	if _, ok := s.Get(job.ID); !ok {
+		t.Fatal("a job that just became ready is already expired")
+	}
+	if n := s.CleanExpired(); n != 0 {
+		t.Fatalf("CleanExpired removed %d jobs, want 0 right after ready", n)
+	}
+
+	// From then on it expires normally.
+	clk.advance(2 * time.Hour)
 	if n := s.CleanExpired(); n != 1 {
 		t.Fatalf("CleanExpired removed %d jobs, want 1", n)
 	}

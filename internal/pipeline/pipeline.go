@@ -283,8 +283,10 @@ func (p *Pipeline) notice(ctx context.Context, job jobs.Job, reason string) {
 
 	body := reason + "\n\n"
 	if job.Caps.Web && p.baseURL != "" {
-		body += fmt.Sprintf("You can download the scan here for the next %d minutes:\n%s/scan/%s\n",
-			int(time.Until(job.ExpiresAt).Minutes()), p.baseURL, job.ID)
+		// No deadline in the text: this copy of the job predates the store
+		// starting its download window, so any figure quoted here would be
+		// wrong. The page itself says how long is left.
+		body += fmt.Sprintf("You can download the scan here until it expires:\n%s/scan/%s\n", p.baseURL, job.ID)
 	} else {
 		body += "Try scanning fewer pages or at a lower resolution, " +
 			"or ask your administrator to enable web downloads.\n"
