@@ -169,6 +169,27 @@ plain environment variable. Setting both at once is a startup error. See
 [`.env.example`](.env.example) for a fully commented copy with example
 values.
 
+**A configuration file.** The same settings can live in a `KEY=value` file —
+the format of `.env.example` — which scan2graph reads when it is pointed at
+one:
+
+```bash
+scan2graph --config /etc/scan2graph/scan2graph.env
+S2G_CONFIG_FILE=/etc/scan2graph/scan2graph.env scan2graph
+```
+
+There is deliberately no default location: nothing is read unless a path is
+given, and a path that cannot be read or parsed stops the start rather than
+falling back. Precedence is **environment variable > file > built-in
+default**, per setting rather than per spelling: `S2G_X` in the environment
+also overrides an `S2G_X_FILE` line in the file, and vice versa. Startup logs
+which file was read and how many of its settings the environment overrode.
+Comment lines (`#`), blank lines, an `export ` prefix and single- or
+double-quoted values are all accepted; a duplicate key is an error. Only
+`S2G_*` settings come from the file — `S2G_CONFIG_FILE` itself and anything
+the Go runtime reads directly (`SSL_CERT_FILE`, `HTTPS_PROXY`, `TZ`) must be
+real environment variables.
+
 **Listeners, logging & appearance**
 
 | variable | default | required when |
