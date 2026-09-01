@@ -35,11 +35,6 @@ state.
 
 ![One scan, offered as a single download](docs/screenshots/detail.png)
 
-The header and the page title follow `S2G_UI_TITLE`, so the appliance can go by
-the household's or the office's own name:
-
-![The same list, under a custom title](docs/screenshots/custom-title.png)
-
 ## Sender profiles vs. recipient identity
 
 Printers usually offer two independent address books: the "from" address of the
@@ -177,7 +172,7 @@ values.
 | `S2G_TEMP_DIR` | the OS temp directory | — |
 | `S2G_LOG_LEVEL` | `info` | — |
 | `S2G_LOG_FORMAT` | `json` | — |
-| `S2G_UI_TITLE` | `scan2graph` — the name the web UI goes by, in its page title and header; at most 60 characters | — |
+| `S2G_UI_TITLE` | `scan2graph` | — |
 
 **SMTP AUTH**
 

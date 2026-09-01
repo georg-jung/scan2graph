@@ -12,7 +12,6 @@
   --ok: #1f7a45;
   --work: #8a5a11;
   --warn: #a32f20;
-  --shadow: 0 1px 2px rgba(20, 20, 18, .07);
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -28,7 +27,6 @@
     --ok: #6fc78d;
     --work: #dcb264;
     --warn: #f0a08f;
-    --shadow: none;
   }
 }
 * { box-sizing: border-box; }
@@ -62,7 +60,6 @@ button {
   color: inherit;
   cursor: pointer;
 }
-button:hover { border-color: var(--accent); color: var(--accent); }
 
 /* The scan list: one card, one row per scan. */
 .scroll {
@@ -70,7 +67,6 @@ button:hover { border-color: var(--accent); color: var(--accent); }
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: .75rem;
-  box-shadow: var(--shadow);
 }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: .8rem 1rem; vertical-align: top; }
@@ -82,7 +78,6 @@ tbody a:hover { text-decoration: underline; }
 
 /* Status as a chip, tinted from one colour per state. */
 .status {
-  --chip: var(--muted);
   display: inline-block;
   padding: .1rem .6rem;
   border-radius: 999px;
@@ -96,10 +91,10 @@ tbody a:hover { text-decoration: underline; }
 .status.pending, .status.processing { --chip: var(--work); }
 .status.failed { --chip: var(--warn); }
 
-/* The download control: filled, and the obvious thing to do, for the
-   single-document scan every printer produces; a lighter outline of the same
-   shape in the rarer multi-document list. */
-.download, .docs a {
+/* The download control: filled, and the obvious thing to do on a page whose
+   whole purpose is that one click. A multi-document scan lists several of
+   them; they are peers, so they look alike. */
+.download {
   display: inline-flex;
   align-items: baseline;
   gap: .6rem;
@@ -109,15 +104,12 @@ tbody a:hover { text-decoration: underline; }
   border-radius: .6rem;
   font-weight: 600;
   text-decoration: none;
-  transition: background .15s ease, border-color .15s ease;
+  transition: background .15s ease;
 }
 .download { background: var(--accent-fill); color: var(--on-accent); }
 .download:hover { background: var(--accent-fill-hover); }
 .download .size { font-weight: 400; font-size: .85rem; opacity: .8; }
 .docs { list-style: none; margin: 0; padding: 0; }
-.docs a { background: var(--panel); border-color: var(--line); color: var(--accent); }
-.docs a:hover { border-color: var(--accent); }
-.docs a .size { color: var(--muted); font-weight: 400; font-size: .85rem; }
 .back { font-size: .9rem; text-decoration: none; }
 .back:hover { text-decoration: underline; }
 .nowrap { white-space: nowrap; }

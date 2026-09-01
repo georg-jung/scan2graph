@@ -293,13 +293,9 @@ type docRow struct {
 	URL  string
 }
 
-// pageFor builds the layout's data. sess is nil on the signed-out page.
+// pageFor builds the layout's data for a signed-in page.
 func (s *Server) pageFor(title string, sess *session) page {
-	p := page{Title: title, Brand: s.cfg.UITitle}
-	if sess != nil {
-		p.User, p.SignedIn = sess.name, true
-	}
-	return p
+	return page{Title: title, Brand: s.cfg.UITitle, User: sess.name, SignedIn: true}
 }
 
 func (s *Server) row(j jobs.Job) scanRow {

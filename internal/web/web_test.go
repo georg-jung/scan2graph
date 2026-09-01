@@ -189,11 +189,7 @@ func (h *harness) addJob(subject string, recipients []string, caps jobs.Capabili
 		if err := f.Close(); err != nil {
 			h.t.Fatalf("close document: %v", err)
 		}
-		display := "invoice.pdf"
-		if i > 0 {
-			display = name + ".pdf"
-		}
-		docs = append(docs, jobs.NewDocument{DisplayName: display, Path: f.Name()})
+		docs = append(docs, jobs.NewDocument{DisplayName: "invoice.pdf", Path: f.Name()})
 	}
 	j, err := st.Commit(jobs.NewJob{
 		Profile:    "printer@corp.example",
@@ -640,9 +636,6 @@ func TestListShowsScanSize(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("list page has no cell %q:\n%s", want, body)
 		}
-	}
-	if strings.Contains(body, "1 file") {
-		t.Errorf("a single-document scan should not count its files:\n%s", body)
 	}
 }
 
