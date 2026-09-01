@@ -7,6 +7,7 @@
 package config
 
 import (
+	"cmp"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -107,7 +108,9 @@ func Load(getenv func(string) string) (*Config, error) {
 	c.TempDir = l.stringDefault("S2G_TEMP_DIR", os.TempDir())
 	c.LogFormat = l.logFormat()
 	c.LogLevel = l.logLevel()
-	c.UITitle = l.stringDefault("S2G_UI_TITLE", "scan2graph")
+	// Trimmed, and blank falls back: an empty S2G_UI_TITLE_FILE would
+	// otherwise leave the header's link home with no text to click.
+	c.UITitle = cmp.Or(strings.TrimSpace(l.stringDefault("S2G_UI_TITLE", "")), "scan2graph")
 
 	c.SMTPUsername, c.SMTPPassword, c.SMTPAllowAnonymous, c.SMTPPasswordGenerated = l.smtpAuth()
 

@@ -49,7 +49,9 @@ header {
   border-bottom: 1px solid var(--line);
 }
 header form { display: flex; gap: .75rem; align-items: center; margin: 0; }
-.brand { font-weight: 600; letter-spacing: -.01em; text-decoration: none; color: inherit; }
+/* anywhere: a long unbroken name would otherwise push the page sideways on
+   a phone, and the operator picked that name once and never sees it again. */
+.brand { font-weight: 600; letter-spacing: -.01em; text-decoration: none; color: inherit; overflow-wrap: anywhere; }
 main { max-width: 54rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
 button {
   font: inherit;
