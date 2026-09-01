@@ -4,8 +4,10 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -31,7 +33,12 @@ import (
 var version = "dev"
 
 func main() {
-	cfg, err := config.Load(os.Getenv)
+	getenv, configFile, overridden, err := configSource(os.Args[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "scan2graph: %v\n", err)
+		os.Exit(1)
+	}
+	cfg, err := config.Load(getenv)
 	if err != nil {
 		// Configuration errors are for humans reading container logs, and
 		// there can be several at once, so print them plainly instead of
@@ -40,11 +47,32 @@ func main() {
 		os.Exit(1)
 	}
 	slog.SetDefault(newLogger(cfg.LogFormat, cfg.LogLevel))
+	if configFile != "" {
+		// Paths and setting names only - never a value, since this file is
+		// where the client secret usually lives.
+		slog.Info("configuration file read", "path", configFile, "overridden_by_environment", overridden)
+	}
 
 	if err := run(cfg); err != nil {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
 	}
+}
+
+// configSource resolves the optional configuration file - --config, else
+// S2G_CONFIG_FILE - and returns the getenv Load reads through together with
+// what to tell the operator about it. No location is baked in: the
+// container, the systemd unit and a hand-started binary each pass their own
+// path, and a file that was explicitly asked for but cannot be read is a
+// startup failure rather than a silent fall back to the environment alone.
+func configSource(args []string) (getenv func(string) string, path string, overridden []string, err error) {
+	fs := flag.NewFlagSet("scan2graph", flag.ExitOnError)
+	configFlag := fs.String("config", "",
+		"read settings from this KEY=value file (default $S2G_CONFIG_FILE); environment variables still win")
+	_ = fs.Parse(args) // ExitOnError: an unusable flag has already exited
+	path = cmp.Or(*configFlag, os.Getenv("S2G_CONFIG_FILE"))
+	getenv, overridden, err = config.FileEnv(path, os.Getenv)
+	return getenv, path, overridden, err
 }
 
 func newLogger(format string, level slog.Level) *slog.Logger {
