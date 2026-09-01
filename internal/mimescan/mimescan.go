@@ -45,9 +45,12 @@ const (
 var (
 	ErrTooComplex = errors.New("mimescan: message exceeds structural limits")
 	ErrNoPDF      = errors.New("mimescan: no PDF attachment found")
-	// ErrNoAttachments is a message that carried nothing at all, as opposed
-	// to one whose attachments were simply not PDFs; the SMTP layer answers
-	// the two differently.
+	// ErrNoAttachments is a message that carried nothing and was structurally
+	// sound while doing so - a connection test, in practice. A message whose
+	// attachments were simply not PDFs gets ErrNoPDF, and so does one whose
+	// containers were too broken to show what they held: the SMTP layer
+	// answers the two differently, and a hidden scan must not be mistaken
+	// for an empty message.
 	ErrNoAttachments = errors.New("mimescan: message has no attachments")
 	// ErrStorage wraps a failure to create or write an attachment file. It
 	// is about this machine, not about the message, so the caller must fail
@@ -91,9 +94,9 @@ type PDF struct {
 //
 // On error nothing is left on disk and Result.PDFs is empty (Result.Subject is
 // still filled in where the headers parsed). Returns ErrNoAttachments when the
-// message carried no files at all, ErrNoPDF when it carried files but none of
-// them was a usable PDF, and ErrStorage when writing an attachment failed for
-// a local reason.
+// message carried no files and nothing about it was malformed, ErrNoPDF when
+// it carried files -- or a container too broken to yield them -- but no usable
+// PDF, and ErrStorage when writing an attachment failed for a local reason.
 func Extract(r io.Reader, newFile func() (*os.File, error)) (Result, error) {
 	msg, err := mail.ReadMessage(r)
 	if err != nil {
