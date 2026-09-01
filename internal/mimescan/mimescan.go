@@ -45,6 +45,13 @@ const (
 var (
 	ErrTooComplex = errors.New("mimescan: message exceeds structural limits")
 	ErrNoPDF      = errors.New("mimescan: no PDF attachment found")
+	// ErrNoAttachments is the message that carried nothing attached at all,
+	// which is what a printer sends when somebody presses "test connection".
+	// It is told apart from ErrNoPDF because the two deserve opposite
+	// answers: a test is fine, while a message whose attachments are all
+	// JPEGs is a printer set to the wrong format, and its sender needs to
+	// hear so.
+	ErrNoAttachments = errors.New("mimescan: message has no attachments")
 	// ErrStorage wraps a failure to create or write an attachment file. It
 	// is about this machine, not about the message, so the caller must fail
 	// temporarily instead of rejecting the scan.
@@ -86,9 +93,10 @@ type PDF struct {
 // PDF for.
 //
 // On error nothing is left on disk and Result.PDFs is empty (Result.Subject is
-// still filled in where the headers parsed). Returns ErrNoPDF when the message
-// is well-formed but carries no usable PDF, and ErrStorage when writing an
-// attachment failed for a local reason.
+// still filled in where the headers parsed). Returns ErrNoAttachments when the
+// message carried no files at all, ErrNoPDF when it carried files but none of
+// them was a usable PDF, and ErrStorage when writing an attachment failed for
+// a local reason.
 func Extract(r io.Reader, newFile func() (*os.File, error)) (Result, error) {
 	msg, err := mail.ReadMessage(r)
 	if err != nil {
@@ -104,6 +112,9 @@ func Extract(r io.Reader, newFile func() (*os.File, error)) (Result, error) {
 		return res, err
 	}
 	if len(e.pdfs) == 0 {
+		if e.attach == 0 {
+			return res, ErrNoAttachments
+		}
 		return res, ErrNoPDF
 	}
 	res.PDFs = e.pdfs
@@ -115,6 +126,7 @@ type extractor struct {
 	newFile func() (*os.File, error)
 	words   mime.WordDecoder
 	parts   int
+	attach  int // parts that carried a file, whatever its type
 	pdfs    []PDF
 }
 
@@ -158,6 +170,13 @@ func (e *extractor) walk(h textproto.MIMEHeader, body io.Reader, depth int) erro
 // on why only the bytes decide) and skips it otherwise.
 func (e *extractor) leaf(h textproto.MIMEHeader, body io.Reader, params map[string]string) error {
 	name := e.filename(h, params)
+	// Counted before anything else can reject the part: the caller needs to
+	// know whether the message carried files at all, separately from whether
+	// any of them turned out to be a PDF.
+	disp, _, _ := mime.ParseMediaType(h.Get("Content-Disposition"))
+	if name != "" || disp == "attachment" {
+		e.attach++
+	}
 	src := decoded(h, body)
 
 	// Buffer the prefix before creating anything: a part that merely claims

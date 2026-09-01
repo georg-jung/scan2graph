@@ -190,6 +190,16 @@ func (s *session) Data(r io.Reader) error {
 		staging.Abort()
 		s.reject("data", errAborted)
 		return errAborted
+	case errors.Is(err, mimescan.ErrNoAttachments):
+		// A printer's "test connection" button sends a message with nothing
+		// attached. Refusing it makes a working setup look broken on the
+		// device's panel, so it is accepted and dropped: no job, no mail,
+		// nothing to expire. A message that does carry files but no usable
+		// PDF still gets a 550 below - that one is a printer set to JPEG,
+		// and the rejection is the only way it will ever be told.
+		staging.Abort()
+		s.log.Info("smtpin: connection test accepted", "profile", profile, "recipients", len(recipients))
+		return nil
 	case err != nil:
 		staging.Abort()
 		se := extractError(err)

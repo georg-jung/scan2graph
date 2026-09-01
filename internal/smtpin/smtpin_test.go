@@ -152,15 +152,30 @@ func TestDuplicateRecipientsCollapse(t *testing.T) {
 	}
 }
 
-func TestNoPDF(t *testing.T) {
+// TestConnectionTest covers the two messages that carry no scan, which the
+// listener answers in opposite ways: a printer's test button gets a 250 and
+// no job, while a printer set to the wrong format gets told.
+func TestConnectionTest(t *testing.T) {
 	h := &fakeHandler{}
-	addr, _, cfg := newHarness(t, nil, nil, h)
+	addr, store, cfg := newHarness(t, nil, nil, h)
 
 	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")
 	c.cmd(250, "RCPT TO:<alice@corp.example>")
-	if code, msg := c.data(textMessage("No attachment")); code != 550 {
-		t.Fatalf("DATA with no PDF: got %d %q, want 550", code, msg)
+	if code, msg := c.data(textMessage("Test connection")); code != 250 {
+		t.Fatalf("DATA with nothing attached: got %d %q, want 250", code, msg)
+	}
+	if n := len(h.enqueued()); n != 0 {
+		t.Errorf("a connection test enqueued %d jobs, want none", n)
+	}
+	if n := store.Len(); n != 0 {
+		t.Errorf("a connection test left %d jobs in the store, want none", n)
+	}
+
+	c.cmd(250, "MAIL FROM:<printer@corp.example>")
+	c.cmd(250, "RCPT TO:<alice@corp.example>")
+	if code, msg := c.data(jpegMessage("Scan")); code != 550 {
+		t.Fatalf("DATA with an attachment that is not a PDF: got %d %q, want 550", code, msg)
 	}
 }
 

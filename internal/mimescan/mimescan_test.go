@@ -300,7 +300,7 @@ func extractCases() []extractCase {
 				"\n" +
 				"Just a note from the printer.\n",
 			subject: "Nothing here",
-			wantErr: ErrNoPDF,
+			wantErr: ErrNoAttachments,
 		},
 		{
 			name: "non-pdf attachments skipped",
@@ -318,6 +318,22 @@ func extractCases() []extractCase {
 				"\n" + b64([]byte("\xff\xd8\xff\xe0 jpeg-ish")) +
 				"--b--\n",
 			subject: "Cover page",
+			wantErr: ErrNoPDF,
+		},
+		{
+			// The distinction the SMTP layer acts on: something was
+			// attached, so this is a printer sending the wrong format
+			// rather than somebody pressing "test connection".
+			name: "attachment without a filename still counts as attached",
+			msg: "Subject: Scan\n" +
+				"Content-Type: multipart/mixed; boundary=\"b\"\n" +
+				"\n" +
+				"--b\n" +
+				"Content-Type: image/tiff\n" +
+				"Content-Disposition: attachment\n" +
+				"\n" + "II*\x00 not a pdf\n" +
+				"--b--\n",
+			subject: "Scan",
 			wantErr: ErrNoPDF,
 		},
 		{
@@ -497,7 +513,7 @@ func extractCases() []extractCase {
 				"\n" + string(pdfA) +
 				"--b--\n",
 			subject: "No boundary",
-			wantErr: ErrNoPDF,
+			wantErr: ErrNoAttachments,
 		},
 		{
 			// A Content-Type that does not parse is not a multipart, so the
@@ -622,7 +638,7 @@ func TestExtractLimits(t *testing.T) {
 		wantPDFs int
 		wantErr  error
 	}{
-		{"parts at limit", manyParts(maxParts), 0, ErrNoPDF},
+		{"parts at limit", manyParts(maxParts), 0, ErrNoAttachments},
 		{"too many parts", manyParts(maxParts + 1), 0, ErrTooComplex},
 		{"depth at limit", nested(maxDepth), 1, nil},
 		{"too deep", nested(maxDepth + 1), 0, ErrTooComplex},
