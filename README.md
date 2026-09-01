@@ -179,7 +179,7 @@ S2G_CONFIG_FILE=/etc/scan2graph/scan2graph.env scan2graph
 ```
 
 There is deliberately no default location: nothing is read unless a path is
-given, and a path that cannot be read or parsed stops the start rather than
+given, and a path that cannot be read or parsed stops startup rather than
 falling back. Precedence is **environment variable > file > built-in
 default**, per setting rather than per spelling: `S2G_X` in the environment
 also overrides an `S2G_X_FILE` line in the file, and vice versa. Startup logs
