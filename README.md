@@ -104,17 +104,20 @@ Point the printer's "scan to email" feature at scan2graph:
 scan2graph needs exactly one Entra app registration. It serves both the web
 UI's sign-in (authorization code flow with PKCE) and the app-only tokens used
 to call Microsoft Graph and Azure Document Intelligence (client credentials
-flow) — there is nothing to register twice.
+flow) — there is nothing to register twice. Steps 1 and 3 are always needed;
+2 and 4 depend on what your profiles actually do.
 
 1. **Microsoft Entra ID → App registrations → New registration.** A
    single-tenant app is enough. Note the **Directory (tenant) ID** and
    **Application (client) ID** from the Overview page —
    `S2G_ENTRA_TENANT_ID` and `S2G_ENTRA_CLIENT_ID`.
-2. **Authentication → Add a platform → Web**, redirect URI
-   `https://<your host>/auth/callback` (matching `S2G_PUBLIC_BASE_URL` plus
-   `/auth/callback` exactly). Use the **Web** platform, not SPA or a public
+2. **Only if a profile offers web downloads** (i.e. you configure
+   `S2G_PUBLIC_BASE_URL`): **Authentication → Add a platform → Web**,
+   redirect URI `https://<your host>/auth/callback` (that base URL plus
+   `/auth/callback`, exactly). Use the **Web** platform, not SPA or a public
    client — scan2graph holds a client secret and runs the code exchange
-   server-side.
+   server-side. An email-only deployment signs nobody in and needs no
+   redirect URI at all.
 3. **Certificates & secrets → New client secret.** The value is shown once;
    copy it into `S2G_ENTRA_CLIENT_SECRET` (or, preferably,
    `S2G_ENTRA_CLIENT_SECRET_FILE`).
