@@ -1,13 +1,12 @@
 // What each sender profile does with a scan, end to end: the printer's SMTP
 // transaction, the pipeline, and what the recipient can actually get hold of.
 
-import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { createConnection } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 
+import { serving, startAppliance } from '../lib/appliance.mjs';
 import { FIXTURE_SECRET, diSubmissions, graphMessages, resetFakes, setDIMode } from '../lib/fakes.mjs';
 import { makePdf, sendScan } from '../lib/smtp.mjs';
 import { signIn } from '../lib/sign-in.mjs';
@@ -117,7 +116,7 @@ test.describe('a scan too large for sendMail', () => {
 
   test.beforeAll(async () => {
     for (const a of both) a.proc = start(a);
-    await Promise.all(both.map(serving));
+    await Promise.all(both.map((a) => serving(a.proc)));
   });
 
   test.afterAll(() => {
@@ -219,15 +218,14 @@ function bigPdf(marker, size) {
   return pdf;
 }
 
-// start runs a second scan2graph, because the harness's own cannot be
-// configured two ways at once. Its environment is exactly what is listed here
-// - a setting it is missing fails these tests rather than being quietly made
-// up for - and its stderr is kept, because "it would not start" is a failure
-// this file has to be able to explain, and because the banner asserted above
-// is printed there.
+// start runs a second scan2graph, pointed at the harness's fakes but on
+// ports of its own. Its environment is exactly what is listed here - a
+// setting it is missing fails these tests rather than being quietly made up
+// for.
 function start({ clientID, http, smtp }) {
-  const child = spawn(path.join(e2e, '.bin', 'scan2graph'), ['serve'], {
-    stdio: ['ignore', 'ignore', 'pipe'],
+  return startAppliance({
+    args: ['serve'],
+    smtpPort: smtp,
     env: {
       PATH: process.env.PATH,
       S2G_HTTP_ADDR: `127.0.0.1:${http}`,
@@ -249,30 +247,4 @@ function start({ clientID, http, smtp }) {
       S2G_MAX_MESSAGE_BYTES: String(8 * 1024 * 1024),
     },
   });
-  const started = { child, log: '', exited: false };
-  child.stderr.setEncoding('utf8');
-  child.stderr.on('data', (chunk) => {
-    started.log += chunk;
-  });
-  child.once('exit', (code) => {
-    started.exited = true;
-    started.log += `\nthe appliance exited with code ${code}`;
-  });
-  return started;
-}
-
-// serving waits until the scan can actually be sent: the SMTP listener binds
-// on a goroutine of its own, so the process being up is not the same thing.
-async function serving(a) {
-  await expect(async () => {
-    expect(a.proc.exited, a.proc.log).toBe(false);
-    await new Promise((resolve, reject) => {
-      const socket = createConnection({ host: '127.0.0.1', port: a.smtp });
-      socket.once('connect', () => {
-        socket.end();
-        resolve();
-      });
-      socket.once('error', reject);
-    });
-  }).toPass({ intervals: [50], timeout: 30_000 });
 }

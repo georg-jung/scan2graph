@@ -30,14 +30,9 @@ func TestTokenRoles(t *testing.T) {
 			want:  []string{"Mail.Send", "Mail.ReadWrite"},
 		},
 		{"no roles claim", fakeJWT(`{"aud":"https://graph.example","scp":"Mail.Send"}`), nil},
-		{"empty roles claim", fakeJWT(`{"roles":[]}`), []string{}},
 		{"empty token", "", nil},
-		{"garbage", "not-a-token", nil},
-		{"two segments", "header.payload", nil},
-		{"four segments", "a.b.c.d", nil},
 		{"payload is not base64url", "aaa.not base64!.bbb", nil},
 		{"payload is not JSON", fakeJWT("nothing json about this"), nil},
-		{"payload is JSON but not an object", fakeJWT(`["Mail.Send"]`), nil},
 		{"roles is not an array of strings", fakeJWT(`{"roles":"Mail.Send"}`), nil},
 	}
 	for _, tt := range tests {

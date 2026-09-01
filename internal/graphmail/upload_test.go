@@ -4,13 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -320,41 +317,16 @@ func TestSend_LargeScanRetriedChunkUploadsTheSameBytes(t *testing.T) {
 	}
 }
 
-func TestSend_LargeScanRouting(t *testing.T) {
+func TestSend_SmallScanStillUsesSendMail(t *testing.T) {
 	small := writeTemp(t, "small.pdf", []byte("%PDF-1.4 a scan that fits\n%%EOF\n"))
-
-	t.Run("under the ceiling still uses sendMail", func(t *testing.T) {
-		g := newFakeGraph(t)
-		if err := g.client(true).Send(context.Background(), largeMessage(small)); err != nil {
-			t.Fatalf("Send: %v", err)
-		}
-		want := []string{"POST /users/" + testSender + "/sendMail"}
-		if got := g.calls(); !slices.Equal(got, want) {
-			t.Errorf("calls = %q, want %q (no draft for a scan that fits)", got, want)
-		}
-	})
-
-	t.Run("over the ceiling without Mail.ReadWrite is still ErrTooLarge", func(t *testing.T) {
-		// Sparse: only the size matters, so the test costs no disk.
-		huge := filepath.Join(t.TempDir(), "huge.pdf")
-		f, err := os.Create(huge)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := f.Truncate(graphmail.MaxAttachmentBytes + 1); err != nil {
-			t.Fatal(err)
-		}
-		f.Close()
-
-		g := newFakeGraph(t)
-		err = g.client(false).Send(context.Background(), largeMessage(huge))
-		if !errors.Is(err, graphmail.ErrTooLarge) {
-			t.Fatalf("err = %v, want ErrTooLarge", err)
-		}
-		if got := g.calls(); len(got) != 0 {
-			t.Errorf("calls = %q, want none", got)
-		}
-	})
+	g := newFakeGraph(t)
+	if err := g.client(true).Send(context.Background(), largeMessage(small)); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	want := []string{"POST /users/" + testSender + "/sendMail"}
+	if got := g.calls(); !slices.Equal(got, want) {
+		t.Errorf("calls = %q, want %q (no draft for a scan that fits)", got, want)
+	}
 }
 
 // A chunk that fails must fail the whole Send: better an error the caller

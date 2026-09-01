@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -82,9 +81,6 @@ func (c *Client) createDraft(ctx context.Context, m Message) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if out.ID == "" {
-		return "", errors.New("graphmail: draft response carries no message id")
-	}
 	return out.ID, nil
 }
 
@@ -155,7 +151,7 @@ func (c *Client) postJSON(ctx context.Context, path string, body, out any) error
 			return fmt.Errorf("graphmail: encode %s request: %w", path, err)
 		}
 	}
-	resp, err := c.do(ctx, func(ctx context.Context) (*http.Request, error) {
+	resp, err := (&msapi.Client{HTTP: c.HTTP}).Do(ctx, func(ctx context.Context) (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.mailboxURL()+path, bytes.NewReader(raw))
 		if err != nil {
 			return nil, err
@@ -166,7 +162,7 @@ func (c *Client) postJSON(ctx context.Context, path string, body, out any) error
 		return req, nil
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("graphmail: %w", err)
 	}
 	defer resp.Body.Close()
 	if out == nil {

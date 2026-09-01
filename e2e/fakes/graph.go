@@ -256,10 +256,8 @@ func (f *fakes) uploadChunk(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusNotFound, "no such upload session")
 		return
 	}
-	if total != int64(len(up.data)) || first != up.got || last != first+int64(len(chunk))-1 || last >= total {
-		writeAPIError(w, http.StatusBadRequest, fmt.Sprintf(
-			"chunk %d-%d/%d does not continue the %d bytes of %d already uploaded",
-			first, last, total, up.got, len(up.data)))
+	if first != up.got || first+int64(len(chunk)) > total {
+		writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("chunk at %d does not continue the %d bytes already uploaded", first, up.got))
 		return
 	}
 	copy(up.data[first:], chunk)

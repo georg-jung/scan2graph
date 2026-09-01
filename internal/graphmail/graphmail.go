@@ -54,11 +54,9 @@ type Client struct {
 	BaseURL string       // e.g. https://graph.microsoft.com/v1.0, no trailing slash
 	Sender  string       // the mailbox to send from; also the message's From
 
-	// LargeScans lets Send take the draft-and-upload path for attachments
-	// past MaxAttachmentBytes. Derived at startup from the access token's
-	// roles, not configured: it is true exactly when Mail.ReadWrite is
-	// granted. False leaves this package on the single sendMail request and
-	// today's ErrTooLarge notice.
+	// LargeScans decides which path Send takes past MaxAttachmentBytes.
+	// Derived at startup from the access token's roles, not configured: true
+	// exactly when Mail.ReadWrite is granted.
 	LargeScans bool
 }
 
@@ -118,7 +116,7 @@ func (c *Client) mailboxURL() string {
 
 // post sends the already-encoded body to sendMail.
 func (c *Client) post(ctx context.Context, body []byte) error {
-	resp, err := c.do(ctx, func(ctx context.Context) (*http.Request, error) {
+	resp, err := (&msapi.Client{HTTP: c.HTTP}).Do(ctx, func(ctx context.Context) (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.mailboxURL()+"/sendMail", bytes.NewReader(body))
 		if err != nil {
 			return nil, err
@@ -127,20 +125,8 @@ func (c *Client) post(ctx context.Context, body []byte) error {
 		return req, nil
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("graphmail: %w", err)
 	}
 	resp.Body.Close()
 	return nil
-}
-
-// do sends one request through the shared msapi retry loop, over the client
-// that carries the bearer token, wrapping any error so it is clear which
-// service failed. The chunk PUTs in upload.go are the one exception and use
-// their own credential-less client; see uploadClient.
-func (c *Client) do(ctx context.Context, newReq func(context.Context) (*http.Request, error)) (*http.Response, error) {
-	resp, err := (&msapi.Client{HTTP: c.HTTP}).Do(ctx, newReq)
-	if err != nil {
-		return nil, fmt.Errorf("graphmail: %w", err)
-	}
-	return resp, nil
 }

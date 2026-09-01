@@ -245,11 +245,7 @@ func (f *fakes) sign(claims map[string]any) (string, error) {
 
 func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 
-// appClaims is the claim set of the bearer token r carries, or nil when it
-// carries nothing that decodes as one. The signature is not checked: the
-// point of reading the claims at all is that the appliance asked this
-// endpoint for a token and for the right scope, and nothing else in this
-// harness has any reason to hand it one whose claims read correctly.
+// appClaims is the claims in r's bearer token, or nil if it doesn't decode - unverified.
 func appClaims(r *http.Request) map[string]any {
 	parts := strings.Split(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), ".")
 	if len(parts) != 3 {

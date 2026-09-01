@@ -292,14 +292,10 @@ A message's MIME structure has its own, non-configurable ceiling (at most 100
 parts, 10 levels of nesting, 16 PDF attachments); a message over any of these
 is rejected with SMTP `552`, the same code a too-large message gets.
 
-What can be *emailed* is a second ceiling and not this one. With the
-`Mail.ReadWrite` permission granted, a scan too large for a single Graph
-request is uploaded to a draft in chunks instead, and `S2G_MAX_MESSAGE_BYTES`
-is the only limit left; without it, one message carries about 2.2 MB and a
-scan between the two figures gets the "too large" notice rather than being
-delivered. scan2graph resolves that at startup, logs the ceiling it arrived
-at, and prints a banner when this setting is above what it can actually
-send.
+What can be *emailed* is a second ceiling, not this one: with
+`Mail.ReadWrite` granted, `S2G_MAX_MESSAGE_BYTES` is the only limit left;
+without it, one message carries about 2.2 MB — see the app registration
+section above for what that permission buys and how scan2graph reports it.
 
 ## Run modes and the setup wizard
 
@@ -499,12 +495,10 @@ or a token. Two failure modes are worth calling out specifically:
   TTL rather than being lost outright; the notice email (if any) links to it.
   scan2graph never silently substitutes the original for a searchable PDF it
   failed to produce — the failed status and reason say so plainly.
-* A scan too large for one Graph request — about 2.2 MB — goes up to a draft
-  in chunks and is sent from there, which needs the `Mail.ReadWrite`
-  permission. Where that has not been granted it is still not treated as a
-  failure: the recipients get a notice instead, with a download link when the
-  profile has `web`, or advice to rescan at a lower resolution when it does
-  not.
+* A scan too large for Graph to send — see "Lifetimes & limits" above for
+  what that ceiling is — is not treated as a failure: the recipients get a
+  notice instead, with a download link when the profile has `web`, or advice
+  to rescan at a lower resolution when it does not.
 
 ## Non-goals
 

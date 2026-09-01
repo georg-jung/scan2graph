@@ -520,8 +520,7 @@ func run(cfg *config.Config) error {
 
 // msClient returns an HTTP client that attaches an app-only access token for
 // one scope, acquired with the Entra app registration and refreshed as needed,
-// together with the token source behind it - which is the same one, so a
-// caller that reads a token at startup does not mint a second one.
+// and the token source behind it - the same one, for a caller that wants it.
 func msClient(cfg *config.Config, scope string) (*http.Client, oauth2.TokenSource) {
 	base := &http.Client{
 		Timeout: 5 * time.Minute,
@@ -590,20 +589,15 @@ func announceGraphCeiling(cfg *config.Config, largeScans bool) {
 		"\n"+
 			"  ┌─ Large scans ───────────────────────────────────────────────\n"+
 			"  │ This app registration has Mail.Send but not Mail.ReadWrite,\n"+
-			"  │ so a scan over %.1f MB cannot be emailed and whoever scanned\n"+
-			"  │ it gets a \"too large\" notice instead - while the SMTP\n"+
+			"  │ so a scan over %.1f MB cannot be emailed, while the SMTP\n"+
 			"  │ listener accepts scans of up to %.1f MB.\n"+
 			"  │\n"+
 			"  │ Grant the Mail.ReadWrite application permission to the app\n"+
 			"  │ registration, consent to it, and restart: scans that big\n"+
 			"  │ then go out in an upload session rather than a notice.\n"+
 			"  └─────────────────────────────────────────────────────────────\n\n",
-		megabytes(graphmail.MaxAttachmentBytes), megabytes(cfg.Limits.MaxMessageBytes))
+		float64(graphmail.MaxAttachmentBytes)/(1<<20), float64(cfg.Limits.MaxMessageBytes)/(1<<20))
 }
-
-// megabytes renders a byte count the way the notice the user would get talks
-// about it, so the two figures cannot disagree.
-func megabytes(n int64) float64 { return float64(n) / (1 << 20) }
 
 // announceDefaultProfile explains what happens to a scan when no sender
 // profiles are configured, since then the enabled features are inferred from
