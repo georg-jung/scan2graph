@@ -321,6 +321,28 @@ func extractCases() []extractCase {
 			wantErr: ErrNoPDF,
 		},
 		{
+			// A cover page, then a part whose headers do not parse: the walk
+			// stops there with a part already behind it, so "did it yield
+			// anything" is not enough to tell a broken message from an empty
+			// one. The error itself is what says the message was carrying
+			// something the walk could not reach.
+			name: "malformed part after a valid one",
+			msg: "Subject: Broken part\n" +
+				"Content-Type: multipart/mixed; boundary=\"b\"\n" +
+				"\n" +
+				"--b\n" +
+				"Content-Type: text/plain\n" +
+				"\n" +
+				"cover page\n" +
+				"--b\n" +
+				"this line is not a header\n" +
+				"Content-Type: application/pdf\n" +
+				"\n" + string(pdfA) +
+				"--b--\n",
+			subject: "Broken part",
+			wantErr: ErrNoPDF,
+		},
+		{
 			// A boundary that never appears in the body: the walk finds no
 			// parts, but the PDF is in there somewhere. Refusing it tells the
 			// sender; calling it a connection test would drop it silently.

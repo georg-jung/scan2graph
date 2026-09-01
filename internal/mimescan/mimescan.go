@@ -156,9 +156,14 @@ func (e *extractor) walk(h textproto.MIMEHeader, body io.Reader, depth int) erro
 	for {
 		p, err := mr.NextPart()
 		if err != nil {
-			// io.EOF, but also a malformed or truncated container: end this
-			// subtree and keep whatever was extracted from it.
-			if seen == 0 {
+			// io.EOF at the closing boundary is the only clean end. Any other
+			// error is a container that broke while we were reading it, and a
+			// container that ended without ever yielding a part never worked
+			// at all: both hide what the message was carrying, so both count
+			// as carrying something. Otherwise a cover page followed by an
+			// unparsable attachment would read as an empty message and take
+			// the scan down with it, unannounced.
+			if err != io.EOF || seen == 0 {
 				e.attach++
 			}
 			return nil
