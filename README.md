@@ -396,7 +396,8 @@ outside the unit: the service itself may not write `/etc` at all.
 **Hardening.** `ProtectSystem=strict` makes the unit's whole file hierarchy
 read-only to it, which is exactly right for an appliance with no state of
 its own to keep — the one directory it does write to, `S2G_TEMP_DIR`, is the
-private `/tmp` that `PrivateTmp=yes` gives it, not a real path on disk. The
+private `/tmp` `PrivateTmp=yes` gives it inside the service's own mount
+namespace, so pointing that setting anywhere else fails at runtime. The
 empty `CapabilityBoundingSet` works because both listeners sit above port
 1024, and `RestrictAddressFamilies=AF_INET AF_INET6` is why the build above
 is CGO-free: a cgo build resolves names through NSS, which on a host running
