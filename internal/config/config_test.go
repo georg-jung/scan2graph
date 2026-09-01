@@ -80,6 +80,17 @@ func TestLoadMinimalValidConfigAndDefaults(t *testing.T) {
 	if c.LogFormat != "json" {
 		t.Errorf("LogFormat = %q, want json", c.LogFormat)
 	}
+	if c.UITitle != "scan2graph" {
+		t.Errorf("UITitle = %q, want scan2graph", c.UITitle)
+	}
+	// A blank title would leave the header with nothing to click.
+	for _, blank := range []string{"", "   "} {
+		env := clone(baseEnv())
+		env["S2G_UI_TITLE"] = blank
+		if got := mustLoad(t, env).UITitle; got != "scan2graph" {
+			t.Errorf("UITitle for %q = %q, want the default", blank, got)
+		}
+	}
 	if c.PublicBaseURL != "https://scan2graph.example.com" {
 		t.Errorf("PublicBaseURL = %q", c.PublicBaseURL)
 	}

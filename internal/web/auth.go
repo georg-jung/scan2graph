@@ -120,7 +120,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		s.sessions.drop(c.Value)
 	}
 	clearCookie(w, sessionCookie, "/")
-	s.render(w, signedOutTmpl, page{Title: "Signed out"})
+	s.render(w, signedOutTmpl, page{Title: "Signed out", Brand: s.cfg.UITitle})
 }
 
 // identities are the canonical addresses the signed-in user is known by,

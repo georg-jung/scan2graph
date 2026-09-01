@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"log/slog"
 	"mime"
@@ -58,7 +59,9 @@ type harness struct {
 	clock *testClock
 }
 
-func newHarness(t *testing.T) *harness {
+// newHarness builds the whole web side. uiTitle, when given, is the
+// operator's brand for this appliance.
+func newHarness(t *testing.T, uiTitle ...string) *harness {
 	t.Helper()
 	idp := newFakeIDP(t)
 	clock := newTestClock()
@@ -75,6 +78,10 @@ func newHarness(t *testing.T) *harness {
 		ClientSecret:     testClientSecret,
 		AuthorityURL:     idp.URL,
 		RecipientAliases: map[string]string{"ann.alias@corp.example": ann},
+		UITitle:          "scan2graph",
+	}
+	if len(uiTitle) == 1 {
+		cfg.UITitle = uiTitle[0]
 	}
 	s, err := New(context.Background(), Options{Store: store, Config: cfg, Logger: quiet(), Now: clock.now})
 	if err != nil {
@@ -162,29 +169,34 @@ func (h *harness) signedIn() *http.Client {
 	return c
 }
 
-// addJob puts one scan with one document into the store.
-func (h *harness) addJob(subject string, recipients []string, caps jobs.Capabilities, content string) jobs.Job {
+// addJob puts one scan into the store, with one document per content given.
+func (h *harness) addJob(subject string, recipients []string, caps jobs.Capabilities, contents ...string) jobs.Job {
 	h.t.Helper()
 	st, err := h.store.Reserve()
 	if err != nil {
 		h.t.Fatalf("Reserve: %v", err)
 	}
-	f, err := st.CreateFile("doc")
-	if err != nil {
-		h.t.Fatalf("CreateFile: %v", err)
-	}
-	if _, err := f.WriteString(content); err != nil {
-		h.t.Fatalf("write document: %v", err)
-	}
-	if err := f.Close(); err != nil {
-		h.t.Fatalf("close document: %v", err)
+	docs := make([]jobs.NewDocument, 0, len(contents))
+	for i, content := range contents {
+		name := fmt.Sprintf("doc%d", i)
+		f, err := st.CreateFile(name)
+		if err != nil {
+			h.t.Fatalf("CreateFile: %v", err)
+		}
+		if _, err := f.WriteString(content); err != nil {
+			h.t.Fatalf("write document: %v", err)
+		}
+		if err := f.Close(); err != nil {
+			h.t.Fatalf("close document: %v", err)
+		}
+		docs = append(docs, jobs.NewDocument{DisplayName: "invoice.pdf", Path: f.Name()})
 	}
 	j, err := st.Commit(jobs.NewJob{
 		Profile:    "printer@corp.example",
 		Caps:       caps,
 		Subject:    subject,
 		Recipients: recipients,
-		Documents:  []jobs.NewDocument{{DisplayName: "invoice.pdf", Path: f.Name()}},
+		Documents:  docs,
 	})
 	if err != nil {
 		h.t.Fatalf("Commit: %v", err)
@@ -608,6 +620,68 @@ func TestRefreshMetaWhileProcessing(t *testing.T) {
 	}
 	if strings.Contains(page, refresh) || !strings.Contains(page, "My invoice") {
 		t.Errorf("list page with nothing processing did not render as expected:\n%s", page)
+	}
+}
+
+// TestListShowsScanSize covers the column that replaced the document count:
+// a single-document scan just says how big it is, and only a multi-document
+// one has to say how many files there are.
+func TestListShowsScanSize(t *testing.T) {
+	h := newHarness(t)
+	h.addJob("One document", []string{ann}, webCaps, strings.Repeat("x", 3072))
+	h.addJob("Two documents", []string{ann}, webCaps, strings.Repeat("x", 1024), strings.Repeat("x", 1024))
+
+	_, body := h.get(h.signedIn(), h.ts.URL+"/")
+	for _, want := range []string{">3 kB<", ">2 files \u00b7 2 kB<"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("list page has no cell %q:\n%s", want, body)
+		}
+	}
+}
+
+// TestDetailPageOffersOneDocumentDirectly is the 99% case: one document, one
+// download control, no list to read.
+func TestDetailPageOffersOneDocumentDirectly(t *testing.T) {
+	h := newHarness(t)
+	one := h.addJob("One document", []string{ann}, webCaps, "%PDF-1.7 a")
+	two := h.addJob("Two documents", []string{ann}, webCaps, "%PDF-1.7 a", "%PDF-1.7 bb")
+	c := h.signedIn()
+
+	_, page := h.get(c, h.ts.URL+"/scan/"+one.ID)
+	if strings.Contains(page, "<ul class=\"docs\">") {
+		t.Errorf("a single-document scan still renders a document list:\n%s", page)
+	}
+	href := "/scan/" + one.ID + "/" + one.Documents[0].ID
+	if !strings.Contains(page, `<a class="download" href="`+href+`" download>Download invoice.pdf`) {
+		t.Errorf("the single document is not offered as a download control:\n%s", page)
+	}
+
+	_, page = h.get(c, h.ts.URL+"/scan/"+two.ID)
+	if !strings.Contains(page, "<ul class=\"docs\">") {
+		t.Errorf("a two-document scan does not list its documents:\n%s", page)
+	}
+	for _, d := range two.Documents {
+		if !strings.Contains(page, "/scan/"+two.ID+"/"+d.ID) {
+			t.Errorf("the list is missing document %s:\n%s", d.DisplayName, page)
+		}
+	}
+}
+
+// TestUITitleIsEscaped guards the first operator-supplied string that reaches
+// a page: it must arrive as text in both places that render it, never as
+// markup.
+func TestUITitleIsEscaped(t *testing.T) {
+	const title = `Acme <script>alert(1)</script> & Co`
+	h := newHarness(t, title)
+
+	_, body := h.get(h.signedIn(), h.ts.URL+"/")
+	if strings.Contains(body, "<script>") {
+		t.Fatalf("the UI title reached the page as markup:\n%s", body)
+	}
+	// Once in the <title>, once in the header's brand link.
+	escaped := "Acme &lt;script&gt;alert(1)&lt;/script&gt; &amp; Co"
+	if n := strings.Count(body, escaped); n != 2 {
+		t.Errorf("the escaped UI title appears %d times, want 2 (title and brand):\n%s", n, body)
 	}
 }
 

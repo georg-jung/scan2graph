@@ -33,7 +33,7 @@ state.
 
 ![The scan list, one row per pending or ready scan](docs/screenshots/list.png)
 
-![One scan, its documents and their sizes](docs/screenshots/detail.png)
+![One scan, offered as a single download](docs/screenshots/detail.png)
 
 ## Sender profiles vs. recipient identity
 
@@ -163,7 +163,7 @@ plain environment variable. Setting both at once is a startup error. See
 [`.env.example`](.env.example) for a fully commented copy with example
 values.
 
-**Listeners & logging**
+**Listeners, logging & appearance**
 
 | variable | default | required when |
 | --- | --- | --- |
@@ -172,6 +172,7 @@ values.
 | `S2G_TEMP_DIR` | the OS temp directory | — |
 | `S2G_LOG_LEVEL` | `info` | — |
 | `S2G_LOG_FORMAT` | `json` | — |
+| `S2G_UI_TITLE` | `scan2graph` | — |
 
 **SMTP AUTH**
 

@@ -7,6 +7,7 @@
 package config
 
 import (
+	"cmp"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -45,6 +46,7 @@ type Config struct {
 	TempDir            string
 	LogLevel           slog.Level
 	LogFormat          string
+	UITitle            string // what the web UI calls itself: page titles and header
 
 	// SMTPUsername/SMTPPassword are the SMTP AUTH PLAIN/LOGIN credentials
 	// the scanner must present. SMTPPassword is never logged. When
@@ -106,6 +108,9 @@ func Load(getenv func(string) string) (*Config, error) {
 	c.TempDir = l.stringDefault("S2G_TEMP_DIR", os.TempDir())
 	c.LogFormat = l.logFormat()
 	c.LogLevel = l.logLevel()
+	// Trimmed, and blank falls back: an empty S2G_UI_TITLE_FILE would
+	// otherwise leave the header's link home with no text to click.
+	c.UITitle = cmp.Or(strings.TrimSpace(l.stringDefault("S2G_UI_TITLE", "")), "scan2graph")
 
 	c.SMTPUsername, c.SMTPPassword, c.SMTPAllowAnonymous, c.SMTPPasswordGenerated = l.smtpAuth()
 
@@ -529,6 +534,7 @@ func (c *Config) LogValue() slog.Value {
 		slog.String("temp_dir", c.TempDir),
 		slog.String("log_level", c.LogLevel.String()),
 		slog.String("log_format", c.LogFormat),
+		slog.String("ui_title", c.UITitle),
 		slog.Any("profiles", profiles),
 		slog.Int("recipient_aliases", len(c.RecipientAliases)),
 		slog.Any("allowed_recipient_domains", c.AllowedRecipientDomains),

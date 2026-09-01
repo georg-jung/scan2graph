@@ -32,13 +32,13 @@ test('Bob can neither see nor fetch a scan addressed to Alice', async ({ page })
   expect((await page.goto(scanURL)).status()).toBe(200);
   await expect(page.getByRole('heading', { name: subject })).toBeVisible();
   await expect(async () => {
-    await page.reload(); // the link appears once the pipeline is done
-    await expect(page.locator('ul.docs a')).toHaveCount(1);
+    await page.reload(); // the control appears once the pipeline is done
+    await expect(page.locator('a.download')).toHaveCount(1);
   }).toPass({ intervals: [50], timeout: 30_000 });
-  const documentURL = await page.locator('ul.docs a').getAttribute('href');
+  const documentURL = await page.locator('a.download').getAttribute('href');
   const [download] = await Promise.all([
     page.waitForEvent('download'),
-    page.locator('ul.docs a').click(),
+    page.locator('a.download').click(),
   ]);
   expect(await download.failure()).toBeNull();
 
