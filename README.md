@@ -83,9 +83,9 @@ not a filter you have configured.
 Point the printer's "scan to email" feature at scan2graph:
 
 * **SMTP server**: scan2graph's host, on the LAN.
-* **Port**: whatever `S2G_SMTP_ADDR` listens on (`2525` by default — the
-  container runs unprivileged and cannot bind port 25 itself; forward it at
-  the network layer if the printer insists on 25).
+* **Port**: whatever `S2G_SMTP_ADDR` listens on (`2525` by default — scan2graph
+  runs unprivileged and cannot bind port 25 itself; forward it at the network
+  layer if the printer insists on 25).
 * **Encryption**: none. The listener never advertises STARTTLS; see "Security
   assumptions" for why that is an accepted trade-off on a LAN segment.
 * **Authentication**: PLAIN or LOGIN, with `S2G_SMTP_USERNAME` /
@@ -353,8 +353,54 @@ docker compose -f docker-compose.example.yml up -d
 ```
 
 Copy [`docker-compose.example.yml`](docker-compose.example.yml) and edit it —
-every setting in it is commented. Building the image yourself is `docker
-build -t scan2graph .`.
+every setting in it is commented, including the config-file alternative to
+`env_file`. Building the image yourself is `docker build -t scan2graph .`.
+
+**Running under systemd instead.** scan2graph is a single static binary, so
+a container is not required — a unit works just as well on a host that
+already runs one:
+
+```bash
+CGO_ENABLED=0 go build -o /usr/local/bin/scan2graph ./cmd/scan2graph
+useradd --system --no-create-home --shell /usr/sbin/nologin scan2graph
+
+mkdir -p /etc/scan2graph
+cp .env.example /etc/scan2graph/scan2graph.env   # then edit it
+chown -R scan2graph:scan2graph /etc/scan2graph   # saving replaces by rename
+chmod 0600 /etc/scan2graph/scan2graph.env
+
+cp scan2graph.example.service /etc/systemd/system/scan2graph.service
+systemctl daemon-reload
+systemctl enable --now scan2graph
+```
+
+The unit runs `serve`, which never opens the wizard, so `setup-next-start`
+— which only arms the *next* start with no subcommand — would do nothing
+here. Under systemd the wizard is a run of its own instead: stop the unit to
+free the port, run it as the service user so what it writes stays owned by
+the service, and start the unit again afterwards.
+
+```bash
+systemctl stop scan2graph
+sudo -u scan2graph /usr/local/bin/scan2graph setup \
+  --config /etc/scan2graph/scan2graph.env
+# fill the form in, save, then Ctrl-C
+systemctl start scan2graph
+```
+
+That prints the URL to open — one-shot token included, whenever the file
+already holds something worth protecting — to stderr; see "Run modes and the
+setup wizard" above. **Save** works here precisely *because* this run is
+outside the unit: the service itself may not write `/etc` at all.
+
+**Hardening.** `ProtectSystem=strict` makes the unit's whole file hierarchy
+read-only to it, which is exactly right for an appliance with no state of
+its own to keep — the one directory it does write to, `S2G_TEMP_DIR`, is the
+private `/tmp` that `PrivateTmp=yes` gives it, not a real path on disk. The
+empty `CapabilityBoundingSet` works because both listeners sit above port
+1024, and `RestrictAddressFamilies=AF_INET AF_INET6` is why the build above
+is CGO-free: a cgo build resolves names through NSS, which on a host running
+systemd-resolved means a unix socket the unit is not allowed to open.
 
 ## Security assumptions
 
@@ -415,7 +461,8 @@ or a token. Two failure modes are worth calling out specifically:
 
 No database, no durable queue, no message broker, no Azure/Graph SDKs, no SPA
 or frontend build pipeline, no PDF rendering stack, no admin UI, no generic
-SMTP relaying, and no HTTPS/ACME inside the container.
+SMTP relaying, and no HTTPS/ACME handling of its own — container or systemd,
+that is always the reverse proxy's job.
 
 ## Development & tests
 

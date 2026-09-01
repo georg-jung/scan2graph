@@ -1,0 +1,22 @@
+# systemd unit for scan2graph. Copy to /etc/systemd/system/scan2graph.service
+# - see "Deployment" in README.md for the full setup.
+[Unit]
+Description=scan2graph LAN scan-to-email gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/scan2graph serve --config /etc/scan2graph/scan2graph.env
+User=scan2graph
+Restart=on-failure
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

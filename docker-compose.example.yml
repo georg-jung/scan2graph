@@ -12,6 +12,18 @@ services:
     restart: unless-stopped
     env_file: .env
 
+    # Alternative to env_file: delete that line above, mount a KEY=value
+    # configuration file (start it from .env.example) and point scan2graph at
+    # it instead. Precedence is environment > file > built-in default per
+    # setting, so an env_file or environment: entry left in place does not
+    # merge with the file - it shadows that key outright. With read_only: true
+    # the wizard cannot write here at all, so Download is the button that
+    # works; see "Deployment" in README.md.
+    # environment:
+    #   S2G_CONFIG_FILE: /etc/scan2graph/scan2graph.env
+    # volumes:
+    #   - ./scan2graph.env:/etc/scan2graph/scan2graph.env:ro
+
     ports:
       # HTTP is only for the reverse proxy running on this same host, so it
       # is bound to loopback, not published on the LAN.
