@@ -45,6 +45,9 @@ anything; it overrides habit, not judgement.
   review convergence — a finding that costs more lines than the risk it
   removes should be declined, with the reasoning on the thread and the thread
   left open for the owner.
+* When a round lands substantial findings, ask both reviewers for another one
+  — and only then. A round that found nothing worth acting on has converged
+  already, and asking again buys noise, not safety.
 * An identical review arriving again is usually the same review re-anchored to
   a new head commit, not a fresh finding. Check the resolved threads before
   acting: re-fixing or re-arguing something already settled wastes a cycle and
