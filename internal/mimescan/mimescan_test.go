@@ -321,6 +321,21 @@ func extractCases() []extractCase {
 			wantErr: ErrNoPDF,
 		},
 		{
+			// No filename, no Content-Type, no disposition - nothing but
+			// bytes that begin a PDF and then stop before %%EOF. The headers
+			// say nothing, so only the magic marks this as an attempted scan
+			// rather than an empty message.
+			name: "truncated pdf with no headers at all",
+			msg: "Subject: Cut short\n" +
+				"Content-Type: multipart/mixed; boundary=\"b\"\n" +
+				"\n" +
+				"--b\n" +
+				"\n" + "%PDF-1.4\nbut the rest never arrived\n" +
+				"--b--\n",
+			subject: "Cut short",
+			wantErr: ErrNoPDF,
+		},
+		{
 			// A cover page, then a part whose headers do not parse: the walk
 			// stops there with a part already behind it, so "did it yield
 			// anything" is not enough to tell a broken message from an empty

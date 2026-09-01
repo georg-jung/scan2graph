@@ -126,8 +126,14 @@ type extractor struct {
 	newFile func() (*os.File, error)
 	words   mime.WordDecoder
 	parts   int
-	attach  int // parts that carried a file, whatever its type
-	pdfs    []PDF
+	// attach counts everything that could have been a file, whether or not
+	// it turned out to be a usable PDF: a part whose headers say file, a
+	// part whose bytes say PDF, and a container too broken to show what it
+	// held. Only "is it zero" is ever asked. Anything that can hide a scan
+	// has to land here, because zero is what makes the SMTP layer answer
+	// 250 and drop the message.
+	attach int
+	pdfs   []PDF
 }
 
 // walk processes one node of the MIME tree: a multipart container, whose
@@ -186,9 +192,8 @@ func (e *extractor) walk(h textproto.MIMEHeader, body io.Reader, depth int) erro
 // on why only the bytes decide) and skips it otherwise.
 func (e *extractor) leaf(h textproto.MIMEHeader, body io.Reader, mt string, params map[string]string) error {
 	name := e.filename(h, params)
-	// A part is a file if it names one, says it is one, or is simply not
-	// text; counted before any check can reject it, since the caller needs
-	// "carried files at all" separately from "carried a PDF".
+	// The headers' say: a file if it names one, declares itself one, or is
+	// simply not text.
 	disp, _, _ := mime.ParseMediaType(h.Get("Content-Disposition"))
 	if name != "" || disp == "attachment" || (mt != "" && !strings.HasPrefix(mt, "text/")) {
 		e.attach++
@@ -205,6 +210,11 @@ func (e *extractor) leaf(h textproto.MIMEHeader, body io.Reader, mt string, para
 	if !bytes.HasPrefix(head[:n], pdfMagic) {
 		return nil
 	}
+	// The bytes' say, which outranks silent headers: this is a document
+	// however the part was labelled. Counted here, before the checks below
+	// can reject it, so a truncated or corrupt scan is refused rather than
+	// mistaken for a message that carried nothing.
+	e.attach++
 	if len(e.pdfs) >= maxPDFs {
 		return fmt.Errorf("%w: too many PDF attachments", ErrTooComplex)
 	}
