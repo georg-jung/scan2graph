@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"github.com/georg-jung/scan2graph/internal/docintel"
 	"github.com/georg-jung/scan2graph/internal/graphmail"
 	"github.com/georg-jung/scan2graph/internal/jobs"
+	"github.com/georg-jung/scan2graph/internal/msapi"
 	"github.com/georg-jung/scan2graph/internal/pipeline"
 	"github.com/georg-jung/scan2graph/internal/smtpin"
 	"github.com/georg-jung/scan2graph/internal/web"
@@ -420,8 +422,9 @@ func run(cfg *config.Config) error {
 
 	var ocr pipeline.OCR // interface-typed: a nil *docintel.Client would not be nil here
 	if cfg.DIEndpoint != "" {
+		client, _ := msClient(cfg, cfg.DIScope) // no permission of its own to read
 		ocr = &docintel.Client{
-			HTTP:       msClient(cfg, cfg.DIScope),
+			HTTP:       client,
 			Endpoint:   cfg.DIEndpoint,
 			APIVersion: cfg.DIAPIVersion,
 		}
@@ -429,11 +432,15 @@ func run(cfg *config.Config) error {
 
 	var mailer pipeline.Mailer // same reason: interface-typed even when nil
 	if cfg.GraphSender != "" {
-		mailer = &graphmail.Client{
-			HTTP:    msClient(cfg, cfg.GraphScope),
-			BaseURL: cfg.GraphBaseURL,
-			Sender:  cfg.GraphSender,
+		client, tokens := msClient(cfg, cfg.GraphScope)
+		m := &graphmail.Client{
+			HTTP:       client,
+			BaseURL:    cfg.GraphBaseURL,
+			Sender:     cfg.GraphSender,
+			LargeScans: mailReadWrite(tokens),
 		}
+		announceGraphCeiling(cfg, m.LargeScans)
+		mailer = m
 	}
 
 	pipe := pipeline.New(pipeline.Options{
@@ -512,8 +519,10 @@ func run(cfg *config.Config) error {
 }
 
 // msClient returns an HTTP client that attaches an app-only access token for
-// one scope, acquired with the Entra app registration and refreshed as needed.
-func msClient(cfg *config.Config, scope string) *http.Client {
+// one scope, acquired with the Entra app registration and refreshed as needed,
+// together with the token source behind it - which is the same one, so a
+// caller that reads a token at startup does not mint a second one.
+func msClient(cfg *config.Config, scope string) (*http.Client, oauth2.TokenSource) {
 	base := &http.Client{
 		Timeout: 5 * time.Minute,
 		// Never follow a redirect: this client attaches the bearer token to
@@ -532,11 +541,69 @@ func msClient(cfg *config.Config, scope string) *http.Client {
 	// that has to go out when everything else is failing. The base client's
 	// timeout is what bounds a hung Entra instead.
 	tokenCtx := context.WithValue(context.Background(), oauth2.HTTPClient, base)
-	c := cc.Client(tokenCtx)
+	ts := cc.TokenSource(tokenCtx)
+	c := oauth2.NewClient(tokenCtx, ts)
 	c.Timeout = base.Timeout
 	c.CheckRedirect = base.CheckRedirect
-	return c
+	return c, ts
 }
+
+// mailReadWrite answers whether the app registration was granted
+// Mail.ReadWrite, which is what lets graphmail send a scan too large for
+// sendMail. It reads one app-only token's roles claim rather than asking the
+// operator to configure what they have already granted.
+//
+// A token that cannot be fetched leaves large scans off instead of failing
+// the start: Graph is a per-job dependency, and an appliance that will not
+// boot because Entra was briefly unreachable is worse than one that sends a
+// notice for the first big scan. The token source is the process-lifetime one
+// msClient built, deliberately not tied to the signal context, so this
+// startup fetch is also the token every later request reuses.
+func mailReadWrite(tokens oauth2.TokenSource) bool {
+	tok, err := tokens.Token()
+	if err != nil {
+		// err is Entra's refusal, never a token: a token request that failed
+		// did not come back with one.
+		slog.Warn("could not read the Graph token's permissions at startup; large scans stay off until a restart", "err", err)
+		return false
+	}
+	// The token itself and every other claim in it stay here.
+	return slices.Contains(msapi.TokenRoles(tok.AccessToken), "Mail.ReadWrite")
+}
+
+// announceGraphCeiling says how large a scan this appliance can actually
+// email. That is not one number: with Mail.ReadWrite granted an oversized
+// attachment goes up in chunks, so the SMTP cap is the only ceiling left;
+// without it, sendMail's is. The box appears for the one combination an
+// operator should act on - scans this will accept over SMTP and then have to
+// refuse - and never otherwise.
+func announceGraphCeiling(cfg *config.Config, largeScans bool) {
+	ceiling := int64(graphmail.MaxAttachmentBytes)
+	if largeScans {
+		ceiling = cfg.Limits.MaxMessageBytes
+	}
+	slog.Info("email delivery enabled", "mail_read_write", largeScans, "largest_emailable_scan_bytes", ceiling)
+	if largeScans || cfg.Limits.MaxMessageBytes <= graphmail.MaxAttachmentBytes {
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"\n"+
+			"  ┌─ Large scans ───────────────────────────────────────────────\n"+
+			"  │ This app registration has Mail.Send but not Mail.ReadWrite,\n"+
+			"  │ so a scan over %.1f MB cannot be emailed and whoever scanned\n"+
+			"  │ it gets a \"too large\" notice instead - while the SMTP\n"+
+			"  │ listener accepts scans of up to %.1f MB.\n"+
+			"  │\n"+
+			"  │ Grant the Mail.ReadWrite application permission to the app\n"+
+			"  │ registration, consent to it, and restart: scans that big\n"+
+			"  │ then go out in an upload session rather than a notice.\n"+
+			"  └─────────────────────────────────────────────────────────────\n\n",
+		megabytes(graphmail.MaxAttachmentBytes), megabytes(cfg.Limits.MaxMessageBytes))
+}
+
+// megabytes renders a byte count the way the notice the user would get talks
+// about it, so the two figures cannot disagree.
+func megabytes(n int64) float64 { return float64(n) / (1 << 20) }
 
 // announceDefaultProfile explains what happens to a scan when no sender
 // profiles are configured, since then the enabled features are inferred from

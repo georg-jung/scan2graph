@@ -1,14 +1,19 @@
 // What each sender profile does with a scan, end to end: the printer's SMTP
 // transaction, the pipeline, and what the recipient can actually get hold of.
 
+import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import { createConnection } from 'node:net';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 
-import { diSubmissions, graphMessages, resetFakes, setDIMode } from '../lib/fakes.mjs';
+import { FIXTURE_SECRET, diSubmissions, graphMessages, resetFakes, setDIMode } from '../lib/fakes.mjs';
 import { makePdf, sendScan } from '../lib/smtp.mjs';
 import { signIn } from '../lib/sign-in.mjs';
 
 const ALICE = 'alice@corp.example';
+const e2e = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 test.beforeEach(resetFakes);
 
@@ -54,12 +59,7 @@ test('an email scan goes out through Graph and never appears on the web', async 
   const codes = await sendScan({ from: 'ocr-email@scanner.local', to: ALICE, subject, pdf });
   expect(codes.body).toBe(250);
 
-  let message;
-  await expect(async () => {
-    message = (await graphMessages()).find((m) => m.subject === subject);
-    expect(message).toBeDefined();
-  }).toPass({ timeout: 30_000 });
-
+  const message = await mailedWithSubject(subject);
   expect(message.error).toBeUndefined();
   expect(message.sender).toBe('scanner@corp.example');
   expect(message.to).toEqual([ALICE]);
@@ -93,6 +93,71 @@ test('a failed OCR fails the scan and never passes the original off as searchabl
   expect(downloaded.equals(pdf)).toBe(true);
   expect(downloaded.toString()).not.toContain('OCRED-BY-FAKE');
   expect((await diSubmissions()).map((s) => s.sha256)).toContain(sha256(pdf));
+});
+
+// A scan too large for Graph's sendMail, on both sides of the permission that
+// decides what becomes of it. Neither appliance can be the harness's: this
+// needs an SMTP cap well above sendMail's ceiling, a profile with email and
+// without ocr so the PDF that reaches Graph is the one the printer sent rather
+// than the fake OCR's, and an app registration on each side of Mail.ReadWrite -
+// which is a property of the registration, so the fake grants the permission
+// to one of the two client ids it knows (e2e/fakes/main.go). The appliances
+// differ in nothing else.
+test.describe('a scan too large for sendMail', () => {
+  // Past graphmail's 2.25 MB sendMail ceiling, and past the 3.75 MB it puts in
+  // one chunk, so the upload has to get a second offset right rather than
+  // only the first.
+  const SIZE = 4 * 1024 * 1024;
+  // Ports of their own, clear of the harness's. Started in beforeAll rather
+  // than here: a test file is loaded more than once per run, and a process
+  // spawned at load time would be spawned again with nothing to stop it.
+  const uploads = { clientID: '00000000-0000-0000-0000-000000000001', http: 18083, smtp: 12527 };
+  const sendOnly = { clientID: '00000000-0000-0000-0000-000000000002', http: 18084, smtp: 12528 };
+  const both = [uploads, sendOnly];
+
+  test.beforeAll(async () => {
+    for (const a of both) a.proc = start(a);
+    await Promise.all(both.map(serving));
+  });
+
+  test.afterAll(() => {
+    for (const a of both) a.proc?.child.kill('SIGTERM');
+  });
+
+  test('goes up in chunks and arrives whole where Mail.ReadWrite is granted', async () => {
+    const subject = unique('large-upload');
+    const pdf = bigPdf(subject, SIZE);
+    const codes = await sendScan({ from: 'big@scanner.local', to: ALICE, subject, pdf, port: uploads.smtp });
+    expect(codes.body).toBe(250);
+
+    const message = await mailedWithSubject(subject);
+    expect(message.error).toBeUndefined();
+    expect(message.to).toEqual([ALICE]);
+    expect(message.attachments).toHaveLength(1);
+    expect(message.attachments[0].filename).toBe('scan.pdf');
+    // Byte for byte, not "a message showed up": what the upload path has to
+    // get right is every chunk at its own offset, and the fake reassembled
+    // this one out of two of them.
+    expect(Buffer.from(message.attachments[0].base64, 'base64').equals(pdf)).toBe(true);
+    // The permission is granted here, so there is nothing for the operator to
+    // do and nothing shouting at them about it.
+    expect(uploads.proc.log).not.toContain('Large scans');
+  });
+
+  test('gets the too-large notice where it is not, and the operator is told why', async () => {
+    const subject = unique('large-notice');
+    const codes = await sendScan({
+      from: 'big@scanner.local', to: ALICE, subject, pdf: bigPdf(subject, SIZE), port: sendOnly.smtp,
+    });
+    expect(codes.body).toBe(250);
+
+    const notice = await mailedWithSubject(`Scan not delivered: ${subject}`);
+    expect(notice.attachments).toEqual([]);
+    expect(notice.body).toContain('The scan is 4.0 MB, which is larger than the 2.2 MB an email can carry.');
+    // This appliance accepts scans it must then refuse, which is the one case
+    // that gets a banner rather than a log line.
+    expect(sendOnly.proc.log).toContain('Grant the Mail.ReadWrite application permission');
+  });
 });
 
 const unique = (flow) => `e2e ${flow} ${randomUUID().slice(0, 8)}`;
@@ -129,4 +194,85 @@ async function downloadDocument(page) {
   const chunks = [];
   for await (const chunk of await download.createReadStream()) chunks.push(chunk);
   return Buffer.concat(chunks);
+}
+
+// mailedWithSubject is the message the appliance sent through Graph, whichever
+// of the two paths carried it: the fake reports a draft-and-upload the same
+// way it reports a sendMail.
+async function mailedWithSubject(subject) {
+  let message;
+  await expect(async () => {
+    message = (await graphMessages()).find((m) => m.subject === subject);
+    expect(message).toBeDefined();
+  }).toPass({ timeout: 30_000 });
+  return message;
+}
+
+// bigPdf is makePdf's document with its padding stamped with its own offset.
+// The flat padding would compare equal to itself written at the wrong offset,
+// so a scrambled scan would pass the assertion above; this one cannot. The
+// first and last bytes are left alone - they are the %PDF- and %%EOF the
+// appliance checks for.
+function bigPdf(marker, size) {
+  const pdf = makePdf(marker, size);
+  for (let i = 128; i < pdf.length - 64; i++) pdf[i] = 0x41 + (i % 26);
+  return pdf;
+}
+
+// start runs a second scan2graph, because the harness's own cannot be
+// configured two ways at once. Its environment is exactly what is listed here
+// - a setting it is missing fails these tests rather than being quietly made
+// up for - and its stderr is kept, because "it would not start" is a failure
+// this file has to be able to explain, and because the banner asserted above
+// is printed there.
+function start({ clientID, http, smtp }) {
+  const child = spawn(path.join(e2e, '.bin', 'scan2graph'), ['serve'], {
+    stdio: ['ignore', 'ignore', 'pipe'],
+    env: {
+      PATH: process.env.PATH,
+      S2G_HTTP_ADDR: `127.0.0.1:${http}`,
+      S2G_SMTP_ADDR: `127.0.0.1:${smtp}`,
+      S2G_TEMP_DIR: path.join(e2e, '.tmp'),
+      S2G_LOG_FORMAT: 'text',
+      S2G_SMTP_USERNAME: 'printer',
+      S2G_SMTP_PASSWORD: FIXTURE_SECRET,
+      S2G_PROFILES: JSON.stringify({ 'big@scanner.local': { email: true } }),
+      S2G_ALLOWED_RECIPIENT_DOMAINS: 'corp.example',
+      S2G_GRAPH_SENDER: 'scanner@corp.example',
+      S2G_GRAPH_BASE_URL: 'http://127.0.0.1:19000/graph',
+      S2G_ENTRA_TENANT_ID: '00000000-0000-0000-0000-0000000000aa',
+      S2G_ENTRA_CLIENT_ID: clientID,
+      S2G_ENTRA_CLIENT_SECRET: FIXTURE_SECRET,
+      S2G_ENTRA_TOKEN_URL: 'http://127.0.0.1:19000/idp/token',
+      // Above sendMail's ceiling by some margin: nothing can choose a
+      // delivery path for a scan the SMTP listener refused to take.
+      S2G_MAX_MESSAGE_BYTES: String(8 * 1024 * 1024),
+    },
+  });
+  const started = { child, log: '', exited: false };
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk) => {
+    started.log += chunk;
+  });
+  child.once('exit', (code) => {
+    started.exited = true;
+    started.log += `\nthe appliance exited with code ${code}`;
+  });
+  return started;
+}
+
+// serving waits until the scan can actually be sent: the SMTP listener binds
+// on a goroutine of its own, so the process being up is not the same thing.
+async function serving(a) {
+  await expect(async () => {
+    expect(a.proc.exited, a.proc.log).toBe(false);
+    await new Promise((resolve, reject) => {
+      const socket = createConnection({ host: '127.0.0.1', port: a.smtp });
+      socket.once('connect', () => {
+        socket.end();
+        resolve();
+      });
+      socket.once('error', reject);
+    });
+  }).toPass({ intervals: [50], timeout: 30_000 });
 }

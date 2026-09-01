@@ -33,13 +33,25 @@ import (
 // has nothing to find and no handler invents a second literal.
 const (
 	clientID    = "00000000-0000-0000-0000-000000000001"
-	appToken    = "fake-app-token"  // prefix; the scope is appended to it
+	sendOnlyID  = "00000000-0000-0000-0000-000000000002"
 	userToken   = "fake-user-token" // throwaway, nothing here reads it
 	graphSender = "scanner@corp.example"
 	graphScope  = "https://graph.microsoft.com/.default"
 	diScope     = "https://cognitiveservices.azure.com/.default"
 	keyID       = "fake-key"
 )
+
+// appRoles is what each app registration was granted, the way Entra reports
+// application permissions in an app-only token's "roles" claim - and the only
+// difference between the two. The appliance reads Mail.ReadWrite at startup
+// to decide whether a scan too large for sendMail goes up in chunks or gets a
+// notice, so the suite runs one appliance on each side of that by pointing
+// them at different registrations, which is how an operator would see it too.
+// Only the first signs users in; the second never gets a redirect URI.
+var appRoles = map[string][]string{
+	clientID:   {"Mail.Send", "Mail.ReadWrite"},
+	sendOnlyID: {"Mail.Send"},
+}
 
 // redirectURIs is what this app registration has registered, and authorize
 // accepts nothing else: the appliance the harness configures, and the second
@@ -96,8 +108,10 @@ type fakes struct {
 	subs     []submission
 	messages []graphMessage
 	analyses map[string]*analysis
-	pending  map[string]pendingAuth // authorize -> approve
-	codes    map[string]grant       // approve -> token
+	drafts   map[string]*graphMessage // created -> sent, when the scan is too big for sendMail
+	uploads  map[string]*upload       // one open attachment upload session each
+	pending  map[string]pendingAuth   // authorize -> approve
+	codes    map[string]grant         // approve -> token
 }
 
 func main() {
@@ -156,6 +170,12 @@ func (f *fakes) httpRoutes() http.Handler {
 	mux.HandleFunc("GET /idp/approve", f.approve)
 	mux.HandleFunc("POST /idp/token", f.token)
 	mux.HandleFunc("POST /graph/users/{sender}/sendMail", f.sendMail)
+	mux.HandleFunc("POST /graph/users/{sender}/messages", f.createDraft)
+	mux.HandleFunc("POST /graph/users/{sender}/messages/{id}/attachments/createUploadSession", f.createUploadSession)
+	mux.HandleFunc("POST /graph/users/{sender}/messages/{id}/send", f.sendDraft)
+	// Not under /graph: an upload session's URL is one Graph hands out on a
+	// host of its own, and the appliance must not carry its token there.
+	mux.HandleFunc("PUT /upload/{id}", f.uploadChunk)
 	mux.HandleFunc("POST /inspect/reset", f.reset)
 	mux.HandleFunc("POST /inspect/di/mode", f.setDIMode)
 	mux.HandleFunc("GET /inspect/di", f.inspectDI)
@@ -192,6 +212,8 @@ func (f *fakes) clear() {
 	f.subs = []submission{}
 	f.messages = []graphMessage{}
 	f.analyses = map[string]*analysis{}
+	f.drafts = map[string]*graphMessage{}
+	f.uploads = map[string]*upload{}
 	f.pending = map[string]pendingAuth{}
 	f.codes = map[string]grant{}
 }
@@ -232,9 +254,10 @@ func (f *fakes) inspectGraph(w http.ResponseWriter, _ *http.Request) {
 // A fake that served an unauthenticated request would let the appliance
 // stop asking for a token without any test noticing; one that ignored the
 // scope would accept a token real Entra never issues, and a wrong
-// S2G_*_SCOPE would first be heard about in production.
+// S2G_*_SCOPE would first be heard about in production. The token is a JWT,
+// so the scope is a claim to read rather than a suffix to compare.
 func authorized(w http.ResponseWriter, r *http.Request, scope string) bool {
-	if r.Header.Get("Authorization") == "Bearer "+appToken+"|"+scope {
+	if appClaims(r)["scope"] == scope {
 		return true
 	}
 	writeAPIError(w, http.StatusUnauthorized, "missing or wrong bearer token")
