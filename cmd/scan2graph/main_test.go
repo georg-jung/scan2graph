@@ -2,7 +2,9 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -187,16 +189,29 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// freePort returns an address nothing is listening on, for a child process to
-// bind.
+// freePort finds an address nothing is listening on, for a child process to
+// bind. It cannot reserve one: the listener has to be closed before the child
+// can take the port, and the child needs about a tenth of a second to start,
+// so all this can do is choose from somewhere nothing else is handing out.
+// Asking for :0 is not that - it draws from the ephemeral range, which is
+// exactly where every httptest server in a package running alongside this one
+// gets its port. Losing that race leaves the child listening somewhere else
+// and still running, with a failure four seconds later that reads like a bug
+// in the code under test.
 func freePort(t *testing.T) string {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	var err error
+	for range 50 {
+		addr := fmt.Sprintf("127.0.0.1:%d", 20000+rand.IntN(10000))
+		var ln net.Listener
+		if ln, err = net.Listen("tcp", addr); err != nil {
+			continue // something has it, or the machine is out of sockets
+		}
+		ln.Close()
+		return addr
 	}
-	defer ln.Close()
-	return ln.Addr().String()
+	t.Fatalf("no free port in 20000-29999 after 50 tries; last error: %v", err)
+	return ""
 }
 
 // mainProc is one run of the real command in its own process, with an
