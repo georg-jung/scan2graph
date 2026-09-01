@@ -321,6 +321,21 @@ func extractCases() []extractCase {
 			wantErr: ErrNoPDF,
 		},
 		{
+			// A boundary that never appears in the body: the walk finds no
+			// parts, but the PDF is in there somewhere. Refusing it tells the
+			// sender; calling it a connection test would drop it silently.
+			name: "declared boundary never appears",
+			msg: "Subject: Mismatched\n" +
+				"Content-Type: multipart/mixed; boundary=\"declared\"\n" +
+				"\n" +
+				"--actual\n" +
+				"Content-Type: application/pdf\n" +
+				"\n" + string(pdfA) +
+				"--actual--\n",
+			subject: "Mismatched",
+			wantErr: ErrNoPDF,
+		},
+		{
 			// The filename clause: a text part that names a file is a file.
 			name: "text part with a filename counts as attached",
 			msg: "Subject: Scan\n" +

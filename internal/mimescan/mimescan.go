@@ -139,21 +139,28 @@ func (e *extractor) walk(h textproto.MIMEHeader, body io.Reader, depth int) erro
 	if !strings.HasPrefix(mt, "multipart/") {
 		return e.leaf(h, body, mt, params)
 	}
+	// A container that cannot be opened, or that yields nothing at all, is a
+	// malformed message rather than an empty one - something was meant to be
+	// in there. It counts as carrying a file, because the alternative is to
+	// mistake it for the empty message a connection test sends and drop a
+	// scan in silence.
 	if params["boundary"] == "" {
-		// Unusable container: nothing to walk, but something was meant to be
-		// in there. Counting it keeps a broken message from being mistaken
-		// for the empty one a connection test sends.
 		e.attach++
 		return nil
 	}
 	mr := multipart.NewReader(body, params["boundary"])
+	seen := 0
 	for {
 		p, err := mr.NextPart()
 		if err != nil {
 			// io.EOF, but also a malformed or truncated container: end this
 			// subtree and keep whatever was extracted from it.
+			if seen == 0 {
+				e.attach++
+			}
 			return nil
 		}
+		seen++
 		e.parts++
 		if e.parts > maxParts {
 			p.Close()
