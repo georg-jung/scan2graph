@@ -140,7 +140,7 @@ func (e *extractor) walk(h textproto.MIMEHeader, body io.Reader, depth int) erro
 	// params nil, which is not a multipart, so the part is treated as a leaf.
 	mt, params, _ := mime.ParseMediaType(h.Get("Content-Type"))
 	if !strings.HasPrefix(mt, "multipart/") {
-		return e.leaf(h, body, params)
+		return e.leaf(h, body, mt, params)
 	}
 	if params["boundary"] == "" {
 		return nil // unusable container, nothing to walk
@@ -168,13 +168,17 @@ func (e *extractor) walk(h textproto.MIMEHeader, body io.Reader, depth int) erro
 
 // leaf extracts one non-multipart part if its bytes are a PDF (see Extract
 // on why only the bytes decide) and skips it otherwise.
-func (e *extractor) leaf(h textproto.MIMEHeader, body io.Reader, params map[string]string) error {
+func (e *extractor) leaf(h textproto.MIMEHeader, body io.Reader, mt string, params map[string]string) error {
 	name := e.filename(h, params)
 	// Counted before anything else can reject the part: the caller needs to
 	// know whether the message carried files at all, separately from whether
-	// any of them turned out to be a PDF.
+	// any of them turned out to be a PDF. A part is a file if it names one,
+	// says it is one, or simply is not text - the last covers a scanner that
+	// attaches an image inline with neither a filename nor a disposition,
+	// which must still be told its format is wrong rather than quietly
+	// treated as a connection test.
 	disp, _, _ := mime.ParseMediaType(h.Get("Content-Disposition"))
-	if name != "" || disp == "attachment" {
+	if name != "" || disp == "attachment" || (mt != "" && !strings.HasPrefix(mt, "text/")) {
 		e.attach++
 	}
 	src := decoded(h, body)

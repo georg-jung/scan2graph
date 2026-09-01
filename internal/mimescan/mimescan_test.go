@@ -321,6 +321,21 @@ func extractCases() []extractCase {
 			wantErr: ErrNoPDF,
 		},
 		{
+			// A scanner that attaches its image inline, with neither a
+			// filename nor a disposition: still a file, so still a wrong
+			// format rather than a connection test.
+			name: "inline non-text part counts as attached",
+			msg: "Subject: Scan\n" +
+				"Content-Type: multipart/mixed; boundary=\"b\"\n" +
+				"\n" +
+				"--b\n" +
+				"Content-Type: image/jpeg\n" +
+				"\n" + "\xff\xd8\xff\xe0 not a pdf\n" +
+				"--b--\n",
+			subject: "Scan",
+			wantErr: ErrNoPDF,
+		},
+		{
 			// The distinction the SMTP layer acts on: something was
 			// attached, so this is a printer sending the wrong format
 			// rather than somebody pressing "test connection".
