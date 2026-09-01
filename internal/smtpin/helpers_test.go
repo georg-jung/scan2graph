@@ -309,6 +309,18 @@ func textMessage(subject string) string {
 	return fmt.Sprintf("From: scanner@lan.local\r\nSubject: %s\r\nContent-Type: text/plain\r\n\r\nno attachment here\r\n", subject)
 }
 
+// jpegMessage is the printer that was left on JPEG: something is attached,
+// but nothing that can be delivered as a scan.
+func jpegMessage(subject string) string {
+	const boundary = "scan2graph-test-jpeg"
+	return fmt.Sprintf("From: scanner@lan.local\r\nSubject: %s\r\n"+
+		"Content-Type: multipart/mixed; boundary=%q\r\n\r\n"+
+		"--%s\r\nContent-Type: image/jpeg\r\n"+
+		"Content-Disposition: attachment; filename=\"scan.jpg\"\r\n\r\n"+
+		"\xff\xd8\xff\xe0 not a pdf\r\n--%s--\r\n",
+		subject, boundary, boundary, boundary)
+}
+
 // manyPartsMessage builds a multipart message with n empty parts -- enough
 // to trip mimescan's part-count limit before any content is even looked at.
 func manyPartsMessage(n int) string {

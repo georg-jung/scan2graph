@@ -157,15 +157,19 @@ func (s *session) Data(r io.Reader) error {
 	// client instead of yielding a truncated job with a 250.
 	src := &errReader{r: r}
 	result, err := mimescan.Extract(src, func() (*os.File, error) { return staging.CreateFile("pdf") })
+	// Every answer of 250 has to read the message to its end first. With
+	// BDAT that only happens when the client sends the final chunk, and
+	// Extract stops at the closing MIME boundary long before: answering
+	// earlier would accept a transaction the client is still free to abort,
+	// and with CHUNKING it does not even reach the client - go-smtp closes
+	// the pipe under the unread remainder and answers 554 instead. It is
+	// also what makes the size limit apply to a message this code would
+	// otherwise never finish reading.
+	if err == nil || errors.Is(err, mimescan.ErrNoAttachments) {
+		_, _ = io.Copy(io.Discard, src)
+	}
 	if src.err != nil {
 		err = src.err
-	} else if err == nil {
-		// The message is complete only once its reader is at EOF. With
-		// BDAT that happens when the client sends the final chunk; Extract
-		// stops at the closing MIME boundary long before. Committing
-		// earlier would enqueue a job for a transaction the client is
-		// still free to abort -- and never sees a 250 for.
-		_, err = io.Copy(io.Discard, src)
 	}
 
 	docs := make([]jobs.NewDocument, len(result.PDFs))
@@ -190,6 +194,16 @@ func (s *session) Data(r io.Reader) error {
 		staging.Abort()
 		s.reject("data", errAborted)
 		return errAborted
+	case errors.Is(err, mimescan.ErrNoAttachments):
+		// A printer's "test connection" button sends a message with nothing
+		// attached. Refusing it makes a working setup look broken on the
+		// device's panel, so it is accepted and dropped: no job, no mail,
+		// nothing to expire. A message that does carry files but no usable
+		// PDF still gets a 550 below - that one is a printer set to JPEG,
+		// and the rejection is the only way it will ever be told.
+		staging.Abort()
+		s.log.Info("smtpin: accepted a message with nothing attached", "profile", profile, "recipients", len(recipients))
+		return nil
 	case err != nil:
 		staging.Abort()
 		se := extractError(err)

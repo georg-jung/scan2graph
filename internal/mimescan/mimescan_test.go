@@ -300,7 +300,7 @@ func extractCases() []extractCase {
 				"\n" +
 				"Just a note from the printer.\n",
 			subject: "Nothing here",
-			wantErr: ErrNoPDF,
+			wantErr: ErrNoAttachments,
 		},
 		{
 			name: "non-pdf attachments skipped",
@@ -318,6 +318,150 @@ func extractCases() []extractCase {
 				"\n" + b64([]byte("\xff\xd8\xff\xe0 jpeg-ish")) +
 				"--b--\n",
 			subject: "Cover page",
+			wantErr: ErrNoPDF,
+		},
+		{
+			// Base64 that breaks inside the first kilobyte: the decoder
+			// returns both the %PDF- it managed and an error, and the error
+			// used to win before anything had counted the magic.
+			name: "corrupt base64 pdf with no headers",
+			msg: "Subject: Corrupt\n" +
+				"Content-Type: multipart/mixed; boundary=\"b\"\n" +
+				"\n" +
+				"--b\n" +
+				"Content-Transfer-Encoding: base64\n" +
+				"\n" + "JVBERi0xLjQK!!!!\n" +
+				"--b--\n",
+			subject: "Corrupt",
+			wantErr: ErrNoPDF,
+		},
+		{
+			// The disposition's twin of the case below: a declaration
+			// missing its semicolon parses to nothing, so a part carrying
+			// TIFF bytes under a text/plain type satisfies none of the
+			// header tests. What it does show is a header we could not read.
+			name: "unparsable content-disposition",
+			msg: "Subject: Broken disposition\n" +
+				"Content-Type: multipart/mixed; boundary=\"b\"\n" +
+				"\n" +
+				"--b\n" +
+				"Content-Type: text/plain\n" +
+				"Content-Disposition: attachment filename=\"scan.tif\"\n" +
+				"\n" + "II*\x00 not a pdf\n" +
+				"--b--\n",
+			subject: "Broken disposition",
+			wantErr: ErrNoPDF,
+		},
+		{
+			// A container whose declaration is missing its semicolon: the
+			// media type does not parse, so the container is never opened
+			// and the PDF inside it is never seen. The unreadable
+			// declaration is what says something was there.
+			name: "unparsable multipart declaration",
+			msg: "Subject: Broken type\n" +
+				"Content-Type: multipart/mixed boundary=b\n" +
+				"\n" +
+				"--b\n" +
+				"Content-Type: application/pdf\n" +
+				"\n" + string(pdfA) +
+				"--b--\n",
+			subject: "Broken type",
+			wantErr: ErrNoPDF,
+		},
+		{
+			// No filename, no Content-Type, no disposition - nothing but
+			// bytes that begin a PDF and then stop before %%EOF. The headers
+			// say nothing, so only the magic marks this as an attempted scan
+			// rather than an empty message.
+			name: "truncated pdf with no headers at all",
+			msg: "Subject: Cut short\n" +
+				"Content-Type: multipart/mixed; boundary=\"b\"\n" +
+				"\n" +
+				"--b\n" +
+				"\n" + "%PDF-1.4\nbut the rest never arrived\n" +
+				"--b--\n",
+			subject: "Cut short",
+			wantErr: ErrNoPDF,
+		},
+		{
+			// A cover page, then a part whose headers do not parse: the walk
+			// stops there with a part already behind it, so "did it yield
+			// anything" is not enough to tell a broken message from an empty
+			// one. The error itself is what says the message was carrying
+			// something the walk could not reach.
+			name: "malformed part after a valid one",
+			msg: "Subject: Broken part\n" +
+				"Content-Type: multipart/mixed; boundary=\"b\"\n" +
+				"\n" +
+				"--b\n" +
+				"Content-Type: text/plain\n" +
+				"\n" +
+				"cover page\n" +
+				"--b\n" +
+				"this line is not a header\n" +
+				"Content-Type: application/pdf\n" +
+				"\n" + string(pdfA) +
+				"--b--\n",
+			subject: "Broken part",
+			wantErr: ErrNoPDF,
+		},
+		{
+			// A boundary that never appears in the body: the walk finds no
+			// parts, but the PDF is in there somewhere. Refusing it tells the
+			// sender; calling it a connection test would drop it silently.
+			name: "declared boundary never appears",
+			msg: "Subject: Mismatched\n" +
+				"Content-Type: multipart/mixed; boundary=\"declared\"\n" +
+				"\n" +
+				"--actual\n" +
+				"Content-Type: application/pdf\n" +
+				"\n" + string(pdfA) +
+				"--actual--\n",
+			subject: "Mismatched",
+			wantErr: ErrNoPDF,
+		},
+		{
+			// The filename clause: a text part that names a file is a file.
+			name: "text part with a filename counts as attached",
+			msg: "Subject: Scan\n" +
+				"Content-Type: multipart/mixed; boundary=\"b\"\n" +
+				"\n" +
+				"--b\n" +
+				"Content-Type: text/plain; name=\"scan.txt\"\n" +
+				"\n" + "not a pdf\n" +
+				"--b--\n",
+			subject: "Scan",
+			wantErr: ErrNoPDF,
+		},
+		{
+			// A scanner that attaches its image inline, with neither a
+			// filename nor a disposition: still a file, so still a wrong
+			// format rather than a connection test.
+			name: "inline non-text part counts as attached",
+			msg: "Subject: Scan\n" +
+				"Content-Type: multipart/mixed; boundary=\"b\"\n" +
+				"\n" +
+				"--b\n" +
+				"Content-Type: image/jpeg\n" +
+				"\n" + "\xff\xd8\xff\xe0 not a pdf\n" +
+				"--b--\n",
+			subject: "Scan",
+			wantErr: ErrNoPDF,
+		},
+		{
+			// The distinction the SMTP layer acts on: something was
+			// attached, so this is a printer sending the wrong format
+			// rather than somebody pressing "test connection".
+			name: "text attached by disposition alone counts as attached",
+			msg: "Subject: Scan\n" +
+				"Content-Type: multipart/mixed; boundary=\"b\"\n" +
+				"\n" +
+				"--b\n" +
+				"Content-Type: text/plain\n" +
+				"Content-Disposition: attachment\n" +
+				"\n" + "not a pdf, but attached\n" +
+				"--b--\n",
+			subject: "Scan",
 			wantErr: ErrNoPDF,
 		},
 		{
@@ -622,7 +766,7 @@ func TestExtractLimits(t *testing.T) {
 		wantPDFs int
 		wantErr  error
 	}{
-		{"parts at limit", manyParts(maxParts), 0, ErrNoPDF},
+		{"parts at limit", manyParts(maxParts), 0, ErrNoAttachments},
 		{"too many parts", manyParts(maxParts + 1), 0, ErrTooComplex},
 		{"depth at limit", nested(maxDepth), 1, nil},
 		{"too deep", nested(maxDepth + 1), 0, ErrTooComplex},

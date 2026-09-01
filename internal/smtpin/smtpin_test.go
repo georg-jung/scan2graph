@@ -152,15 +152,74 @@ func TestDuplicateRecipientsCollapse(t *testing.T) {
 	}
 }
 
-func TestNoPDF(t *testing.T) {
+// TestConnectionTest covers the two messages that carry no scan, which the
+// listener answers in opposite ways: a printer's test button gets a 250 and
+// no job, while a printer set to the wrong format gets told.
+func TestConnectionTest(t *testing.T) {
 	h := &fakeHandler{}
-	addr, _, cfg := newHarness(t, nil, nil, h)
+	addr, store, cfg := newHarness(t, nil, nil, h)
 
 	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")
 	c.cmd(250, "RCPT TO:<alice@corp.example>")
-	if code, msg := c.data(textMessage("No attachment")); code != 550 {
-		t.Fatalf("DATA with no PDF: got %d %q, want 550", code, msg)
+	if code, msg := c.data(textMessage("Test connection")); code != 250 {
+		t.Fatalf("DATA with nothing attached: got %d %q, want 250", code, msg)
+	}
+	if n := len(h.enqueued()); n != 0 {
+		t.Errorf("a connection test enqueued %d jobs, want none", n)
+	}
+	if n := store.Len(); n != 0 {
+		t.Errorf("a connection test left %d jobs in the store, want none", n)
+	}
+
+	c.cmd(250, "MAIL FROM:<printer@corp.example>")
+	c.cmd(250, "RCPT TO:<alice@corp.example>")
+	if code, msg := c.data(jpegMessage("Scan")); code != 550 {
+		t.Fatalf("DATA with an attachment that is not a PDF: got %d %q, want 550", code, msg)
+	}
+}
+
+// TestOversizedTextIsStillRefused guards the other half of the same
+// mistake: a message with nothing attached is only acceptable once it has
+// been read to the end, because that is where the size limit lives. Skip the
+// reading and a two-megabyte "test message" walks past a one-megabyte cap.
+func TestOversizedTextIsStillRefused(t *testing.T) {
+	h := &fakeHandler{}
+	addr, _, cfg := newHarness(t, map[string]string{"S2G_MAX_MESSAGE_BYTES": "4096"}, nil, h)
+
+	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+	c.cmd(250, "MAIL FROM:<printer@corp.example>")
+	c.cmd(250, "RCPT TO:<alice@corp.example>")
+	msg := textMessage("Huge test") + strings.Repeat("padding, no attachment\r\n", 500)
+	if code, m := c.data(msg); code != 552 {
+		t.Fatalf("DATA over the size limit with nothing attached: got %d %q, want 552", code, m)
+	}
+}
+
+// TestConnectionTestOverChunking is the same acceptance over BDAT, which is
+// the path a test message actually takes on some devices. It is separate
+// because the failure it guards against is invisible over DATA: go-smtp
+// drains for us there, while with CHUNKING an undrained reader gets its pipe
+// closed underneath it and the client is answered 554. The body is padded
+// past the reader's buffer, since a short one is swallowed whole before the
+// question can arise.
+func TestConnectionTestOverChunking(t *testing.T) {
+	h := &fakeHandler{}
+	addr, store, cfg := newHarness(t, nil, nil, h)
+
+	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+	c.cmd(250, "MAIL FROM:<printer@corp.example>")
+	c.cmd(250, "RCPT TO:<alice@corp.example>")
+	msg := textMessage("Test connection") + strings.Repeat("padding, no attachment\r\n", 500)
+	if code, m := c.bdat(msg); code != 250 {
+		t.Fatalf("BDAT: got %d %q, want 250 (Continue)", code, m)
+	}
+	c.cmd(250, "BDAT 0 LAST")
+	if n := len(h.enqueued()); n != 0 {
+		t.Errorf("a connection test enqueued %d jobs, want none", n)
+	}
+	if n := store.Len(); n != 0 {
+		t.Errorf("a connection test left %d jobs in the store, want none", n)
 	}
 }
 

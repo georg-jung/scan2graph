@@ -99,6 +99,12 @@ Point the printer's "scan to email" feature at scan2graph:
 * **To address(es)**: the recipients — see "Sender profiles vs. recipient
   identity" above.
 
+The printer's own "test connection" button sends a message with nothing
+attached; scan2graph accepts it and logs it, so a working setup does not
+report a failure on the device's panel. A message that *does* carry
+attachments but no usable PDF is still refused with `550` — that is a
+printer set to JPEG or TIFF, and the refusal is the only way it gets told.
+
 ## Entra ID app registration
 
 scan2graph needs exactly one Entra app registration. It serves both the web

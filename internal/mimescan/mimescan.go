@@ -45,6 +45,13 @@ const (
 var (
 	ErrTooComplex = errors.New("mimescan: message exceeds structural limits")
 	ErrNoPDF      = errors.New("mimescan: no PDF attachment found")
+	// ErrNoAttachments is a message that was plain text throughout and
+	// understood completely - a connection test, in practice. Everything
+	// else with no usable PDF gets ErrNoPDF: attachments that were not
+	// PDFs, but also anything this package could not fully read, since the
+	// SMTP layer accepts and drops on this one and a hidden scan must never
+	// be mistaken for an empty message.
+	ErrNoAttachments = errors.New("mimescan: message has no attachments")
 	// ErrStorage wraps a failure to create or write an attachment file. It
 	// is about this machine, not about the message, so the caller must fail
 	// temporarily instead of rejecting the scan.
@@ -86,15 +93,17 @@ type PDF struct {
 // PDF for.
 //
 // On error nothing is left on disk and Result.PDFs is empty (Result.Subject is
-// still filled in where the headers parsed). Returns ErrNoPDF when the message
-// is well-formed but carries no usable PDF, and ErrStorage when writing an
-// attachment failed for a local reason.
+// still filled in where the headers parsed). Returns ErrNoAttachments only
+// for a message that was plain text throughout, ErrNoPDF for everything else
+// that yielded no usable PDF -- including anything malformed enough that what
+// it carried could not be seen -- and ErrStorage when writing an attachment
+// failed for a local reason.
 func Extract(r io.Reader, newFile func() (*os.File, error)) (Result, error) {
 	msg, err := mail.ReadMessage(r)
 	if err != nil {
 		return Result{}, fmt.Errorf("mimescan: parse message: %w", err)
 	}
-	e := extractor{newFile: newFile}
+	e := extractor{newFile: newFile, plainText: true}
 	e.words.CharsetReader = latin1Reader
 	res := Result{Subject: e.decode(msg.Header.Get("Subject"))}
 	if err := e.walk(textproto.MIMEHeader(msg.Header), msg.Body, 0); err != nil {
@@ -104,6 +113,9 @@ func Extract(r io.Reader, newFile func() (*os.File, error)) (Result, error) {
 		return res, err
 	}
 	if len(e.pdfs) == 0 {
+		if e.plainText {
+			return res, ErrNoAttachments
+		}
 		return res, ErrNoPDF
 	}
 	res.PDFs = e.pdfs
@@ -115,7 +127,17 @@ type extractor struct {
 	newFile func() (*os.File, error)
 	words   mime.WordDecoder
 	parts   int
-	pdfs    []PDF
+	// plainText stays true only while the message looks like what a printer
+	// sends when somebody presses "test connection": ordinary text, nothing
+	// declared as a file, nothing that reads like a document, and every
+	// container walked to its end. Anything else clears it.
+	//
+	// The polarity matters. Saying "nothing was attached" is what makes the
+	// SMTP layer answer 250 and drop the message, so it is only safe about a
+	// message that was understood completely; every surprise has to fall on
+	// the refusing side by default.
+	plainText bool
+	pdfs      []PDF
 }
 
 // walk processes one node of the MIME tree: a multipart container, whose
@@ -125,22 +147,38 @@ func (e *extractor) walk(h textproto.MIMEHeader, body io.Reader, depth int) erro
 		return fmt.Errorf("%w: MIME nesting too deep", ErrTooComplex)
 	}
 	// A Content-Type that does not parse (or is absent) leaves mt empty and
-	// params nil, which is not a multipart, so the part is treated as a leaf.
-	mt, params, _ := mime.ParseMediaType(h.Get("Content-Type"))
-	if !strings.HasPrefix(mt, "multipart/") {
-		return e.leaf(h, body, params)
+	// params nil, which is not a multipart, so the part is treated as a
+	// leaf. One that was sent and could not be read is a message we did not
+	// understand - it may have declared a container whose parts then never
+	// get walked - so it is not the plain text message a test sends.
+	raw := h.Get("Content-Type")
+	mt, params, cterr := mime.ParseMediaType(raw)
+	if raw != "" && cterr != nil {
+		e.plainText = false
 	}
+	if !strings.HasPrefix(mt, "multipart/") {
+		return e.leaf(h, body, mt, params)
+	}
+	// A container that cannot be opened, or that ends anywhere but its
+	// closing boundary, was carrying something the walk never reached.
 	if params["boundary"] == "" {
-		return nil // unusable container, nothing to walk
+		e.plainText = false
+		return nil
 	}
 	mr := multipart.NewReader(body, params["boundary"])
+	seen := 0
 	for {
 		p, err := mr.NextPart()
 		if err != nil {
-			// io.EOF, but also a malformed or truncated container: end this
-			// subtree and keep whatever was extracted from it.
+			// io.EOF at the closing boundary is the only clean end; anything
+			// else broke mid-walk, and a container that never yielded a part
+			// never worked at all.
+			if err != io.EOF || seen == 0 {
+				e.plainText = false
+			}
 			return nil
 		}
+		seen++
 		e.parts++
 		if e.parts > maxParts {
 			p.Close()
@@ -156,14 +194,31 @@ func (e *extractor) walk(h textproto.MIMEHeader, body io.Reader, depth int) erro
 
 // leaf extracts one non-multipart part if its bytes are a PDF (see Extract
 // on why only the bytes decide) and skips it otherwise.
-func (e *extractor) leaf(h textproto.MIMEHeader, body io.Reader, params map[string]string) error {
+func (e *extractor) leaf(h textproto.MIMEHeader, body io.Reader, mt string, params map[string]string) error {
 	name := e.filename(h, params)
+	// Not plain text if the part names a file, carries a Content-Disposition
+	// at all, or is not text. The disposition is tested by presence and
+	// never by what it says: "attachment", "inline", or something too
+	// malformed to parse are all a part that came with a file attached to
+	// it, and a printer's test message has none of them.
+	if name != "" || h.Get("Content-Disposition") != "" ||
+		(mt != "" && !strings.HasPrefix(mt, "text/")) {
+		e.plainText = false
+	}
 	src := decoded(h, body)
 
 	// Buffer the prefix before creating anything: a part that merely claims
 	// to be a PDF must not leave a file behind.
 	head := make([]byte, headBytes)
 	n, err := io.ReadFull(src, head)
+
+	// The bytes outrank silent headers: whatever this part called itself, it
+	// is a document. Read before the error below is acted on, since base64
+	// that breaks inside the first kilobyte still hands back the %PDF- that
+	// came before it.
+	if bytes.HasPrefix(head[:n], pdfMagic) {
+		e.plainText = false
+	}
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 		return nil // unreadable part: broken base64, truncated message, ...
 	}
