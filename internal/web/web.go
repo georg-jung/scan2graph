@@ -185,7 +185,7 @@ func (s *Server) handleList(w http.ResponseWriter, _ *http.Request, sess *sessio
 			v.Refresh = true
 		}
 	}
-	s.render(w, listTmpl, v)
+	render(s.log, w, listTmpl, v)
 }
 
 func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, sess *session) {
@@ -208,7 +208,7 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, sess *sess
 			URL:  "/scan/" + j.ID + "/" + d.ID,
 		})
 	}
-	s.render(w, detailTmpl, v)
+	render(s.log, w, detailTmpl, v)
 }
 
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request, sess *session) {
@@ -311,12 +311,13 @@ func (s *Server) row(j jobs.Job) scanRow {
 	}
 }
 
-func (s *Server) render(w http.ResponseWriter, t *template.Template, data any) {
-	// Render first, write second: a template error must not leave half a page
-	// behind a 200.
+// render executes a template's "layout" block and writes it, or logs and
+// answers 500 - shared by the UI and the setup wizard. Render first, write
+// second: a template error must not leave half a page behind a 200.
+func render(log *slog.Logger, w http.ResponseWriter, t *template.Template, data any) {
 	var buf bytes.Buffer
 	if err := t.ExecuteTemplate(&buf, "layout", data); err != nil {
-		s.log.Error("web: rendering page failed", "err", err)
+		log.Error("rendering page failed", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

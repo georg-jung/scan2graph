@@ -200,9 +200,9 @@ func TestParseEnvFileFormat(t *testing.T) {
 		"S2G_JOB_TTL=",
 	}, "\r\n"))
 
-	got, err := parseEnvFile(path)
+	got, err := ParseFile(path)
 	if err != nil {
-		t.Fatalf("parseEnvFile() unexpected error: %v", err)
+		t.Fatalf("ParseFile() unexpected error: %v", err)
 	}
 	want := map[string]string{
 		"S2G_HTTP_ADDR":           ":8080",
@@ -233,9 +233,9 @@ func TestParseEnvFileErrors(t *testing.T) {
 
 	t.Run("duplicate key", func(t *testing.T) {
 		path := writeFile(t, "scan2graph.env", "S2G_HTTP_ADDR=:8080\n#\nS2G_HTTP_ADDR=:9090\n")
-		_, err := parseEnvFile(path)
+		_, err := ParseFile(path)
 		if err == nil {
-			t.Fatal("parseEnvFile() succeeded, want an error")
+			t.Fatal("ParseFile() succeeded, want an error")
 		}
 		for _, want := range []string{path, "line 3", "duplicate", "S2G_HTTP_ADDR"} {
 			if !strings.Contains(err.Error(), want) {
@@ -246,9 +246,9 @@ func TestParseEnvFileErrors(t *testing.T) {
 
 	t.Run("malformed line names the line but never its content", func(t *testing.T) {
 		path := writeFile(t, "scan2graph.env", "S2G_HTTP_ADDR=:8080\n"+secret+"\n")
-		_, err := parseEnvFile(path)
+		_, err := ParseFile(path)
 		if err == nil {
-			t.Fatal("parseEnvFile() succeeded, want an error")
+			t.Fatal("ParseFile() succeeded, want an error")
 		}
 		if !strings.Contains(err.Error(), "line 2") {
 			t.Errorf("error %q does not name the line number", err)
@@ -260,9 +260,9 @@ func TestParseEnvFileErrors(t *testing.T) {
 
 	t.Run("a key that is not a variable name", func(t *testing.T) {
 		path := writeFile(t, "scan2graph.env", "not a key="+secret+"\n")
-		_, err := parseEnvFile(path)
+		_, err := ParseFile(path)
 		if err == nil {
-			t.Fatal("parseEnvFile() succeeded, want an error")
+			t.Fatal("ParseFile() succeeded, want an error")
 		}
 		if strings.Contains(err.Error(), secret) {
 			t.Errorf("error %q leaks the line's content", err)
