@@ -135,3 +135,52 @@ tbody a:hover { text-decoration: underline; }
     font-size: .85rem;
   }
 }
+
+/* The setup wizard: one long form, filled in once. The groups carry the
+   structure, so the boxes themselves can stay quiet. */
+fieldset {
+  margin: 0 0 1.5rem;
+  padding: 1.25rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: .75rem;
+}
+legend { padding: 0 .4rem; font-weight: 600; }
+summary { cursor: pointer; color: var(--muted); font-size: .9rem; margin-bottom: .9rem; }
+.field { margin-bottom: 1.1rem; }
+.field:last-child { margin-bottom: 0; }
+.field > label { display: block; font-weight: 600; margin-bottom: .3rem; }
+.field p { margin: .3rem 0 0; }
+.field input, .field select, .field textarea {
+  font: inherit;
+  width: 100%;
+  padding: .4rem .6rem;
+  border: 1px solid var(--line);
+  border-radius: .5rem;
+  background: var(--bg);
+  color: inherit;
+}
+.field textarea { resize: vertical; }
+.field.bad input, .field.bad select, .field.bad textarea { border-color: var(--warn); }
+/* A checkbox is the one control whose label belongs beside it. */
+.check { display: flex; gap: .5rem; align-items: center; font-weight: 600; }
+.check input { width: auto; }
+code { font-size: .8rem; overflow-wrap: anywhere; }
+
+/* What the loader said, for the whole form rather than one box. */
+.problems {
+  margin-bottom: 1.5rem;
+  padding: .1rem 1.1rem;
+  border: 1px solid var(--warn);
+  border-radius: .75rem;
+  color: var(--warn);
+}
+.problems ul { padding-left: 1.1rem; }
+.actions { display: flex; flex-wrap: wrap; gap: .75rem; }
+.actions button { padding: .55rem 1.1rem; font-weight: 600; }
+.primary { background: var(--accent-fill); color: var(--on-accent); border-color: transparent; }
+.primary:hover { background: var(--accent-fill-hover); }
+/* Under the buttons rather than between them: a long path is a footnote to
+   Save, not a control, and it needs room to wrap without pushing Download
+   off to one side. */
+.dest { margin: .9rem 0 0; overflow-wrap: anywhere; }

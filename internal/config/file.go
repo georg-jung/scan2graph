@@ -21,7 +21,7 @@ func FileEnv(path string, environ func(string) string) (getenv func(string) stri
 	if path == "" {
 		return environ, nil, nil
 	}
-	file, err := parseEnvFile(path)
+	file, err := ParseFile(path)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -31,6 +31,12 @@ func FileEnv(path string, environ func(string) string) (getenv func(string) stri
 		}
 	}
 	slices.Sort(overridden)
+	return Layer(file, environ), overridden, nil
+}
+
+// Layer is FileEnv's precedence rule over an already-parsed file, so the
+// setup wizard can validate an edit the way the next start will read it.
+func Layer(file map[string]string, environ func(string) string) func(string) string {
 	return func(name string) string {
 		if v := environ(name); v != "" {
 			return v
@@ -46,7 +52,7 @@ func FileEnv(path string, environ func(string) string) (getenv func(string) stri
 			return ""
 		}
 		return file[name]
-	}, overridden, nil
+	}
 }
 
 // pairedName is the other spelling of the setting name refers to:
@@ -58,7 +64,7 @@ func pairedName(name string) string {
 	return name + "_FILE"
 }
 
-// parseEnvFile reads a configuration file in the format of .env.example:
+// ParseFile reads a configuration file in the format of .env.example:
 // KEY=value, one per line, with "#" comment lines, blank lines and an
 // optional "export " prefix. The value is taken verbatim to the end of the
 // line (nothing is interpreted, so no shell expansion and no trailing
@@ -69,7 +75,7 @@ func pairedName(name string) string {
 //
 // Errors name the file and the line number but never the line itself: a
 // malformed line in a configuration file may well hold a client secret.
-func parseEnvFile(path string) (map[string]string, error) {
+func ParseFile(path string) (map[string]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("configuration file: %w", err)

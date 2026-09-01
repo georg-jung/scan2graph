@@ -646,6 +646,39 @@ func TestLoadFileIndirection(t *testing.T) {
 		env["S2G_HTTP_ADDR_FILE"] = p
 		wantLoadErr(t, env, "S2G_HTTP_ADDR", "S2G_HTTP_ADDR_FILE")
 	})
+
+	// Resolve is that same lookup for a single setting, exported for the
+	// setup wizard: it reads where to listen and which URL to print before
+	// there is a *Config to read either from. What is new next to the rest of
+	// this test is the wrapper itself: on anything Load would refuse, it
+	// swallows the error and returns "" rather than surfacing it - there is
+	// no *Config to attach one to yet.
+	t.Run("Resolve swallows what Load would refuse", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "addr")
+		if err := os.WriteFile(p, []byte(":9090"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		env := map[string]string{"S2G_HTTP_ADDR": ":8080", "S2G_HTTP_ADDR_FILE": p} // both spellings: Load refuses
+		if got := Resolve(fakeGetenv(env), "S2G_HTTP_ADDR"); got != "" {
+			t.Errorf("Resolve with both spellings set = %q, want \"\" so the caller's default wins", got)
+		}
+	})
+
+	// ResolveRootBaseURL is the same lookup plus the rules Load applies to a
+	// public base URL, for the one caller that turns the value into a link
+	// the operator is told to open. The URL rules themselves are
+	// TestLoadPublicBaseURLValidation's and TestSetupURL's job; what is new
+	// here is that the file indirection still applies to a URL-shaped value.
+	t.Run("ResolveRootBaseURL follows the file indirection", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "base-url")
+		if err := os.WriteFile(p, []byte("https://scan2graph.example.com/\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		env := map[string]string{"S2G_PUBLIC_BASE_URL_FILE": p}
+		if got := ResolveRootBaseURL(fakeGetenv(env), "S2G_PUBLIC_BASE_URL"); got != "https://scan2graph.example.com" {
+			t.Errorf("ResolveRootBaseURL = %q, want the file's URL without its trailing slash", got)
+		}
+	})
 }
 
 func TestLogValueAndStringNeverLeakSecret(t *testing.T) {
@@ -975,6 +1008,28 @@ func TestLoadRejectsEmptyConfiguredSMTPPassword(t *testing.T) {
 	env := clone(baseEnv())
 	env["S2G_SMTP_PASSWORD_FILE"] = empty
 	wantLoadErr(t, env, "S2G_SMTP_PASSWORD")
+}
+
+// TestLoadRejectsAnEmptyRequiredValue is the same rule one setting wider: a
+// _FILE spelling pointing at a file with nothing in it resolves cleanly, so
+// without the check the appliance starts with no client secret at all and the
+// SMTP port open, accepting scans it can never deliver.
+func TestLoadRejectsAnEmptyRequiredValue(t *testing.T) {
+	empty := filepath.Join(t.TempDir(), "unpopulated-secret")
+	if err := os.WriteFile(empty, []byte("\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"S2G_ENTRA_TENANT_ID", "S2G_ENTRA_CLIENT_ID",
+		"S2G_ENTRA_CLIENT_SECRET", "S2G_GRAPH_SENDER",
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := clone(baseEnv())
+			delete(env, name)
+			env[name+"_FILE"] = empty
+			wantLoadErr(t, env, name, "required")
+		})
+	}
 }
 
 func TestLoadRejectsDuplicateJSONKeys(t *testing.T) {

@@ -68,11 +68,32 @@ func (l *loader) resolve(name string) (value string, ok bool) {
 	return "", false
 }
 
+// Resolve reads one setting the way Load does, following the documented
+// S2G_X_FILE indirection. It returns "" for anything Load would refuse
+// (both spellings set, or an unreadable file): a caller outside Load
+// cannot report that, and the built-in default is the safe answer.
+func Resolve(getenv func(string) string, name string) string {
+	v, _ := newLoader(getenv).resolve(name)
+	return v
+}
+
+// ResolveRootBaseURL is Resolve for a setting that must be an absolute
+// http(s) URL addressing the root of a host. It returns "" for anything Load
+// would refuse, so a caller printing a link for the operator to open falls
+// back to one that works rather than one that parses.
+func ResolveRootBaseURL(getenv func(string) string, name string) string {
+	return newLoader(getenv).rootBaseURL(name, false, "", "http", "https")
+}
+
 // resolveRequired is like resolve, but records a well-worded "is required"
-// error (naming why) when the variable is unset.
+// error (naming why) when the variable is unset - or set to nothing, which
+// an unpopulated Docker secret is: without that, S2G_ENTRA_CLIENT_SECRET_FILE
+// pointing at an empty file starts the appliance with no client secret and
+// the SMTP port open, accepting scans it cannot deliver. smtpAuth guards
+// exactly this for S2G_SMTP_PASSWORD.
 func (l *loader) resolveRequired(name, reason string) (value string, ok bool) {
 	v, ok := l.resolve(name)
-	if ok {
+	if ok && v != "" {
 		return v, ok
 	}
 	if reason == "" {

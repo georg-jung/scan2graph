@@ -1,0 +1,71 @@
+{{define "content" -}}
+{{if .Claim}}
+<h1>Set up scan2graph</h1>
+<p class="empty">Starting configuration claims this wizard for this browser
+alone: from then on nothing else on the network can open it, see what you type
+or save over it. Restarting scan2graph opens it again, which is the way back if
+you lose this window.</p>
+<form method="post" action="/setup/start">
+<div class="actions"><button type="submit" class="primary">Start configuration</button></div>
+</form>
+{{else if .Saved}}
+<h1>Saved</h1>
+<p>The configuration was written to <code>{{.Saved}}</code>.</p>
+<p class="empty">Restart scan2graph to apply it. This wizard only writes the
+file; it does not start the appliance.</p>
+{{else}}
+<h1>Set up scan2graph</h1>
+<p class="empty">Everything here ends up in one KEY=value file. Leave a box
+empty to keep the built-in default, and open “Rarely needed” only when
+something asks you to.</p>
+{{if .Errors}}
+<div class="problems">
+<p>Not usable yet:</p>
+<ul>{{range .Errors}}<li>{{.}}</li>{{end}}</ul>
+</div>
+{{end}}
+<form method="post" action="/setup">
+{{range .Groups}}
+<fieldset>
+<legend>{{.Name}}</legend>
+{{range .Fields}}{{template "field" .}}{{end}}
+{{if .Rare}}
+<details>
+<summary>Rarely needed</summary>
+{{range .Rare}}{{template "field" .}}{{end}}
+</details>
+{{end}}
+</fieldset>
+{{end}}
+<div class="actions">
+{{if .Path}}<button type="submit" name="action" value="save" class="primary">Save the configuration file</button>{{end}}
+<button type="submit" name="action" value="download">Download the file</button>
+</div>
+{{if .Path}}<p class="dest muted small">Save writes <code>{{.Path}}</code>.</p>{{end}}
+</form>
+{{end}}
+{{- end}}
+
+{{define "field" -}}
+<div class="field{{if .Error}} bad{{end}}">
+{{if eq .Kind "bool"}}
+<label class="check"><input type="checkbox" id="{{.Name}}" name="{{.Name}}" value="true"{{if .Checked}} checked{{end}}> {{.Label}}</label>
+{{else}}
+<label for="{{.Name}}">{{.Label}}</label>
+{{if eq .Kind "choice"}}
+<select id="{{.Name}}" name="{{.Name}}">
+<option value="">(default)</option>
+{{range .Choice}}<option value="{{.}}"{{if eq . $.Value}} selected{{end}}>{{.}}</option>{{end}}
+</select>
+{{else if eq .Kind "area"}}
+<textarea id="{{.Name}}" name="{{.Name}}" rows="3" spellcheck="false">{{.Value}}</textarea>
+{{else if eq .Kind "secret"}}
+<input type="password" id="{{.Name}}" name="{{.Name}}" value="" autocomplete="new-password">
+{{else}}
+<input type="text" id="{{.Name}}" name="{{.Name}}" value="{{.Value}}" spellcheck="false">
+{{end}}
+{{end}}
+{{if .Error}}<p class="error small">{{.Error}}</p>{{end}}
+<p class="muted small">{{.Help}}{{if .Set}} One is configured already and cannot be shown here; leave this empty to keep it.{{end}} <code>{{.Name}}</code></p>
+</div>
+{{- end}}

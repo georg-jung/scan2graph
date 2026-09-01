@@ -258,10 +258,70 @@ A message's MIME structure has its own, non-configurable ceiling (at most 100
 parts, 10 levels of nesting, 16 PDF attachments); a message over any of these
 is rejected with SMTP `552`, the same code a too-large message gets.
 
+## Run modes and the setup wizard
+
+`scan2graph` (no subcommand) is the normal way to start it: with a
+configuration that loads, it serves the appliance, exactly like
+`scan2graph serve` always does. The difference only shows up on a first
+boot, before the appliance has an Entra app registration or a password of
+its own, where it instead serves a small web form at `S2G_HTTP_ADDR`
+(`:8080` by default) that writes the same `KEY=value` file the configuration
+reference above describes: fill it in, save, and restart `scan2graph` for
+real — the wizard never restarts anything itself.
+
+![The setup wizard, one form grouped by what each setting is for](docs/screenshots/setup.png)
+
+Whatever the appliance rejects, the form rejects, because it validates by
+asking the real loader: the answers go through the same precedence and the
+same rules a start would apply, and the complaints come back against the
+boxes that caused them.
+
+![A submission the loader refused, with each complaint under the box that caused it](docs/screenshots/setup-errors.png)
+
+That first-boot form is deliberately **unauthenticated** — nothing is
+configured yet, so there is nothing on the appliance to steal or hijack —
+which makes it something to run on a **trusted network only**, the same LAN
+segment the printer already sits on, never across the open internet. What it
+opens on is a single **Start configuration** button, and the first browser to
+press it claims the wizard: that browser is handed a cookie, and every other
+client on the network gets the same 404 everything unauthorized gets, so
+nothing can read what you type into the form or save over it. Lose that cookie
+— the wrong browser, a private window closed — and there is no way back in
+until scan2graph is restarted, which re-opens the form because a fresh install
+still has nothing to protect.
+
+![The door in front of the form: one Start configuration button](docs/screenshots/setup-claim.png)
+
+Two more entry points reach the same form once something is already
+configured, without exposing that unauthenticated door on a running
+appliance:
+
+* `scan2graph setup [--config …]` starts it in the foreground on purpose, to
+  fix a typo or add a missing setting without an editor and a shell. Once
+  anything worth protecting is configured — the Entra app registration or
+  either secret, or a configuration file that will not parse, since then
+  nobody can say what it holds — it mints a one-shot token of its own and
+  prints the URL to open, token included, on **stderr**: the form's Download
+  button hands back that whole file, client secret and all, and its Save
+  button writes a replacement over it. A first boot, where there is nothing
+  to give away, needs no token.
+* `scan2graph setup-next-start --config /etc/scan2graph/scan2graph.env`
+  mints a one-shot token, prints the URL to open — token included — to
+  **stderr**, where a redirected stdout cannot swallow the only copy of it,
+  and exits. The token gates the form the *next* time `scan2graph` starts
+  with no subcommand instead of serving the appliance — a file that will not
+  parse included, which is the repair that entry point exists for — and it is
+  gone, used or not, the instant that start reads it: nothing usable is ever
+  left on disk in between.
+
+Either way the form offers two buttons, and a container running with a
+read-only root filesystem has to use **Download**: Save writes the
+configuration file in place, which such a container cannot do.
+
 ## Deployment
 
 ```bash
-cp .env.example .env   # then edit it — see the reference above
+cp .env.example .env   # then edit it — see the reference above, or use the setup wizard
 docker compose -f docker-compose.example.yml up -d
 ```
 
