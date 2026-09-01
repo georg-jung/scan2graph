@@ -14,8 +14,10 @@ COPY --from=build /out/scan2graph /scan2graph
 # Non-root, no shell, no package manager. Works with a read-only root filesystem
 # as long as a writable temporary directory (e.g. a tmpfs on /tmp) is provided.
 USER 65532:65532
-ENV TMPDIR=/tmp \
-    S2G_HTTP_ADDR=:8080 \
-    S2G_SMTP_ADDR=:2525
+# TMPDIR only. Every S2G_* setting is deliberately absent: a variable baked
+# into the image is a real process environment variable, and those outrank the
+# operator's configuration file - so an image that set the listen addresses
+# would quietly ignore the first two lines of the file they copied.
+ENV TMPDIR=/tmp
 EXPOSE 8080 2525
 ENTRYPOINT ["/scan2graph"]

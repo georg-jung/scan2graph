@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -40,7 +41,7 @@ func writeEnvFile(t *testing.T, env map[string]string) string {
 	return writeFile(t, "scan2graph.env", b.String())
 }
 
-func mustFileEnv(t *testing.T, path string, environ func(string) string) (func(string) string, int) {
+func mustFileEnv(t *testing.T, path string, environ func(string) string) (func(string) string, []string) {
 	t.Helper()
 	getenv, overridden, err := FileEnv(path, environ)
 	if err != nil {
@@ -53,8 +54,8 @@ func TestFileEnvPrecedence(t *testing.T) {
 	t.Run("no file at all leaves the environment alone", func(t *testing.T) {
 		env := baseEnv()
 		getenv, overridden := mustFileEnv(t, "", fakeGetenv(env))
-		if overridden != 0 {
-			t.Errorf("overridden = %d, want 0", overridden)
+		if len(overridden) != 0 {
+			t.Errorf("overridden = %v, want none", overridden)
 		}
 		if got := getenv("S2G_GRAPH_SENDER"); got != env["S2G_GRAPH_SENDER"] {
 			t.Errorf("getenv(S2G_GRAPH_SENDER) = %q, want %q", got, env["S2G_GRAPH_SENDER"])
@@ -63,8 +64,8 @@ func TestFileEnvPrecedence(t *testing.T) {
 
 	t.Run("the file alone configures the appliance", func(t *testing.T) {
 		getenv, overridden := mustFileEnv(t, writeEnvFile(t, baseEnv()), noEnv)
-		if overridden != 0 {
-			t.Errorf("overridden = %d, want 0", overridden)
+		if len(overridden) != 0 {
+			t.Errorf("overridden = %v, want none", overridden)
 		}
 		c, err := Load(getenv)
 		if err != nil {
@@ -90,8 +91,10 @@ func TestFileEnvPrecedence(t *testing.T) {
 			"S2G_UI_TITLE":        "From the environment",
 		})
 		getenv, overridden := mustFileEnv(t, path, environ)
-		if overridden != 1 {
-			t.Errorf("overridden = %d, want 1 (S2G_UI_TITLE is not in the file)", overridden)
+		// Named, not counted: S2G_UI_TITLE is in the environment only, so
+		// it is not something the file is losing.
+		if want := []string{"S2G_PUBLIC_BASE_URL"}; !slices.Equal(overridden, want) {
+			t.Errorf("overridden = %v, want %v", overridden, want)
 		}
 		c, err := Load(getenv)
 		if err != nil {
@@ -136,8 +139,10 @@ func TestFileEnvFileIndirection(t *testing.T) {
 		env["S2G_ENTRA_CLIENT_SECRET_FILE"] = writeFile(t, "client-secret", "the file's secret")
 		environ := fakeGetenv(map[string]string{"S2G_ENTRA_CLIENT_SECRET": secret})
 		getenv, overridden := mustFileEnv(t, writeEnvFile(t, env), environ)
-		if overridden != 1 {
-			t.Errorf("overridden = %d, want 1", overridden)
+		// The file's spelling is what got overridden, and that is the name
+		// reported - the operator needs to see which line lost.
+		if want := []string{"S2G_ENTRA_CLIENT_SECRET_FILE"}; !slices.Equal(overridden, want) {
+			t.Errorf("overridden = %v, want %v", overridden, want)
 		}
 		c, err := Load(getenv)
 		if err != nil {
@@ -288,8 +293,8 @@ func TestParseEnvFileErrors(t *testing.T) {
 // it is what operators copy, and the wizard writes the same format.
 func TestFileEnvLoadsShippedExample(t *testing.T) {
 	getenv, overridden := mustFileEnv(t, filepath.Join("..", "..", ".env.example"), noEnv)
-	if overridden != 0 {
-		t.Errorf("overridden = %d, want 0", overridden)
+	if len(overridden) != 0 {
+		t.Errorf("overridden = %v, want none", overridden)
 	}
 	if _, err := Load(getenv); err != nil {
 		t.Fatalf(".env.example does not load: %v", err)

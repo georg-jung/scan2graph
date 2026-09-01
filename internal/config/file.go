@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -12,21 +13,24 @@ import (
 // path may be empty, meaning "no configuration file", in which case environ
 // is returned unchanged; a path that was asked for but cannot be read or
 // parsed is an error rather than a silent fall back to the environment
-// alone. overridden counts the file's settings that the environment supplied
-// as well, for the startup banner.
-func FileEnv(path string, environ func(string) string) (getenv func(string) string, overridden int, err error) {
+// alone. overridden names the file's settings that the environment supplied
+// as well, sorted, for the startup banner: names rather than a count,
+// because "two of your settings are being ignored" is the half of the
+// sentence that does not help.
+func FileEnv(path string, environ func(string) string) (getenv func(string) string, overridden []string, err error) {
 	if path == "" {
-		return environ, 0, nil
+		return environ, nil, nil
 	}
 	file, err := parseEnvFile(path)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, err
 	}
 	for name := range file {
 		if environ(name) != "" || environ(pairedName(name)) != "" {
-			overridden++
+			overridden = append(overridden, name)
 		}
 	}
+	slices.Sort(overridden)
 	return func(name string) string {
 		if v := environ(name); v != "" {
 			return v
@@ -71,14 +75,19 @@ func parseEnvFile(path string) (map[string]string, error) {
 		return nil, fmt.Errorf("configuration file: %w", err)
 	}
 	out := make(map[string]string)
-	for i, line := range strings.Split(string(data), "\n") {
+	// Windows editors write UTF-8 with a byte order mark, and this file gets
+	// copied from .env.example on whatever machine the operator has.
+	for i, line := range strings.Split(strings.TrimPrefix(string(data), "\ufeff"), "\n") {
 		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "export "))
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		name, value, ok := strings.Cut(line, "=")
 		name = strings.TrimSpace(name)
-		if !ok || !validName(name) {
+		// A name with a space in it is prose that happened to contain an
+		// equals sign, not a setting. Nothing stricter: a file may carry
+		// keys this appliance never reads, and those are simply inert.
+		if !ok || name == "" || strings.ContainsAny(name, " \t") {
 			return nil, fmt.Errorf("%s: line %d: expected KEY=value", path, i+1)
 		}
 		if _, dup := out[name]; dup {
@@ -87,20 +96,6 @@ func parseEnvFile(path string) (map[string]string, error) {
 		out[name] = unquote(strings.TrimSpace(value))
 	}
 	return out, nil
-}
-
-// validName accepts the shell-style variable names a configuration file may
-// set: a letter or underscore, then letters, digits or underscores.
-func validName(s string) bool {
-	for i, r := range s {
-		switch {
-		case r == '_', r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z':
-		case i > 0 && r >= '0' && r <= '9':
-		default:
-			return false
-		}
-	}
-	return s != ""
 }
 
 // unquote strips one matched pair of surrounding single or double quotes.

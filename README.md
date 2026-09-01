@@ -183,7 +183,8 @@ given, and a path that cannot be read or parsed stops the start rather than
 falling back. Precedence is **environment variable > file > built-in
 default**, per setting rather than per spelling: `S2G_X` in the environment
 also overrides an `S2G_X_FILE` line in the file, and vice versa. Startup logs
-which file was read and how many of its settings the environment overrode.
+which file was read and names any of its settings the environment overrode,
+so a setting that is being ignored says so by name.
 Comment lines (`#`), blank lines, an `export ` prefix and single- or
 double-quoted values are all accepted; a duplicate key is an error. Only
 `S2G_*` settings come from the file — `S2G_CONFIG_FILE` itself and anything

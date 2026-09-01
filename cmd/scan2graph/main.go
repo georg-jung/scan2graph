@@ -48,7 +48,7 @@ func main() {
 	}
 	slog.SetDefault(newLogger(cfg.LogFormat, cfg.LogLevel))
 	if configFile != "" {
-		// The path and a count only - never a value, since this file is
+		// Paths and setting names only - never a value, since this file is
 		// where the client secret usually lives.
 		slog.Info("configuration file read", "path", configFile, "overridden_by_environment", overridden)
 	}
@@ -65,7 +65,7 @@ func main() {
 // container, the systemd unit and a hand-started binary each pass their own
 // path, and a file that was explicitly asked for but cannot be read is a
 // startup failure rather than a silent fall back to the environment alone.
-func configSource(args []string) (getenv func(string) string, path string, overridden int, err error) {
+func configSource(args []string) (getenv func(string) string, path string, overridden []string, err error) {
 	fs := flag.NewFlagSet("scan2graph", flag.ExitOnError)
 	configFlag := fs.String("config", "",
 		"read settings from this KEY=value file (default $S2G_CONFIG_FILE); environment variables still win")
