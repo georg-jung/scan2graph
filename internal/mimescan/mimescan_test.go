@@ -321,6 +321,37 @@ func extractCases() []extractCase {
 			wantErr: ErrNoPDF,
 		},
 		{
+			// Base64 that breaks inside the first kilobyte: the decoder
+			// returns both the %PDF- it managed and an error, and the error
+			// used to win before anything had counted the magic.
+			name: "corrupt base64 pdf with no headers",
+			msg: "Subject: Corrupt\n" +
+				"Content-Type: multipart/mixed; boundary=\"b\"\n" +
+				"\n" +
+				"--b\n" +
+				"Content-Transfer-Encoding: base64\n" +
+				"\n" + "JVBERi0xLjQK!!!!\n" +
+				"--b--\n",
+			subject: "Corrupt",
+			wantErr: ErrNoPDF,
+		},
+		{
+			// A container whose declaration is missing its semicolon: the
+			// media type does not parse, so the container is never opened
+			// and the PDF inside it is never seen. The unreadable
+			// declaration is what says something was there.
+			name: "unparsable multipart declaration",
+			msg: "Subject: Broken type\n" +
+				"Content-Type: multipart/mixed boundary=b\n" +
+				"\n" +
+				"--b\n" +
+				"Content-Type: application/pdf\n" +
+				"\n" + string(pdfA) +
+				"--b--\n",
+			subject: "Broken type",
+			wantErr: ErrNoPDF,
+		},
+		{
 			// No filename, no Content-Type, no disposition - nothing but
 			// bytes that begin a PDF and then stop before %%EOF. The headers
 			// say nothing, so only the magic marks this as an attempted scan

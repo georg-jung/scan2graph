@@ -143,8 +143,15 @@ func (e *extractor) walk(h textproto.MIMEHeader, body io.Reader, depth int) erro
 		return fmt.Errorf("%w: MIME nesting too deep", ErrTooComplex)
 	}
 	// A Content-Type that does not parse (or is absent) leaves mt empty and
-	// params nil, which is not a multipart, so the part is treated as a leaf.
-	mt, params, _ := mime.ParseMediaType(h.Get("Content-Type"))
+	// params nil, which is not a multipart, so the part is treated as a
+	// leaf. One that was there and could not be read is evidence in itself:
+	// it may well have declared a container, whose parts then never get
+	// walked, so it counts rather than letting them disappear.
+	raw := h.Get("Content-Type")
+	mt, params, cterr := mime.ParseMediaType(raw)
+	if cterr != nil && raw != "" {
+		e.attach++
+	}
 	if !strings.HasPrefix(mt, "multipart/") {
 		return e.leaf(h, body, mt, params)
 	}
@@ -204,17 +211,22 @@ func (e *extractor) leaf(h textproto.MIMEHeader, body io.Reader, mt string, para
 	// to be a PDF must not leave a file behind.
 	head := make([]byte, headBytes)
 	n, err := io.ReadFull(src, head)
+
+	// The bytes' say, which outranks silent headers: this is a document
+	// however the part was labelled. Counted from whatever was decoded
+	// before the error, if any, since base64 that breaks inside the first
+	// kilobyte still hands back the %PDF- that came before it - and a scan
+	// that arrived corrupt must be refused, not mistaken for a message that
+	// carried nothing.
+	if bytes.HasPrefix(head[:n], pdfMagic) {
+		e.attach++
+	}
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 		return nil // unreadable part: broken base64, truncated message, ...
 	}
 	if !bytes.HasPrefix(head[:n], pdfMagic) {
 		return nil
 	}
-	// The bytes' say, which outranks silent headers: this is a document
-	// however the part was labelled. Counted here, before the checks below
-	// can reject it, so a truncated or corrupt scan is refused rather than
-	// mistaken for a message that carried nothing.
-	e.attach++
 	if len(e.pdfs) >= maxPDFs {
 		return fmt.Errorf("%w: too many PDF attachments", ErrTooComplex)
 	}
