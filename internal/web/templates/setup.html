@@ -24,7 +24,21 @@ something asks you to.</p>
 <ul>{{range .Errors}}<li>{{.}}</li>{{end}}</ul>
 </div>
 {{end}}
+{{if .Checks}}
+<div class="checks">
+<p>What the appliance can reach with these settings:</p>
+<ul>
+{{range .Checks}}<li class="{{if .OK}}pass{{else if .Skip}}skipped{{else}}fail{{end}}">{{.Name}}:
+{{if .OK}}ok{{else if .Skip}}not run — {{.Skip}}{{else}}{{.Err}}{{end}}</li>
+{{end}}</ul>
+<p class="muted small">Nothing was saved, sent or uploaded. A failure here does
+not stop you saving the file. The token check proves the client id, secret and
+tenant; it cannot prove that the Graph permissions were granted admin
+consent.</p>
+</div>
+{{end}}
 <form method="post" action="/setup">
+<input type="hidden" name="form" value="{{.Form}}">
 {{range .Groups}}
 <fieldset>
 <legend>{{.Name}}</legend>
@@ -39,6 +53,7 @@ something asks you to.</p>
 {{end}}
 <div class="actions">
 {{if .Path}}<button type="submit" name="action" value="save" class="primary">Save the configuration file</button>{{end}}
+<button type="submit" name="action" value="test">Test the connection</button>
 <button type="submit" name="action" value="download">Download the file</button>
 </div>
 {{if .Path}}<p class="dest muted small">Save writes <code>{{.Path}}</code>.</p>{{end}}

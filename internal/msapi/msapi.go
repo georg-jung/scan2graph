@@ -1,7 +1,7 @@
-// Package msapi is the shared HTTP plumbing for the two Microsoft REST
-// clients in this codebase, docintel and graphmail, and nothing more: a
-// small bounded retry loop with Retry-After support and a context-aware
-// sleep.
+// Package msapi is the shared HTTP plumbing for the Microsoft REST calls in
+// this codebase - docintel, graphmail, and the setup wizard's checks - and
+// nothing more: a small bounded retry loop with Retry-After support and a
+// context-aware sleep.
 package msapi
 
 import (
@@ -54,9 +54,9 @@ func (c *Client) Do(ctx context.Context, newReq func(context.Context) (*http.Req
 		case resp.StatusCode < 300:
 			return resp, nil
 		case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
-			lastErr = fmt.Errorf("%s %s: %s", req.Method, req.URL.Path, apiErrorMessage(resp))
+			lastErr = fmt.Errorf("%s %s: %s", req.Method, req.URL.Path, ErrorMessage(resp))
 		default:
-			return nil, fmt.Errorf("%s %s: %s", req.Method, req.URL.Path, apiErrorMessage(resp))
+			return nil, fmt.Errorf("%s %s: %s", req.Method, req.URL.Path, ErrorMessage(resp))
 		}
 
 		if attempt == maxAttempts {
@@ -79,9 +79,11 @@ type apiError struct {
 	Message string `json:"message"`
 }
 
-// apiErrorMessage reads and closes resp.Body, returning the API's own error
+// ErrorMessage reads and closes resp.Body, returning the API's own error
 // message where the body carries one and the HTTP status line otherwise.
-func apiErrorMessage(resp *http.Response) string {
+// Exported for the setup wizard's checks, which read the same envelope
+// outside of Do's retry loop.
+func ErrorMessage(resp *http.Response) string {
 	defer resp.Body.Close()
 	var body struct {
 		Error apiError `json:"error"`

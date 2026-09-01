@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"time"
 )
 
@@ -59,7 +60,7 @@ func (f *fakes) authorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown client_id", http.StatusBadRequest)
 		return
 	}
-	if q.Get("redirect_uri") != redirectURI {
+	if !slices.Contains(redirectURIs, q.Get("redirect_uri")) {
 		http.Error(w, "redirect_uri is not registered for this client", http.StatusBadRequest)
 		return
 	}
@@ -132,7 +133,14 @@ func (f *fakes) token(w http.ResponseWriter, r *http.Request) {
 		id, secret = r.PostFormValue("client_id"), r.PostFormValue("client_secret")
 	}
 	if id != clientID || secret != fixtureSecret {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_client"})
+		// With the sentence Entra sends, because the wizard's whole claim is
+		// that an operator reads their own tenant's words rather than
+		// oauth2's rendering of "invalid_client".
+		writeJSON(w, http.StatusUnauthorized, map[string]string{
+			"error": "invalid_client",
+			"error_description": "AADSTS7000215: Invalid client secret provided. Ensure the secret being sent in the request " +
+				"is the client secret value, not the client secret ID, for a secret added to the app.",
+		})
 		return
 	}
 

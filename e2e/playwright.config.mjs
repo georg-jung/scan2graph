@@ -12,6 +12,20 @@ import { FIXTURE_SECRET } from './lib/fakes.mjs';
 const e2e = path.dirname(fileURLToPath(import.meta.url));
 const tmp = path.join(e2e, '.tmp');
 
+// The second appliance: the setup wizard, on a fresh install, seeded with
+// only the S2G_* settings the form has no box for - where it listens, and
+// this harness's pointers at the fakes. Written afresh on every start,
+// because the suite saves a whole configuration over it.
+const wizardDir = path.join(tmp, 'wizard');
+const wizardConfig = path.join(wizardDir, 'scan2graph.env');
+const wizardSeed = [
+  'S2G_HTTP_ADDR=127.0.0.1:18081',
+  `S2G_TEMP_DIR=${wizardDir}`,
+  'S2G_ENTRA_AUTHORITY_URL=http://127.0.0.1:19000/idp',
+  'S2G_ENTRA_TOKEN_URL=http://127.0.0.1:19000/idp/token',
+  'S2G_GRAPH_BASE_URL=http://127.0.0.1:19000/graph',
+];
+
 export default defineConfig({
   testDir: './tests',
   // One appliance, one job store, one set of recordings in the fakes: the
@@ -76,6 +90,20 @@ export default defineConfig({
         // Deliberately small, so the resource-limit rejection can be
         // provoked with a 2 MB message instead of a 40 MB one.
         S2G_MAX_MESSAGE_BYTES: '1048576',
+        SSL_CERT_FILE: path.join(tmp, 'fake-ca.pem'),
+      },
+    },
+    {
+      // The same binary as above in a different mode: the servers are started
+      // one after another, so building it twice is a cache hit and not a race.
+      command: `cd .. && go build -o e2e/.bin/scan2graph ./cmd/scan2graph && mkdir -p "${wizardDir}" && printf '%s\\n' ${wizardSeed.map((line) => `'${line}'`).join(' ')} > "${wizardConfig}" && exec e2e/.bin/scan2graph setup --config "${wizardConfig}"`,
+      url: 'http://127.0.0.1:18081/healthz',
+      reuseExistingServer: false,
+      timeout: 120_000,
+      // Everything else this appliance reads is in the file above; the
+      // certificate cannot be, since the wizard's Document Intelligence
+      // check speaks TLS to a fake that mints a new one on every start.
+      env: {
         SSL_CERT_FILE: path.join(tmp, 'fake-ca.pem'),
       },
     },

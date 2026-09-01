@@ -33,7 +33,6 @@ import (
 // has nothing to find and no handler invents a second literal.
 const (
 	clientID    = "00000000-0000-0000-0000-000000000001"
-	redirectURI = "http://127.0.0.1:18080/auth/callback"
 	appToken    = "fake-app-token"  // prefix; the scope is appended to it
 	userToken   = "fake-user-token" // throwaway, nothing here reads it
 	graphSender = "scanner@corp.example"
@@ -41,6 +40,15 @@ const (
 	diScope     = "https://cognitiveservices.azure.com/.default"
 	keyID       = "fake-key"
 )
+
+// redirectURIs is what this app registration has registered, and authorize
+// accepts nothing else: the appliance the harness configures, and the second
+// one that e2e/tests/setup.spec.mjs has the setup wizard write a
+// configuration file for and then starts on a port of its own.
+var redirectURIs = []string{
+	"http://127.0.0.1:18080/auth/callback",
+	"http://127.0.0.1:18082/auth/callback",
+}
 
 // fixtureSecret is the one credential this harness knows, supplied by the
 // suite through -secret.
@@ -158,6 +166,7 @@ func (f *fakes) httpRoutes() http.Handler {
 func (f *fakes) diRoutes() http.Handler {
 	const model = "/documentintelligence/documentModels/prebuilt-read"
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /documentintelligence/documentModels", f.documentModels)
 	mux.HandleFunc("POST "+model+":analyze", f.analyze)
 	mux.HandleFunc("GET "+model+"/analyzeResults/{id}", f.analyzeResult)
 	mux.HandleFunc("GET "+model+"/analyzeResults/{id}/pdf", f.analyzePDF)

@@ -426,6 +426,22 @@ func (l *loader) logFormat() string {
 	return v
 }
 
+// AnyOCR reports whether any sender profile has text recognition enabled,
+// which is what decides whether the Document Intelligence endpoint is used at
+// all. A configured endpoint is not the same question: profiles can turn OCR
+// off and leave the setting behind, and then the endpoint is inert.
+func (c *Config) AnyOCR() bool {
+	if len(c.Profiles) == 0 {
+		return c.DefaultProfile.OCR
+	}
+	for _, cp := range c.Profiles {
+		if cp.OCR {
+			return true
+		}
+	}
+	return false
+}
+
 // Profile looks up the sender profile for an SMTP envelope sender address.
 // It normalizes envelopeSender first; ok is false for an implausible address
 // or an address with no configured profile (the caller should reject the

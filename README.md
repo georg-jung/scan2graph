@@ -278,6 +278,33 @@ boxes that caused them.
 
 ![A submission the loader refused, with each complaint under the box that caused it](docs/screenshots/setup-errors.png)
 
+**Test the connection** is the third button, and the only thing in the wizard
+that talks to Microsoft. Three lines come back, each bounded and none of them
+sending, uploading or saving anything:
+
+* **Entra sign-in** — the OIDC discovery the web UI's login needs, against the
+  authority in the form.
+* **App-only token** — one client-credentials token, which proves the client
+  ID, the secret and the tenant. It always runs, because every configuration
+  has that credential and nothing else here spends it. It does not prove that
+  the Graph permissions were granted admin consent: Entra mints `.default` for
+  any app in the tenant, and the Graph call that would show consent needs
+  `User.Read.All`, which a correctly scoped app registration does not have.
+* **Document Intelligence** — a token for that resource and a real read of its
+  model list, which proves the endpoint, the TLS chain, the token and the
+  scope together. Not run when text recognition is off.
+
+![Three lines above the form: what the appliance can reach with these settings](docs/screenshots/setup-checks.png)
+
+What comes back on a failure is Entra's own sentence —
+`AADSTS7000215: Invalid client secret provided` is what tells you that you
+pasted the secret's ID instead of its Value, which the configuration file alone
+can never look wrong for. A failure is advice, not validation: a tenant this
+network cannot reach yet is still a configuration worth writing, so Save keeps
+working either way.
+
+![The same block with a secret the tenant refuses: sign-in still passes, and the two checks that spend the credential carry the tenant's own message](docs/screenshots/setup-checks-failed.png)
+
 That first-boot form is deliberately **unauthenticated** — nothing is
 configured yet, so there is nothing on the appliance to steal or hijack —
 which makes it something to run on a **trusted network only**, the same LAN
@@ -314,8 +341,8 @@ appliance:
   gone, used or not, the instant that start reads it: nothing usable is ever
   left on disk in between.
 
-Either way the form offers two buttons, and a container running with a
-read-only root filesystem has to use **Download**: Save writes the
+Either way the form offers both **Save** and **Download**, and a container
+running with a read-only root filesystem has to use Download: Save writes the
 configuration file in place, which such a container cannot do.
 
 ## Deployment
