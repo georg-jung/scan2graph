@@ -336,6 +336,23 @@ func extractCases() []extractCase {
 			wantErr: ErrNoPDF,
 		},
 		{
+			// The disposition's twin of the case below: a declaration
+			// missing its semicolon parses to nothing, so a part carrying
+			// TIFF bytes under a text/plain type satisfies none of the
+			// header tests. What it does show is a header we could not read.
+			name: "unparsable content-disposition",
+			msg: "Subject: Broken disposition\n" +
+				"Content-Type: multipart/mixed; boundary=\"b\"\n" +
+				"\n" +
+				"--b\n" +
+				"Content-Type: text/plain\n" +
+				"Content-Disposition: attachment filename=\"scan.tif\"\n" +
+				"\n" + "II*\x00 not a pdf\n" +
+				"--b--\n",
+			subject: "Broken disposition",
+			wantErr: ErrNoPDF,
+		},
+		{
 			// A container whose declaration is missing its semicolon: the
 			// media type does not parse, so the container is never opened
 			// and the PDF inside it is never seen. The unreadable

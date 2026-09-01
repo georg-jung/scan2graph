@@ -149,7 +149,7 @@ func (e *extractor) walk(h textproto.MIMEHeader, body io.Reader, depth int) erro
 	// walked, so it counts rather than letting them disappear.
 	raw := h.Get("Content-Type")
 	mt, params, cterr := mime.ParseMediaType(raw)
-	if cterr != nil && raw != "" {
+	if unreadable(raw, cterr) {
 		e.attach++
 	}
 	if !strings.HasPrefix(mt, "multipart/") {
@@ -200,9 +200,15 @@ func (e *extractor) walk(h textproto.MIMEHeader, body io.Reader, depth int) erro
 func (e *extractor) leaf(h textproto.MIMEHeader, body io.Reader, mt string, params map[string]string) error {
 	name := e.filename(h, params)
 	// The headers' say: a file if it names one, declares itself one, or is
-	// simply not text.
-	disp, _, _ := mime.ParseMediaType(h.Get("Content-Disposition"))
-	if name != "" || disp == "attachment" || (mt != "" && !strings.HasPrefix(mt, "text/")) {
+	// simply not text. A declaration that is present but unreadable says it
+	// too - see unreadable, and the same rule applied to Content-Type in
+	// walk. Between them those are every header this package parses, which
+	// is the point: a header we cannot read is the one place a document can
+	// hide from all three tests above.
+	rawDisp := h.Get("Content-Disposition")
+	disp, _, disperr := mime.ParseMediaType(rawDisp)
+	if name != "" || disp == "attachment" || unreadable(rawDisp, disperr) ||
+		(mt != "" && !strings.HasPrefix(mt, "text/")) {
 		e.attach++
 	}
 	src := decoded(h, body)
@@ -285,6 +291,12 @@ func (e *extractor) filename(h textproto.MIMEHeader, params map[string]string) s
 	}
 	return e.decode(params["name"])
 }
+
+// unreadable reports a header that was sent and could not be parsed. Such a
+// header is evidence in itself: it may have declared a container, or an
+// attachment, and either way the document behind it would otherwise be
+// invisible to every test that reads what headers say.
+func unreadable(raw string, err error) bool { return err != nil && raw != "" }
 
 // decode resolves RFC 2047 encoded-words. A value in a charset we cannot
 // decode yields "" rather than bytes in an unknown encoding.
