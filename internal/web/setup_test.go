@@ -983,29 +983,6 @@ func aliasRows(t *testing.T, body string) [][2]string {
 	return rows
 }
 
-// TestSetupAliasRowsFoldIntoJSON is the whole point of the pair editor: two
-// columns of address boxes come back as exactly the JSON object the loader
-// already parses, so nothing downstream knows the form changed. The keys come
-// out sorted because a map is what they are marshalled from - saving the same
-// aliases twice has to write the same file - and the spare rows nobody typed
-// into leave no trace.
-func TestSetupAliasRowsFoldIntoJSON(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "scan2graph.env")
-	h := newSetupHarness(t, SetupOptions{Path: path})
-	form := validForm()
-	form[pairFrom] = []string{"scan-b@scanner.local", "scan-a@scanner.local", "", ""}
-	form[pairTo] = []string{" bob@example.com ", "alice@example.com", "", ""}
-	form.Set("action", "save")
-	if resp, body := h.post(h.claimed(), form); resp.StatusCode != http.StatusOK ||
-		!strings.Contains(body, "Saved") {
-		t.Fatalf("status %d, body:\n%s", resp.StatusCode, body)
-	}
-	const want = `{"scan-a@scanner.local":"alice@example.com","scan-b@scanner.local":"bob@example.com"}`
-	if got := loads(t, path)["S2G_RECIPIENT_ALIASES"]; got != want {
-		t.Errorf("S2G_RECIPIENT_ALIASES = %q, want %q", got, want)
-	}
-}
-
 // TestSetupAliasHalfRowIsNamed pins the one row the fold must not drop: an
 // operator who typed an alias and forgot its target would otherwise be told
 // the file was saved and find the address gone. The complaint lands under the
@@ -1033,21 +1010,30 @@ func TestSetupAliasHalfRowIsNamed(t *testing.T) {
 	}
 }
 
-// TestSetupAliasRoundTrip is the operator's whole loop: rows typed in, saved
-// to the file, and the wizard opened again on what it wrote showing the same
-// aliases - ordered by the address the printer sends to, and followed by the
-// two blank rows that are all there is to press instead of an "add" button.
+// TestSetupAliasRoundTrip is the operator's whole loop, and with it the whole
+// point of the pair editor: two columns of address boxes are saved as exactly
+// the JSON object the loader already parses, so nothing downstream knows the
+// form changed, and the wizard opened again on that file shows the same
+// aliases back. The keys come out sorted because a map is what they are
+// marshalled from - saving the same aliases twice has to write the same file -
+// the spare rows nobody typed into leave no trace, and a pasted address keeps
+// no whitespace. The two blank rows at the end are all there is to type into
+// instead of an "add" button.
 func TestSetupAliasRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "scan2graph.env")
 	h := newSetupHarness(t, SetupOptions{Path: path})
 	c := h.claimed()
 	form := validForm()
-	form[pairFrom] = []string{"scan-b@scanner.local", "scan-a@scanner.local", ""}
-	form[pairTo] = []string{"bob@example.com", "alice@example.com", ""}
+	form[pairFrom] = []string{"scan-b@scanner.local", "scan-a@scanner.local", "", ""}
+	form[pairTo] = []string{" bob@example.com ", "alice@example.com", "", ""}
 	form.Set("action", "save")
 	if resp, body := h.post(c, form); resp.StatusCode != http.StatusOK ||
 		!strings.Contains(body, "Saved") {
 		t.Fatalf("status %d, body:\n%s", resp.StatusCode, body)
+	}
+	const wantJSON = `{"scan-a@scanner.local":"alice@example.com","scan-b@scanner.local":"bob@example.com"}`
+	if got := loads(t, path)["S2G_RECIPIENT_ALIASES"]; got != wantJSON {
+		t.Errorf("S2G_RECIPIENT_ALIASES = %q, want %q", got, wantJSON)
 	}
 	_, body := h.get(c, "/setup")
 	want := [][2]string{
