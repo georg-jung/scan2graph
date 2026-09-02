@@ -532,7 +532,8 @@ func TestSetupDownloads(t *testing.T) {
 func roundTrip(t *testing.T, values map[string]string) map[string]string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "scan2graph.env")
-	if err := writeFile(path, serialize(values)); err != nil {
+	s := &setupServer{SetupOptions: SetupOptions{Getenv: noEnv}}
+	if err := writeFile(path, s.serialize(values)); err != nil {
 		t.Fatalf("writeFile: %v", err)
 	}
 	got, err := config.ParseFile(path)
@@ -1463,6 +1464,41 @@ func TestSetupSavedPageNamesTheRedirectURI(t *testing.T) {
 	want := "https://scan2graph.example.com/auth/callback"
 	if !strings.Contains(body, "<code>"+want+"</code>") {
 		t.Errorf("the page that sends the operator off to restart does not name %s:\n%s", want, body)
+	}
+}
+
+// TestSetupDownloadedFileCarriesWhatIsLeftToDo pins the one path with no page
+// to put anything on. Download answers with the file and nothing else, so the
+// form left on screen is whichever one the browser last rendered - on a
+// straight-through setup, the empty one from before any of this was typed.
+// That is also the read-only-container workflow, where the file is the only
+// thing that travels, so the file is where the reminder has to be.
+func TestSetupDownloadedFileCarriesWhatIsLeftToDo(t *testing.T) {
+	h := newSetupHarness(t, SetupOptions{})
+	form := validForm()
+	form.Set("S2G_GRAPH_SENDER", "scanner@example.com")
+	form.Set("S2G_ALLOWED_RECIPIENT_DOMAINS", "example.com")
+	form.Set("action", "download")
+	_, body := h.post(h.claimed(), form)
+	for _, want := range []string{
+		"https://scan2graph.example.com/auth/callback",
+		"Mail.Send",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the downloaded file does not mention %q:\n%s", want, body)
+		}
+	}
+	// Whatever it says has to still parse as the configuration it is.
+	path := filepath.Join(t.TempDir(), "scan2graph.env")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	values, err := config.ParseFile(path)
+	if err != nil {
+		t.Fatalf("the downloaded file does not parse: %v", err)
+	}
+	if _, err := config.Load(config.Layer(values, noEnv)); err != nil {
+		t.Errorf("the downloaded file does not load: %v", err)
 	}
 }
 

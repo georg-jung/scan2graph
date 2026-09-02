@@ -243,13 +243,13 @@ func (s *setupServer) submit(w http.ResponseWriter, r *http.Request) {
 		case action == "download" || s.Path == "":
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.Header().Set("Content-Disposition", `attachment; filename="`+setupFileName+`"`)
-			_, _ = w.Write(serialize(values))
+			_, _ = w.Write(s.serialize(values))
 			return
 		default:
 			if err := s.save(values); err == nil {
 				render(slog.Default(), w, setupTmpl, setupView{
 					page: page{Title: "Saved", Brand: setupBrand}, Saved: s.Path,
-					Redirect: s.redirectURI(values),
+					Steps: s.entraSteps(values),
 				})
 				return
 			} else {
@@ -453,7 +453,7 @@ func profileRows(v string) ([]setupProfile, bool) {
 func (s *setupServer) save(values map[string]string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := writeFile(s.Path, serialize(values)); err != nil {
+	if err := writeFile(s.Path, s.serialize(values)); err != nil {
 		return err
 	}
 	s.FileValues, s.pending, s.file = values, nil, s.file+1 // the file is the answer again, for every page
@@ -559,10 +559,26 @@ func leadingSetting(line string) string {
 
 // serialize renders the settings as a sorted KEY=value file: a diff between
 // two saves stays easy to read.
-func serialize(values map[string]string) []byte {
+//
+// It also carries what still has to be done in the portal, because Download
+// answers with the file and nothing else - no page comes back, so the form
+// left on screen is the one rendered before any of this was typed. That is
+// the read-only-container workflow, where the file is the only thing that
+// travels, so the file is where the reminder has to be. A save gets it too,
+// and an operator who comes back to the file months later reads it there.
+func (s *setupServer) serialize(values map[string]string) []byte {
 	var b strings.Builder
 	b.WriteString("# scan2graph configuration, written by the setup wizard.\n" +
-		"# Editing it by hand is fine; real environment variables still win.\n\n")
+		"# Editing it by hand is fine; real environment variables still win.\n")
+	if uri := s.redirectURI(values); uri != "" {
+		b.WriteString("#\n# The Entra app registration needs this redirect URI, under\n" +
+			"# Authentication as a Web platform, or signing in fails:\n#   " + uri + "\n")
+	}
+	if config.Resolve(config.Layer(values, s.Getenv), "S2G_GRAPH_SENDER") != "" {
+		b.WriteString("#\n# It also needs the Mail.Send application permission, with admin\n" +
+			"# consent granted, or nothing can be mailed out.\n")
+	}
+	b.WriteString("\n")
 	for _, name := range slices.Sorted(maps.Keys(values)) {
 		fmt.Fprintf(&b, "%s=%s\n", name, quoteValue(values[name]))
 	}
@@ -624,12 +640,13 @@ type setupView struct {
 	Checks []checkResult
 	Path   string // where Save would write; "" offers only the download
 	Saved  string // where it went, on the success page
-	// Redirect is the URI Entra has to have registered, on that same page.
-	// The walkthrough shows it too, but only to somebody who submits the
-	// form and comes back to the card: fill everything in, press Save, and
-	// this is the one place it can still be said before the restart that
-	// makes a missing registration an AADSTS50011 at sign-in.
-	Redirect string
+	// Steps is the walkthrough again, on that same page. The card shows it
+	// only to somebody who submits the form and comes back to it: fill
+	// everything in, press Save, and this is the last place any of it can
+	// still be said. What is missing by then is not visible until the
+	// restart, and then only as an AADSTS50011 at sign-in or a Graph refusal
+	// on the first scan, neither of which points back here.
+	Steps []setupStep
 	// Form is this render's id, handed back in a hidden field: it tells one
 	// open page from another, gates nothing, and losing it folds into the file.
 	Form string
