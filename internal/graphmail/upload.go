@@ -95,7 +95,7 @@ func (c *Client) uploadAttachment(ctx context.Context, draftID string, a Attachm
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil {
-		return fmt.Errorf("graphmail: open attachment %q: %w", a.Name, err)
+		return fmt.Errorf("graphmail: stat attachment %q: %w", a.Name, err)
 	}
 	size := fi.Size()
 

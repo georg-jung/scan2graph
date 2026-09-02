@@ -256,12 +256,16 @@ func (f *fakes) uploadChunk(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusNotFound, "no such upload session")
 		return
 	}
-	if first != up.got || first+int64(len(chunk)) > total {
-		writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("chunk at %d does not continue the %d bytes already uploaded", first, up.got))
+	// last+1 against the body's length, not just against up.got: advancing
+	// on the header alone would let a client that under-sends a chunk look
+	// correct here and leave a hole in the reassembly for the byte
+	// comparison downstream to find, which is a worse place to find it.
+	if first != up.got || last+1 != first+int64(len(chunk)) || last+1 > total {
+		writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("chunk %d-%d of %d does not continue the %d bytes already uploaded, or does not match its %d byte body", first, last, total, up.got, len(chunk)))
 		return
 	}
 	copy(up.data[first:], chunk)
-	up.got = last + 1
+	up.got = first + int64(len(chunk))
 	if up.got < total {
 		w.WriteHeader(http.StatusOK)
 		return
