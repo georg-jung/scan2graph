@@ -39,6 +39,10 @@ type attachment struct {
 // appliance pick the wrong call and still look correct.
 const graphAttachmentFloorBytes = 3 * 1024 * 1024
 
+// graphRequestMaxBytes is Graph's ceiling on one request body, which bounds
+// both a chunk PUT and a direct attachment POST.
+const graphRequestMaxBytes = 4 * 1024 * 1024
+
 // upload is one open attachment upload session: which draft it belongs to,
 // the attachment's name, and the bytes assembled so far. data is allocated at
 // its declared size, so a chunk that does not fit the attachment the session
@@ -289,6 +293,13 @@ func (f *fakes) uploadChunk(w http.ResponseWriter, r *http.Request) {
 	chunk, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "could not read the chunk")
+		return
+	}
+	// Graph caps a request at 4 MB, so a client that grew its chunk size past
+	// that would be refused there and must be refused here: a fake that takes
+	// what the service will not is how the 3 MB attachment floor got missed.
+	if len(chunk) >= graphRequestMaxBytes {
+		writeAPIError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("chunk of %d bytes is at or over Graph's %d byte request ceiling", len(chunk), graphRequestMaxBytes))
 		return
 	}
 	var first, last, total int64

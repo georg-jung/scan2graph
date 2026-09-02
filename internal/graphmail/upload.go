@@ -15,11 +15,13 @@ import (
 	"github.com/georg-jung/scan2graph/internal/msapi"
 )
 
-// uploadChunkBytes is how much of a scan one PUT carries. Graph wants every
-// chunk but the last to be a multiple of 320 KiB, and the request to stay
-// under 4 MB: 12 * 320 KiB is 3.75 MiB, the largest multiple that fits. A
-// constant, not a knob -- the only numbers that work here are Graph's.
-const uploadChunkBytes = 12 * 320 * 1024
+// uploadChunkBytes is how much of a scan one PUT carries. The rule for an
+// Outlook attachment session is only that a request stay under Graph's 4 MB
+// ceiling -- the 320 KiB quantum belongs to OneDrive's upload sessions, not
+// this endpoint, and Microsoft's own worked example here uses a 2 MiB chunk,
+// which is not a multiple of it. 3.75 MiB is simply a round size with room
+// to spare. A constant, not a knob: nothing an operator would tune.
+const uploadChunkBytes = 3840 * 1024 // 3.75 MiB
 
 // graphAttachmentFloorBytes is where Graph splits the two ways to attach a
 // file: under it, one POST carrying the bytes; at or above it, an upload

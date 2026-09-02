@@ -23,10 +23,13 @@ import (
 // PUTs, recognisably absent.
 const fakeAccessToken = "fake-graph-token-for-tests-only"
 
-// chunkBytes must match graphmail's unexported uploadChunkBytes: 12 * 320
-// KiB, the largest legal multiple of Graph's 320 KiB quantum that stays
+// chunkBytes must match graphmail's unexported uploadChunkBytes: a round
+// size comfortably under Graph's 4 MB request ceiling, which stays
 // under its 4 MB request ceiling.
-const chunkBytes = 12 * 320 * 1024
+const chunkBytes = 3840 * 1024
+
+// graphRequestMaxBytes is Graph's ceiling on one request body.
+const graphRequestMaxBytes = 4 * 1024 * 1024
 
 // floorBytes must match graphmail's unexported graphAttachmentFloorBytes:
 // Graph's 3 MB minimum for an upload session, and the size at which an
@@ -136,6 +139,11 @@ func (g *fakeGraph) handle(w http.ResponseWriter, r *http.Request) {
 // gets Graph's 201.
 func (g *fakeGraph) putChunk(w http.ResponseWriter, body []byte, contentRange string) {
 	g.puts++
+	// Graph refuses a request body at or over 4 MB, so this must too.
+	if len(body) >= graphRequestMaxBytes {
+		http.Error(w, `{"error":{"message":"the request is over Graph's size ceiling"}}`, http.StatusRequestEntityTooLarge)
+		return
+	}
 	if g.puts == g.flakyChunk {
 		g.flakyChunk = 0 // once only: the retry must succeed
 		w.Header().Set("Retry-After", "0")
@@ -295,9 +303,9 @@ func TestSend_LargeScanIsUploadedInChunks(t *testing.T) {
 			continue
 		}
 		gotRanges = append(gotRanges, r.contentRange)
-		// Every chunk but the last must be a multiple of 320 KiB.
-		if n := len(r.body); n%(320*1024) != 0 && n != total-chunkBytes {
-			t.Errorf("chunk of %d bytes is neither a multiple of 320 KiB nor the remainder", n)
+		// No PUT may reach Graph's 4 MB request ceiling.
+		if n := len(r.body); n >= graphRequestMaxBytes {
+			t.Errorf("chunk of %d bytes is at or over Graph's %d byte ceiling", n, graphRequestMaxBytes)
 		}
 	}
 	if !slices.Equal(gotRanges, wantRanges) {
