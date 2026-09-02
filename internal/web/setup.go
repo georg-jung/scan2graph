@@ -364,12 +364,21 @@ func foldPairs(form url.Values) (string, error) {
 // blank rows to type the next alias into. Two standing spares rather than an
 // "add" button, which as a second submit before the actions row would become
 // the form's default - and Enter in any box would then add a row instead of
-// saving. The false answer means the value is not an object of addresses at
-// all, which no pair editor can show.
+// saving. The false answer means the value is not something rows can show
+// faithfully, and the textarea has to stand in.
+//
+// A duplicate key is one of those, and the reason the loader's own guard is
+// asked rather than encoding/json alone: json keeps the last of two entries,
+// so a file the appliance refuses to start on - which is exactly what sends
+// the operator to this form - would render as one row, and saving it would
+// throw the other entry away without ever naming it.
 func pairRows(v string) ([]setupPair, bool) {
 	aliases := map[string]string{}
-	if v != "" && json.Unmarshal([]byte(v), &aliases) != nil {
-		return nil, false
+	if v != "" {
+		dup, err := config.DuplicateJSONKey(strings.NewReader(v))
+		if err != nil || dup != "" || json.Unmarshal([]byte(v), &aliases) != nil {
+			return nil, false
+		}
 	}
 	rows := make([]setupPair, 0, len(aliases)+2)
 	for _, from := range slices.Sorted(maps.Keys(aliases)) {

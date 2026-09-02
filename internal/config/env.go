@@ -286,7 +286,7 @@ func decodeStringMap[V any](l *loader, name string) (map[string]V, bool) {
 		raw = "{}"
 	}
 
-	switch dup, err := duplicateJSONKey(strings.NewReader(raw)); {
+	switch dup, err := DuplicateJSONKey(strings.NewReader(raw)); {
 	case err != nil:
 		l.errorf("%s: invalid JSON: %v", name, err)
 		return nil, false
@@ -312,12 +312,14 @@ func decodeStringMap[V any](l *loader, name string) (map[string]V, bool) {
 	return out, true
 }
 
-// duplicateJSONKey returns the first object key that occurs twice in the
+// DuplicateJSONKey returns the first object key that occurs twice in the
 // same object anywhere in the JSON value read from r, or "" if there is
 // none. encoding/json itself silently keeps the last of two entries, which
 // would turn a configuration typo into a profile that quietly does
-// something else.
-func duplicateJSONKey(r io.Reader) (string, error) {
+// something else. Exported because the setup wizard has to ask the same
+// question before it offers to edit such a value: a form that showed only
+// the surviving entry would write the other one away.
+func DuplicateJSONKey(r io.Reader) (string, error) {
 	dec := json.NewDecoder(r)
 
 	var value func() (string, error)

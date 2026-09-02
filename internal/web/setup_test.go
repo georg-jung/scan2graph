@@ -2,6 +2,7 @@ package web
 
 import (
 	"crypto/sha256"
+	"html"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -1046,14 +1047,24 @@ func TestSetupAliasRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSetupAliasFallsBackToText pins the one value the pair editor cannot
-// show: a configuration file somebody hand-edited into something that is not
-// an object of addresses. Empty rows there would silently replace it on the
-// next save, so the broken text goes into the textarea instead - the wizard
-// is exactly the tool they would reach for to fix it - and the fix typed
-// there is what gets saved.
+// TestSetupAliasFallsBackToText pins the values the pair editor cannot show
+// faithfully, both of which mean somebody hand-edited the file: something
+// that is not an object of addresses at all, and an object naming the same
+// alias twice. Rows there would silently replace what is in the file on the
+// next save - and the duplicate is the one that matters, because it is a
+// file the appliance refuses to start on, which is exactly what sends the
+// operator to this form. The broken text goes into the textarea instead, and
+// the fix typed there is what gets saved.
 func TestSetupAliasFallsBackToText(t *testing.T) {
-	const broken = "jane.doe@example.com" // an address where an object belongs
+	for _, broken := range []string{
+		"jane.doe@example.com", // an address where an object belongs
+		`{"dup@scanner.local":"one@example.com","dup@scanner.local":"two@example.com"}`,
+	} {
+		t.Run(broken[:12], func(t *testing.T) { aliasTextFallback(t, broken) })
+	}
+}
+
+func aliasTextFallback(t *testing.T, broken string) {
 	path := filepath.Join(t.TempDir(), "scan2graph.env")
 	h := newSetupHarness(t, SetupOptions{
 		Path:       path,
@@ -1064,7 +1075,7 @@ func TestSetupAliasFallsBackToText(t *testing.T) {
 	if rows := aliasRows(t, body); rows != nil {
 		t.Errorf("a value no pair editor can show was rendered as rows: %q", rows)
 	}
-	if !strings.Contains(body, `<textarea id="S2G_RECIPIENT_ALIASES" name="S2G_RECIPIENT_ALIASES" rows="3" spellcheck="false">`+broken) {
+	if !strings.Contains(body, `<textarea id="S2G_RECIPIENT_ALIASES" name="S2G_RECIPIENT_ALIASES" rows="3" spellcheck="false">`+html.EscapeString(broken)) {
 		t.Errorf("the broken value is not in a box the operator can fix it in:\n%s", body)
 	}
 
