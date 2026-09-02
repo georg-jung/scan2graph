@@ -1420,8 +1420,7 @@ func TestSetupGuideDerivesTheRedirectURI(t *testing.T) {
 			}
 			h := newSetupHarness(t, SetupOptions{FileValues: values, Getenv: getenv})
 			_, body := h.get(h.claimed(), "/setup")
-			tc := struct{ want string }{want}
-			if tc.want == "" {
+			if want == "" {
 				if strings.Contains(body, "/auth/callback") {
 					t.Errorf("the page offers a redirect URI with no public URL set:\n%s", body)
 				}
@@ -1433,8 +1432,8 @@ func TestSetupGuideDerivesTheRedirectURI(t *testing.T) {
 			if got := strings.Count(body, "/auth/callback"); got != 1 {
 				t.Errorf("the page names %d redirect URIs, want exactly the derived one:\n%s", got, body)
 			}
-			if want := `<code>` + tc.want + `</code>`; !strings.Contains(body, want) {
-				t.Errorf("the page does not show %s:\n%s", want, body)
+			if shown := `<code>` + want + `</code>`; !strings.Contains(body, shown) {
+				t.Errorf("the page does not show %s:\n%s", shown, body)
 			}
 		})
 	}
