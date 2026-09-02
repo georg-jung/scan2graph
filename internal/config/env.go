@@ -89,14 +89,17 @@ func ResolveBaseURL(getenv func(string) string, name string) string {
 
 // BasePath is the subpath prefix a public base URL asks the appliance to
 // serve itself under: "/scanner" for https://nas.example/scanner/, and "" for
-// a host of its own. Load puts it on Config.PathPrefix; main asks the same
-// question of a raw value it has not loaded.
+// a host of its own. Load puts it on Config.PathPrefix; main and the wizard
+// ask the same question of a value they resolved rather than loaded. Every
+// caller's value has been through parseBaseURL, which strips the trailing
+// slashes; stripping them again is what keeps the answer this comment
+// promises from depending on that.
 func BasePath(base string) string {
 	u, err := url.Parse(base)
 	if err != nil {
 		return ""
 	}
-	return u.Path
+	return strings.TrimRight(u.Path, "/")
 }
 
 // resolveRequired is like resolve, but records a well-worded "is required"
@@ -284,7 +287,7 @@ func (l *loader) publicBaseURL(name string, required bool, reason string) string
 	}
 	u, err := url.Parse(v)
 	if err != nil || !plainSubpath.MatchString(u.EscapedPath()) {
-		l.errorf("%s: the path must be a plain subpath such as /scanner, got %q", name, v)
+		l.errorf("%s: the path must be a plain subpath such as /scanner, got %q", name, u.EscapedPath())
 		return ""
 	}
 	return v

@@ -639,6 +639,21 @@ func TestLoadFileIndirection(t *testing.T) {
 	// URL rules themselves are TestLoadPublicBaseURLValidation's and
 	// TestSetupURL's job; what is new here is that the file indirection still
 	// applies to a URL-shaped value.
+	// BasePath is exported and answers for values its callers resolved rather
+	// than loaded, so it strips what parseBaseURL would have stripped rather
+	// than trusting that it did: a prefix ending in "/" becomes a route
+	// pattern and a cookie Path, where the trailing slash is not cosmetic.
+	t.Run("BasePath strips trailing slashes", func(t *testing.T) {
+		for raw, want := range map[string]string{
+			"https://nas.acme.office/scanner//": "/scanner",
+			"https://nas.acme.office/":          "",
+			"https://scan2graph.example.com":    "",
+		} {
+			if got := BasePath(raw); got != want {
+				t.Errorf("BasePath(%q) = %q, want %q", raw, got, want)
+			}
+		}
+	})
 	t.Run("ResolveBaseURL follows the file indirection", func(t *testing.T) {
 		p := filepath.Join(t.TempDir(), "base-url")
 		if err := os.WriteFile(p, []byte("https://nas.acme.office/scanner/\n"), 0o600); err != nil {
