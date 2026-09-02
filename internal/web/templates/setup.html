@@ -40,6 +40,7 @@ consent.</p>
 <form method="post" action="/setup">
 <input type="hidden" name="form" value="{{.Form}}">
 {{range .Groups}}
+{{if .Fields}}
 <fieldset>
 <legend>{{.Name}}</legend>
 {{range .Fields}}{{template "field" .}}{{end}}
@@ -50,6 +51,16 @@ consent.</p>
 </details>
 {{end}}
 </fieldset>
+{{else}}
+{{/* A group that is entirely Rare has nothing ordinary to put in a
+     fieldset, so a fieldset built only to hold its "Rarely needed"
+     disclosure would be a box around a box: collapse straight to the
+     disclosure instead, named for the group it replaces. */}}
+<details class="group">
+<summary>{{.Name}}</summary>
+{{range .Rare}}{{template "field" .}}{{end}}
+</details>
+{{end}}
 {{end}}
 <div class="actions">
 {{if .Path}}<button type="submit" name="action" value="save" class="primary">Save the configuration file</button>{{end}}
@@ -64,23 +75,29 @@ consent.</p>
 {{define "field" -}}
 <div class="field{{if .Error}} bad{{end}}">
 {{if eq .Kind "bool"}}
+<span class="field-head">
 <label class="check"><input type="checkbox" id="{{.Name}}" name="{{.Name}}" value="true"{{if .Checked}} checked{{end}}> {{.Label}}</label>
+<code>{{.Name}}</code>
+</span>
 {{else}}
+<span class="field-head">
 <label for="{{.Name}}">{{.Label}}</label>
+<code>{{.Name}}</code>
+</span>
 {{if eq .Kind "choice"}}
 <select id="{{.Name}}" name="{{.Name}}">
 <option value="">(default)</option>
 {{range .Choice}}<option value="{{.}}"{{if eq . $.Value}} selected{{end}}>{{.}}</option>{{end}}
 </select>
 {{else if eq .Kind "area"}}
-<textarea id="{{.Name}}" name="{{.Name}}" rows="3" spellcheck="false">{{.Value}}</textarea>
+<textarea id="{{.Name}}" name="{{.Name}}" rows="3" spellcheck="false"{{if .Placeholder}} placeholder="{{.Placeholder}}"{{end}}>{{.Value}}</textarea>
 {{else if eq .Kind "secret"}}
-<input type="password" id="{{.Name}}" name="{{.Name}}" value="" autocomplete="new-password">
+<input type="password" id="{{.Name}}" name="{{.Name}}" value="" autocomplete="new-password"{{if .Placeholder}} placeholder="{{.Placeholder}}"{{end}}>
 {{else}}
-<input type="text" id="{{.Name}}" name="{{.Name}}" value="{{.Value}}" spellcheck="false">
+<input type="text" id="{{.Name}}" name="{{.Name}}" value="{{.Value}}" spellcheck="false"{{if .Placeholder}} placeholder="{{.Placeholder}}"{{end}}>
 {{end}}
 {{end}}
 {{if .Error}}<p class="error small">{{.Error}}</p>{{end}}
-<p class="muted small">{{.Help}}{{if .Set}} One is configured already and cannot be shown here; leave this empty to keep it.{{end}} <code>{{.Name}}</code></p>
+<p class="muted small">{{.Help}}</p>
 </div>
 {{- end}}

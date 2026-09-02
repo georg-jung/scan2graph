@@ -353,7 +353,7 @@ func TestSetupRejectsAndAttributes(t *testing.T) {
 	if strings.Contains(body, testClientSecret) {
 		t.Fatal("the re-rendered form rendered the client secret")
 	}
-	if !strings.Contains(body, "One is configured already") {
+	if !strings.Contains(body, "configured — leave empty to keep") {
 		t.Error("the page does not offer to keep the secret it is holding")
 	}
 	fixed := validForm()
@@ -451,7 +451,7 @@ func TestSetupKeepsAFileSuppliedValue(t *testing.T) {
 				t.Fatal("the configured value was rendered into the page")
 			}
 			field, _, _ := strings.Cut(body[strings.Index(body, `id="`+name+`"`):], "</div>")
-			if !strings.Contains(field, "One is configured already") {
+			if !strings.Contains(field, "configured — leave empty to keep") {
 				t.Errorf("the page does not say that an empty box keeps the configured value:\n%s", field)
 			}
 

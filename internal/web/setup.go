@@ -504,10 +504,11 @@ type setupGroup struct {
 // is never rendered back.
 type setupInput struct {
 	setupField
-	Value   string
-	Checked bool
-	Set     bool // a value is configured that no box can show
-	Error   string
+	Value       string
+	Checked     bool
+	Set         bool // a value is configured that no box can show
+	Placeholder string
+	Error       string
 }
 
 func (s *setupServer) view(values map[string]string, general []string, byField map[string]string) setupView {
@@ -524,6 +525,12 @@ func (s *setupServer) view(values map[string]string, general []string, byField m
 		// the next press from this page - which folds into these values,
 		// remember having stored them under the id being rendered.
 		in.Set = values[f.Name+"_FILE"] != "" || (f.Kind == fieldSecret && values[f.Name] != "")
+		// Set wins over a field's own shape example: once there is a value no
+		// box can show, saying so is more important than what one looks like.
+		in.Placeholder = f.Placeholder
+		if in.Set {
+			in.Placeholder = "configured — leave empty to keep"
+		}
 		switch f.Kind {
 		case fieldSecret:
 			// Never rendered back into the page.
