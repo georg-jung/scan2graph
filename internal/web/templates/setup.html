@@ -97,11 +97,15 @@ consent.</p>
      above the actions row would become the form's default, so Enter in any
      of these boxes would add a row instead of saving. */}}
 <div class="pairs">
-<span>Address the printer sends to</span>
-<span>Real address</span>
+{{/* The column headings are what a sighted operator reads, and they are
+     hidden altogether on a phone, so each box carries the same words for
+     itself: a screen reader announcing twenty identically named boxes
+     would say nothing about which half of a pair it is on. */}}
+<span aria-hidden="true">Address the printer sends to</span>
+<span aria-hidden="true">Real address</span>
 {{range $i, $p := .Pairs}}
-<input type="text"{{if not $i}} id="{{$.Name}}"{{end}} name="alias-from" value="{{$p.From}}" spellcheck="false" placeholder="{{if $.Placeholder}}{{$.Placeholder}}{{else}}printer-shortcut@scanner.local{{end}}">
-<input type="text" name="alias-to" value="{{$p.To}}" spellcheck="false" placeholder="{{if $.Placeholder}}{{$.Placeholder}}{{else}}jane.doe@example.com{{end}}">
+<input type="text"{{if not $i}} id="{{$.Name}}"{{end}} name="alias-from" value="{{$p.From}}" spellcheck="false" aria-label="Address the printer sends to" placeholder="{{if $.Placeholder}}{{$.Placeholder}}{{else}}printer-shortcut@scanner.local{{end}}">
+<input type="text" name="alias-to" value="{{$p.To}}" spellcheck="false" aria-label="Real address" placeholder="{{if $.Placeholder}}{{$.Placeholder}}{{else}}jane.doe@example.com{{end}}">
 {{end}}
 </div>
 {{else if eq .Kind "area"}}
