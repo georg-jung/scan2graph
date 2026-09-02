@@ -11,6 +11,11 @@ const (
 	fieldBool   fieldKind = "bool"
 	fieldChoice fieldKind = "choice"
 	fieldArea   fieldKind = "area"
+	// fieldProfiles is a setting whose value is a JSON object of sender
+	// address to capabilities, asked for as one row of boxes per profile:
+	// nobody should have to type JSON by hand to say what a printer button
+	// is allowed to do.
+	fieldProfiles fieldKind = "profiles"
 )
 
 // setupField is one setting as the wizard asks for it. Help is one sentence,
@@ -56,10 +61,6 @@ var setupFields = []setupField{
 		Help:        "Comma-separated domains a scan may be mailed to, without a leading @ and matched exactly; email delivery requires it, or the appliance would be an open relay.",
 		Placeholder: "example.com, example.org",
 	}, {
-		Name: "S2G_RECIPIENT_ALIASES", Label: "Recipient aliases", Kind: fieldArea, Group: "Delivery",
-		Help:        "JSON object mapping a shorthand address the printer's address book can hold to the real one.",
-		Placeholder: `{"printer-shortcut@scanner.local":"jane.doe@example.com"}`,
-	}, {
 		Name: "S2G_PUBLIC_BASE_URL", Label: "Public URL", Group: "Web UI",
 		Help:        "Where this appliance is reached through the reverse proxy that terminates TLS; setting it is what turns the web UI on, and it must address the root of a host of its own.",
 		Placeholder: "https://scan2graph.example.com",
@@ -90,9 +91,8 @@ var setupFields = []setupField{
 		Name: "S2G_SMTP_ALLOW_ANONYMOUS", Label: "Accept scans without SMTP AUTH", Kind: fieldBool, Group: "Scanner",
 		Help: "For a printer that cannot authenticate at all: only on a trusted, isolated network segment, and not together with a username or password.",
 	}, {
-		Name: "S2G_PROFILES", Label: "Sender profiles", Kind: fieldArea, Group: "Scanner", Rare: true,
-		Help:        "JSON object giving each printer sender address the features it may use; leave it empty and every sender gets whatever the settings above enable.",
-		Placeholder: `{"scan-web@scanner.local":{"email":false,"web":true,"ocr":true}}`,
+		Name: "S2G_PROFILES", Label: "Printer profiles", Kind: fieldProfiles, Group: "Scanner",
+		Help: "One row per address the printer sends from, ticking what a scan from that address may do; with no rows filled in there are no profiles at all, and then every sender is accepted and gets whatever the rest of this configuration enables. Type into the blank rows to add profiles; two fresh ones come back with every submission the appliance accepts.",
 	}, {
 		Name: "S2G_MAX_MESSAGE_BYTES", Label: "Largest accepted message", Group: "Scanner", Rare: true,
 		Help:        "Biggest message the SMTP listener accepts, in bytes; the default is 32 MiB.",

@@ -194,7 +194,6 @@ func TestParseEnvFileFormat(t *testing.T) {
 		`S2G_ENTRA_CLIENT_SECRET="quoted secret"`,
 		"S2G_LOG_LEVEL='info'",
 		"S2G_PROFILES=" + profiles,
-		"S2G_RECIPIENT_ALIASES='" + profiles + "'",
 		`S2G_GRAPH_SCOPE="` + profiles + `"`,
 		"S2G_DI_SCOPE=https://example.test/.default?a=b#c",
 		"S2G_JOB_TTL=",
@@ -210,10 +209,10 @@ func TestParseEnvFileFormat(t *testing.T) {
 		"S2G_UI_TITLE":            "ACME Document Scanning",
 		"S2G_ENTRA_CLIENT_SECRET": "quoted secret",
 		"S2G_LOG_LEVEL":           "info",
-		// JSON survives unquoted, single-quoted and double-quoted alike.
-		"S2G_PROFILES":          profiles,
-		"S2G_RECIPIENT_ALIASES": profiles,
-		"S2G_GRAPH_SCOPE":       profiles,
+		// JSON survives both unquoted and double-quoted, inner quotes and
+		// all; S2G_LOG_LEVEL above is the single-quoted case.
+		"S2G_PROFILES":    profiles,
+		"S2G_GRAPH_SCOPE": profiles,
 		// Nothing in a value is interpreted: no trailing-comment stripping.
 		"S2G_DI_SCOPE": "https://example.test/.default?a=b#c",
 		"S2G_JOB_TTL":  "",

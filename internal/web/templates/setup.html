@@ -92,6 +92,30 @@ consent.</p>
 <option value="">{{if .Placeholder}}{{.Placeholder}}{{else}}(default){{end}}</option>
 {{range .Choice}}<option value="{{.}}"{{if eq . $.Value}} selected{{end}}>{{.}}</option>{{end}}
 </select>
+{{else if eq .Kind "profiles"}}
+{{/* Two standing spare rows instead of an "add" button: a second submit
+     above the actions row would become the form's default, so Enter in any
+     of these boxes would add a row instead of saving. Every checkbox in a
+     column carries one name and its row's index as its value: an unchecked
+     box posts nothing at all, so the three feature columns cannot line up by
+     repetition the way the address column does. */}}
+<div class="profiles">
+{{/* The column headings are what a sighted operator reads, and they are
+     hidden altogether on a phone, so every box says which row and which
+     column it belongs to for itself: a screen reader announcing eight boxes
+     all called "Email" would say nothing about which printer address it is
+     about to give email to. */}}
+<span aria-hidden="true">Address the printer sends from</span>
+<span aria-hidden="true">Email</span>
+<span aria-hidden="true">Web</span>
+<span aria-hidden="true">OCR</span>
+{{range $i, $p := .Profiles}}
+<input type="text"{{if not $i}} id="{{$.Name}}"{{end}} name="profile-sender" value="{{$p.Sender}}" spellcheck="false" aria-label="Row {{$p.Row}}: address the printer sends from" placeholder="{{if $.Placeholder}}{{$.Placeholder}}{{else}}scan-web@scanner.local{{end}}">
+<label class="check"><input type="checkbox" name="profile-email" value="{{$i}}"{{if $p.Caps.Email}} checked{{end}} aria-label="Row {{$p.Row}}: email"><span aria-hidden="true">Email</span></label>
+<label class="check"><input type="checkbox" name="profile-web" value="{{$i}}"{{if $p.Caps.Web}} checked{{end}} aria-label="Row {{$p.Row}}: web"><span aria-hidden="true">Web</span></label>
+<label class="check"><input type="checkbox" name="profile-ocr" value="{{$i}}"{{if $p.Caps.OCR}} checked{{end}} aria-label="Row {{$p.Row}}: OCR"><span aria-hidden="true">OCR</span></label>
+{{end}}
+</div>
 {{else if eq .Kind "area"}}
 <textarea id="{{.Name}}" name="{{.Name}}" rows="3" spellcheck="false"{{if .Placeholder}} placeholder="{{.Placeholder}}"{{end}}>{{.Value}}</textarea>
 {{else if eq .Kind "secret"}}

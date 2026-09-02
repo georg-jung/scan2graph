@@ -1,9 +1,12 @@
 package web
 
 import (
+	"cmp"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -108,8 +111,8 @@ func NewSetup(opts SetupOptions) http.Handler {
 			})
 			return
 		}
-		current, _ := s.values(nil)
-		render(slog.Default(), w, setupTmpl, s.view(current, nil, nil))
+		current, _, _ := s.values(nil)
+		render(slog.Default(), w, setupTmpl, s.view(current, nil, nil, nil))
 	})
 	mux.HandleFunc("POST /setup/start", s.start)
 	mux.HandleFunc("POST /setup", s.submit)
@@ -218,12 +221,16 @@ func (s *setupServer) submit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the submitted form is malformed or too large", http.StatusBadRequest)
 		return
 	}
-	values, file := s.values(r.PostForm)
+	values, file, foldErr := s.values(r.PostForm)
 
 	// The real loader through the real precedence, so the wizard cannot
-	// disagree with the next start about what is valid.
+	// disagree with the next start about what is valid. The profile editor's
+	// own complaint is written like a loader message and joined in front of
+	// them, so it lands under its box through the same path - and, being
+	// first, is the one shown there when the loader has something to say
+	// about the same setting too.
 	cfg, err := config.Load(config.Layer(values, s.Getenv))
-	general, byField := attribute(err)
+	general, byField := attribute(errors.Join(foldErr, err))
 	var checks []checkResult
 	if len(general) == 0 && len(byField) == 0 {
 		action := r.PostForm.Get("action")
@@ -250,7 +257,16 @@ func (s *setupServer) submit(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	v := s.view(values, general, byField)
+	// The rows exactly as they were posted, and only where the fold refused
+	// them: it collapses rows into a map keyed by the address, so a row with
+	// no address at all - or a second one naming an address another row
+	// already used - lands on top of another entry, and rendering that map
+	// back would take away the very row the complaint is about.
+	var posted []setupProfile
+	if foldErr != nil {
+		posted = postedProfiles(r.PostForm)
+	}
+	v := s.view(values, general, byField, posted)
 	v.Checks = checks
 	// Everything that reaches this render was handed back rather than saved,
 	// so the next press from the page it renders folds into it: the secret a
@@ -265,19 +281,29 @@ func (s *setupServer) submit(w http.ResponseWriter, r *http.Request) {
 // form can turn something off - except where that page holds an answer the
 // form cannot show, which a blank box keeps instead: a secret, and any
 // setting supplied by its S2G_..._FILE spelling. A nil form changes nothing.
-func (s *setupServer) values(form url.Values) (map[string]string, uint64) {
+// The error is the profile editor's alone, and reads like a loader message so
+// that submit can attribute it to its box the same way.
+func (s *setupServer) values(form url.Values) (map[string]string, uint64, error) {
 	base, file := s.base(form.Get("form"))
 	values := maps.Clone(base)
 	if values == nil {
 		values = make(map[string]string, len(setupFields))
 	}
 	if form == nil {
-		return values, file
+		return values, file, nil
 	}
+	var foldErr error
 	for _, f := range setupFields {
 		// A newline would end the KEY=value line; the JSON in a textarea does
 		// not care where its whitespace is.
 		v := strings.TrimSpace(strings.NewReplacer("\r", "", "\n", " ").Replace(form.Get(f.Name)))
+		// The profile editor names its boxes for itself, so a submission
+		// carrying them is one the editor rendered - and one without them came
+		// from the textarea the unparseable-value fallback puts under f.Name
+		// instead.
+		if f.Kind == fieldProfiles && form.Has(profSender) {
+			v, foldErr = foldProfiles(postedProfiles(form))
+		}
 		switch {
 		case v != "":
 			values[f.Name] = v
@@ -301,7 +327,117 @@ func (s *setupServer) values(form url.Values) (map[string]string, uint64) {
 			delete(values, f.Name+"_FILE")
 		}
 	}
-	return values, file
+	return values, file, foldErr
+}
+
+// The profile editor's boxes on the wire, deliberately not S2G_ names (which
+// the fold loop iterates) and deliberately not numbered (which would need the
+// page to remember how many rows it drew). The address column is repeated, so
+// its values come back in row order. The three feature columns cannot be:
+// an unchecked box posts nothing at all, so every box in one of them carries
+// the same name and its row's index as its value, and what comes back is the
+// list of rows that are ticked.
+const (
+	profSender = "profile-sender"
+	profEmail  = "profile-email"
+	profWeb    = "profile-web"
+	profOCR    = "profile-ocr"
+)
+
+// postedProfiles reads the editor back off the wire, one row per address box
+// in the order the page drew them. A tick for a row the address column does
+// not have is ignored: it can only come from a hand-made submission, and the
+// holder gains nothing by aiming one at a row that does not exist.
+func postedProfiles(form url.Values) []setupProfile {
+	rows := make([]setupProfile, len(form[profSender]))
+	for i, sender := range form[profSender] {
+		rows[i] = setupProfile{Row: i + 1, Sender: strings.TrimSpace(sender)}
+	}
+	tick := func(name string, on func(*config.Capabilities)) {
+		for _, v := range form[name] {
+			if i, err := strconv.Atoi(v); err == nil && i >= 0 && i < len(rows) {
+				on(&rows[i].Caps)
+			}
+		}
+	}
+	tick(profEmail, func(c *config.Capabilities) { c.Email = true })
+	tick(profWeb, func(c *config.Capabilities) { c.Web = true })
+	tick(profOCR, func(c *config.Capabilities) { c.OCR = true })
+	return rows
+}
+
+// foldProfiles composes the editor's rows into the JSON object the loader
+// already parses, so nothing downstream knows the form changed. Rows nobody
+// touched - every page ends with two spares - are dropped, and no row at all
+// leaves the setting empty, which reads as "delete it" exactly like an empty
+// box: there are then no profiles, and every sender is accepted again. The
+// config type is what a row is marshalled from, so the wizard cannot disagree
+// with the loader about the shape, and marshalling a map is what sorts the
+// keys, so saving the same profiles twice writes the same file.
+//
+// The map is also why the two rows it cannot hold apart are named: one with
+// features ticked but no address, and a second one naming an address another
+// row already used. Both land on one entry and take what was typed with them,
+// which is exactly what the operator would otherwise not find out about.
+// Naming is the whole job here - the submission is refused either way, and
+// what comes back is the rows as posted rather than this map - so the
+// addressless one is left out of the object instead of going in under the
+// empty key, where it would only buy a second complaint from the loader about
+// a row the operator can already see. A row with an address and nothing
+// ticked needs nothing at all: the loader itself says that a profile with no
+// capability enabled is not one, and says it under this box.
+func foldProfiles(rows []setupProfile) (string, error) {
+	profiles := make(map[string]config.Capabilities, len(rows))
+	var err error
+	for _, row := range rows {
+		if row.Sender == "" {
+			if row.Caps != (config.Capabilities{}) {
+				err = errors.New("S2G_PROFILES: a profile needs the address the printer sends from, and one row has only its features ticked")
+			}
+			continue // a spare nobody touched, or a row already named
+		}
+		if _, dup := profiles[row.Sender]; dup {
+			err = fmt.Errorf("S2G_PROFILES: %q is on two rows, so one printer address has two answers", row.Sender)
+		}
+		profiles[row.Sender] = row.Caps
+	}
+	if len(profiles) == 0 {
+		// Nothing to write, but a row that was left out is still a row the
+		// operator typed into: the complaint has to travel even when it is
+		// all there is.
+		return "", err
+	}
+	out, _ := json.Marshal(profiles) // a map of plain structs always marshals
+	return string(out), err
+}
+
+// profileRows is the stored value as the editor shows it: one row per
+// profile, ordered by the address the printer sends from so two renders
+// agree, then two blank rows to type the next profile into. Two standing
+// spares rather than an "add" button, which as a second submit before the
+// actions row would become the form's default - and Enter in any box would
+// then add a row instead of saving. The false answer means the value is not
+// something rows can show faithfully, and the textarea has to stand in.
+//
+// Which is anything the loader itself would refuse, so it is the loader's own
+// parser that is asked rather than a second opinion beside it. encoding/json
+// alone would take the last of two entries and ignore a misspelled
+// capability, so a file the appliance refuses to start on - which is exactly
+// what sends the operator to this form - would render as tidy rows whose next
+// save threw the problem away without ever naming it.
+func profileRows(v string) ([]setupProfile, bool) {
+	// An unset setting is the empty string here, and means what "{}" means;
+	// the loader keeps the two apart because a _FILE that failed to populate
+	// resolves to the empty string too, and this form has no such spelling.
+	profiles, err := config.ParseProfiles(cmp.Or(v, "{}"))
+	if err != nil {
+		return nil, false
+	}
+	rows := make([]setupProfile, 0, len(profiles)+2)
+	for _, sender := range slices.Sorted(maps.Keys(profiles)) {
+		rows = append(rows, setupProfile{Row: len(rows) + 1, Sender: sender, Caps: profiles[sender]})
+	}
+	return append(rows, setupProfile{Row: len(rows) + 1}, setupProfile{Row: len(rows) + 2}), true
 }
 
 // save writes the configuration file and republishes what the wizard reads
@@ -509,13 +645,27 @@ type setupGroup struct {
 // is never rendered back.
 type setupInput struct {
 	setupField
-	Value   string
-	Checked bool
-	Set     bool // a value is configured that no box can show
-	Error   string
+	Value    string
+	Checked  bool
+	Set      bool // a value is configured that no box can show
+	Error    string
+	Profiles []setupProfile // fieldProfiles only
 }
 
-func (s *setupServer) view(values map[string]string, general []string, byField map[string]string) setupView {
+// setupProfile is one row of the profile editor: the address the printer
+// sends from, and what a scan from it may do. Row is the row's number as the
+// page shows it, which is all a screen reader has to tell one row's three
+// identically named checkboxes from the next row's.
+type setupProfile struct {
+	Row    int
+	Sender string
+	Caps   config.Capabilities
+}
+
+// view renders values as the form. posted is the profile editor's rows as
+// they arrived, and is set only when the fold refused them; otherwise the
+// rows come from the folded value like every other field's box does.
+func (s *setupServer) view(values map[string]string, general []string, byField map[string]string, posted []setupProfile) setupView {
 	v := setupView{page: page{Title: "Setup", Brand: setupBrand}, Path: s.Path, Errors: general, Form: rand.Text()}
 	for _, f := range setupFields {
 		in := setupInput{setupField: f, Value: values[f.Name]}
@@ -548,6 +698,21 @@ func (s *setupServer) view(values map[string]string, general []string, byField m
 			// option of its own instead.
 			if in.Value != "" && !slices.Contains(f.Choice, in.Value) {
 				in.Choice = append(slices.Clone(f.Choice), in.Value)
+			}
+		case fieldProfiles:
+			// Rows, unless the file holds something that is not an object of
+			// profiles at all: somebody hand-edited it, and the wizard is
+			// the tool they would reach for to fix it, so show them the text
+			// itself in a textarea rather than empty rows that would silently
+			// replace it on the next save.
+			rows, ok := profileRows(in.Value)
+			switch {
+			case posted != nil:
+				in.Profiles = posted
+			case ok:
+				in.Profiles = rows
+			default:
+				in.Kind = fieldArea
 			}
 		}
 		if len(v.Groups) == 0 || v.Groups[len(v.Groups)-1].Name != f.Group {

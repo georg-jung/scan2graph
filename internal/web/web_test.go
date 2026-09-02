@@ -73,12 +73,11 @@ func newHarness(t *testing.T, uiTitle ...string) *harness {
 
 	ts := httptest.NewUnstartedServer(nil)
 	cfg := &config.Config{
-		PublicBaseURL:    "https://" + ts.Listener.Addr().String(),
-		ClientID:         testClientID,
-		ClientSecret:     testClientSecret,
-		AuthorityURL:     idp.URL,
-		RecipientAliases: map[string]string{"ann.alias@corp.example": ann},
-		UITitle:          "scan2graph",
+		PublicBaseURL: "https://" + ts.Listener.Addr().String(),
+		ClientID:      testClientID,
+		ClientSecret:  testClientSecret,
+		AuthorityURL:  idp.URL,
+		UITitle:       "scan2graph",
 	}
 	if len(uiTitle) == 1 {
 		cfg.UITitle = uiTitle[0]
@@ -717,7 +716,7 @@ func TestConcurrentRequests(t *testing.T) {
 }
 
 func TestIdentities(t *testing.T) {
-	s := &Server{cfg: &config.Config{RecipientAliases: map[string]string{"ann.alias@corp.example": ann}}}
+	s := &Server{cfg: &config.Config{}}
 	for _, tc := range []struct {
 		name       string
 		email, upn string
@@ -725,7 +724,6 @@ func TestIdentities(t *testing.T) {
 	}{
 		{"both claims, same address", ann, ann, []string{ann}},
 		{"upper case is canonicalized", "Ann@Corp.Example", "", []string{ann}},
-		{"an alias resolves to the identity", "", "ann.alias@corp.example", []string{ann}},
 		{"two different addresses both count", ann, bob, []string{ann, bob}},
 		{"nothing usable", "", "not-an-address", nil},
 	} {

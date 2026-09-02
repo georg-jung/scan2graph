@@ -1,9 +1,9 @@
 // Package config loads scan2graph's typed, environment-first configuration
-// and owns address canonicalization (see NormalizeAddress and
-// (*Config).Canonical). There is no configuration framework here: Load reads
-// well-known S2G_* environment variables (or the file an S2G_*_FILE points
-// at), validates them, and returns either a fully valid *Config or a single
-// error listing every problem found.
+// and owns address normalization (see NormalizeAddress). There is no
+// configuration framework here: Load reads well-known S2G_* environment
+// variables (or the file an S2G_*_FILE points at), validates them, and
+// returns either a fully valid *Config or a single error listing every
+// problem found.
 package config
 
 import (
@@ -69,9 +69,6 @@ type Config struct {
 	// email, a public base URL for web, a Document Intelligence endpoint for
 	// OCR). It is the zero value when Profiles is not empty.
 	DefaultProfile Capabilities
-	// RecipientAliases maps a canonical alias address to the canonical
-	// identity address it stands for. Applied exactly once by Canonical.
-	RecipientAliases map[string]string
 	// AllowedRecipientDomains is the recipient-domain allowlist: lowercase,
 	// without a leading "@". Empty means "every domain is allowed", which is
 	// only a legal configuration when no profile enables email.
@@ -115,7 +112,6 @@ func Load(getenv func(string) string) (*Config, error) {
 	c.SMTPUsername, c.SMTPPassword, c.SMTPAllowAnonymous, c.SMTPPasswordGenerated = l.smtpAuth()
 
 	c.Profiles = l.profiles()
-	c.RecipientAliases = l.aliases(c.Profiles)
 
 	var anyEmail, anyWeb, anyOCR bool
 	for _, cp := range c.Profiles {
@@ -181,8 +177,9 @@ func Load(getenv func(string) string) (*Config, error) {
 // result means "no profiles configured", which makes Config.DefaultProfile
 // apply to every sender.
 func (l *loader) profiles() map[string]Capabilities {
-	raw, ok := decodeStringMap[Capabilities](l, "S2G_PROFILES")
-	if !ok {
+	raw, err := ParseProfiles(l.stringDefault("S2G_PROFILES", "{}"))
+	if err != nil {
+		l.errorf("S2G_PROFILES: %v", err)
 		return nil
 	}
 
@@ -202,43 +199,6 @@ func (l *loader) profiles() map[string]Capabilities {
 			continue
 		}
 		out[canon] = cp
-	}
-	return out
-}
-
-// aliases resolves and validates S2G_RECIPIENT_ALIASES: an optional JSON
-// object mapping a shorthand alias address to the canonical identity address
-// it stands for. Both sides are normalized with NormalizeAddress; an alias
-// key that collides with a profile key, or with another alias key after
-// normalization, is an error. An alias whose key equals its value is legal
-// (pointless, but harmless).
-func (l *loader) aliases(profiles map[string]Capabilities) map[string]string {
-	raw, ok := decodeStringMap[string](l, "S2G_RECIPIENT_ALIASES")
-	if !ok {
-		return nil
-	}
-
-	out := make(map[string]string, len(raw))
-	for k, v := range raw {
-		ck := NormalizeAddress(k)
-		if ck == "" {
-			l.errorf("S2G_RECIPIENT_ALIASES: key %q is not a valid address", k)
-			continue
-		}
-		cv := NormalizeAddress(v)
-		if cv == "" {
-			l.errorf("S2G_RECIPIENT_ALIASES: value %q for key %q is not a valid address", v, k)
-			continue
-		}
-		if _, isProfile := profiles[ck]; isProfile {
-			l.errorf("S2G_RECIPIENT_ALIASES: key %q is also a S2G_PROFILES key, which is confusing configuration", ck)
-			continue
-		}
-		if _, dup := out[ck]; dup {
-			l.errorf("S2G_RECIPIENT_ALIASES: key %q normalizes to %q, which is already used by another alias key", k, ck)
-			continue
-		}
-		out[ck] = cv
 	}
 	return out
 }
@@ -487,20 +447,6 @@ func NormalizeAddress(s string) string {
 	return strings.ToLower(s)
 }
 
-// Canonical normalizes addr and then applies the recipient alias map exactly
-// once (alias -> canonical identity; alias chains are not followed). It
-// returns "" for an implausible address.
-func (c *Config) Canonical(addr string) string {
-	n := NormalizeAddress(addr)
-	if n == "" {
-		return ""
-	}
-	if canon, ok := c.RecipientAliases[n]; ok {
-		return canon
-	}
-	return n
-}
-
 // RecipientAllowed reports whether a canonical address may receive scans:
 // true for every address when no domain allowlist is configured (only a
 // legal configuration when no profile enables email), otherwise true iff the
@@ -552,7 +498,6 @@ func (c *Config) LogValue() slog.Value {
 		slog.String("log_format", c.LogFormat),
 		slog.String("ui_title", c.UITitle),
 		slog.Any("profiles", profiles),
-		slog.Int("recipient_aliases", len(c.RecipientAliases)),
 		slog.Any("allowed_recipient_domains", c.AllowedRecipientDomains),
 		slog.String("tenant_id", c.TenantID),
 		slog.String("client_id", c.ClientID),

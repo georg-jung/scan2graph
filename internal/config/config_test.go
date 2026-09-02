@@ -100,9 +100,6 @@ func TestLoadMinimalValidConfigAndDefaults(t *testing.T) {
 	if cp, ok := c.Profiles["scan@scanner.local"]; !ok || !cp.Email || !cp.Web || !cp.OCR {
 		t.Errorf("Profiles[scan@scanner.local] = %+v, ok=%v, want all true", cp, ok)
 	}
-	if len(c.RecipientAliases) != 0 {
-		t.Errorf("RecipientAliases = %v, want empty", c.RecipientAliases)
-	}
 	if got, want := c.AllowedRecipientDomains, []string{"example.com"}; len(got) != 1 || got[0] != want[0] {
 		t.Errorf("AllowedRecipientDomains = %v, want %v", got, want)
 	}
@@ -392,71 +389,6 @@ func TestLoadProfilesValidation(t *testing.T) {
 	})
 }
 
-func TestLoadAliasesValidation(t *testing.T) {
-	t.Run("default empty", func(t *testing.T) {
-		c := mustLoad(t, baseEnv())
-		if len(c.RecipientAliases) != 0 {
-			t.Errorf("RecipientAliases = %v, want empty", c.RecipientAliases)
-		}
-	})
-	t.Run("malformed json", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_RECIPIENT_ALIASES"] = `{bad`
-		wantLoadErr(t, env, "S2G_RECIPIENT_ALIASES", "invalid JSON")
-	})
-	t.Run("invalid key", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_RECIPIENT_ALIASES"] = `{"not-an-address": "user@example.com"}`
-		wantLoadErr(t, env, "S2G_RECIPIENT_ALIASES", "not a valid address")
-	})
-	t.Run("invalid value", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_RECIPIENT_ALIASES"] = `{"printer@scanner.local": "not-an-address"}`
-		wantLoadErr(t, env, "S2G_RECIPIENT_ALIASES", "not a valid address")
-	})
-	t.Run("key equal to value is fine", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_RECIPIENT_ALIASES"] = `{"user@example.com": "USER@Example.com"}`
-		c := mustLoad(t, env)
-		if got := c.RecipientAliases["user@example.com"]; got != "user@example.com" {
-			t.Errorf("RecipientAliases[user@example.com] = %q", got)
-		}
-	})
-	t.Run("alias key collides with profile key", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_RECIPIENT_ALIASES"] = `{"scan@scanner.local": "user@example.com"}`
-		wantLoadErr(t, env, "S2G_RECIPIENT_ALIASES", "also a S2G_PROFILES key")
-	})
-	t.Run("valid aliasing normalizes both sides", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_RECIPIENT_ALIASES"] = `{"Printer@Scanner.Local": "User@Example.com"}`
-		c := mustLoad(t, env)
-		if got := c.RecipientAliases["printer@scanner.local"]; got != "user@example.com" {
-			t.Errorf("RecipientAliases[printer@scanner.local] = %q, want user@example.com", got)
-		}
-	})
-}
-
-func TestCanonicalAppliesAliasExactlyOnce(t *testing.T) {
-	env := clone(baseEnv())
-	// a -> b -> c: Canonical(a) must stop at b, never chase to c.
-	env["S2G_RECIPIENT_ALIASES"] = `{"a@example.com": "b@example.com", "b@example.com": "c@example.com"}`
-	c := mustLoad(t, env)
-
-	if got := c.Canonical("a@example.com"); got != "b@example.com" {
-		t.Errorf("Canonical(a) = %q, want b@example.com (no chain-following)", got)
-	}
-	if got := c.Canonical("A@Example.com"); got != "b@example.com" {
-		t.Errorf("Canonical(uppercase a) = %q, want b@example.com", got)
-	}
-	if got := c.Canonical("unaliased@example.com"); got != "unaliased@example.com" {
-		t.Errorf("Canonical(unaliased) = %q, want itself", got)
-	}
-	if got := c.Canonical("not-an-address"); got != "" {
-		t.Errorf("Canonical(invalid) = %q, want empty", got)
-	}
-}
-
 func TestNormalizeAddress(t *testing.T) {
 	longLocal := strings.Repeat("a", 250)
 	cases := []struct {
@@ -620,19 +552,20 @@ func TestLoadFileIndirection(t *testing.T) {
 		}
 	})
 
-	t.Run("aliases from file", func(t *testing.T) {
-		dir := t.TempDir()
-		p := filepath.Join(dir, "aliases.json")
-		content := `{"printer@scanner.local":"user@example.com"}` + "\n"
-		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+	// A mount that failed to populate is the failure this refuses, and
+	// profiles are the setting where fail-open is worst: reading nothing as
+	// "no profiles" would accept every sender and turn each capability on
+	// from whatever the rest of the configuration happens to enable, so a
+	// profile that could not mail suddenly can.
+	t.Run("an empty profiles file is refused, not read as no profiles", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "profiles.json")
+		if err := os.WriteFile(p, []byte("  \n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		env := clone(baseEnv())
-		env["S2G_RECIPIENT_ALIASES_FILE"] = p
-		c := mustLoad(t, env)
-		if got := c.RecipientAliases["printer@scanner.local"]; got != "user@example.com" {
-			t.Errorf("RecipientAliases[printer@scanner.local] = %q", got)
-		}
+		delete(env, "S2G_PROFILES")
+		env["S2G_PROFILES_FILE"] = p
+		wantLoadErr(t, env, "S2G_PROFILES", "invalid JSON")
 	})
 
 	t.Run("both var and file set for a plain string variable", func(t *testing.T) {
@@ -777,12 +710,6 @@ func TestProfileRejectsImplausibleSender(t *testing.T) {
 	if _, ok := c.Profile("not-an-address"); ok {
 		t.Errorf("Profile(not-an-address) matched, want no match")
 	}
-}
-
-func TestLoadAliasesDuplicateKeyAfterNormalization(t *testing.T) {
-	env := clone(baseEnv())
-	env["S2G_RECIPIENT_ALIASES"] = `{"Printer@Scanner.Local": "a@example.com", "printer@scanner.local": "b@example.com"}`
-	wantLoadErr(t, env, "S2G_RECIPIENT_ALIASES", "already used by another alias key")
 }
 
 func TestValidDomainLength(t *testing.T) {
@@ -1038,15 +965,22 @@ func TestLoadRejectsDuplicateJSONKeys(t *testing.T) {
 		env["S2G_PROFILES"] = `{"scan@example.com":{"email":true},"scan@example.com":{"web":true}}`
 		wantLoadErr(t, env, "S2G_PROFILES")
 	})
-	t.Run("aliases", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_RECIPIENT_ALIASES"] = `{"a@example.com":"b@example.com","a@example.com":"c@example.com"}`
-		wantLoadErr(t, env, "S2G_RECIPIENT_ALIASES")
-	})
 	t.Run("inside a capability object", func(t *testing.T) {
 		env := clone(baseEnv())
 		env["S2G_PROFILES"] = `{"scan@example.com":{"email":true,"email":false,"web":true}}`
 		wantLoadErr(t, env, "S2G_PROFILES", `duplicate key "email"`)
+	})
+	// A second value after the object is a truncated edit or a shell that
+	// concatenated two settings, and either way half of what is there is
+	// being ignored. json.Decoder.More reads the next non-space byte at the
+	// top level, so it does see one - worth pinning, because "the object
+	// decoded, so we are done" is the reading a reader expects.
+	t.Run("trailing data", func(t *testing.T) {
+		for _, tail := range []string{`{"other@example.com":{"web":true}}`, ` garbage`, `null`} {
+			env := clone(baseEnv())
+			env["S2G_PROFILES"] = `{"scan@example.com":{"web":true}}` + tail
+			wantLoadErr(t, env, "S2G_PROFILES", "trailing data after the JSON object")
+		}
 	})
 	t.Run("not an object", func(t *testing.T) {
 		env := clone(baseEnv())

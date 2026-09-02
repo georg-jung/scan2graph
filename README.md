@@ -51,8 +51,7 @@ different purposes, and it never looks at the MIME `From:`/`To:` headers.
   Intelligence endpoint is. scan2graph prints the resulting profile at
   startup, so it is never a mystery why a feature is off.
 * **Envelope recipients → users.** The recipient addresses are matched against
-  the signed-in Entra user (email / UPN, plus an optional alias mapping for
-  printers that can only store shortened addresses).
+  the signed-in Entra user's email / UPN.
 
 A profile is a combination of three independent capabilities:
 
@@ -244,12 +243,11 @@ real environment variables.
 | `S2G_SMTP_PASSWORD` | none — an ephemeral password is generated and printed on every start | set it for a deployment that must keep working across restarts |
 | `S2G_SMTP_ALLOW_ANONYMOUS` | `false` | mutually exclusive with the two above |
 
-**Sender profiles & recipient identity**
+**Sender profiles & recipients**
 
 | variable | default | required when |
 | --- | --- | --- |
 | `S2G_PROFILES` | none — the default profile applies to every sender | — |
-| `S2G_RECIPIENT_ALIASES` | `{}` | — |
 | `S2G_ALLOWED_RECIPIENT_DOMAINS` | none | any profile (or the default profile) has `email` enabled |
 | `S2G_PUBLIC_BASE_URL` | none — web UI disabled | any profile (or the default profile) has `web` enabled |
 
