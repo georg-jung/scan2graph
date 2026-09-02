@@ -498,6 +498,11 @@ type setupView struct {
 type setupGroup struct {
 	Name         string
 	Fields, Rare []setupInput
+	// OpenRare unfolds the disclosure because something inside it was
+	// rejected. A complaint is only ever rendered under the box that caused
+	// it, so a folded-away one is a dead end: the operator presses Save, the
+	// page comes back looking identical, and nothing on it says why.
+	OpenRare bool
 }
 
 // setupInput is one field ready to render. Value is empty for a secret, which
@@ -551,6 +556,7 @@ func (s *setupServer) view(values map[string]string, general []string, byField m
 		g := &v.Groups[len(v.Groups)-1]
 		if f.Rare {
 			g.Rare = append(g.Rare, in)
+			g.OpenRare = g.OpenRare || in.Error != ""
 		} else {
 			g.Fields = append(g.Fields, in)
 		}

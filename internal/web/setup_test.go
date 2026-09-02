@@ -1009,6 +1009,12 @@ func TestSetupErrorStaysUnderItsOwnBox(t *testing.T) {
 	if strings.Contains(body, "problems") {
 		t.Error("the error was pushed above the form by a value that merely names another setting")
 	}
+	// That box is one of the rarely-needed ones, so it sits behind a
+	// disclosure - which has to open itself, or the only account of the
+	// refusal is folded away and the page comes back looking unchanged.
+	if !strings.Contains(body, "<details open>") {
+		t.Error("the disclosure holding the rejected box stayed folded")
+	}
 }
 
 func TestSetupErrorsUseTheLabel(t *testing.T) {

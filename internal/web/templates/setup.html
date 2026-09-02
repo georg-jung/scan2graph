@@ -16,7 +16,7 @@ file; it does not start the appliance.</p>
 {{else}}
 <h1>Set up scan2graph</h1>
 <p class="empty">Everything here ends up in one KEY=value file. Leave a box
-empty to keep the built-in default, and open “Rarely needed” only when
+empty to keep the built-in default, and open a folded-away section only when
 something asks you to.</p>
 {{if .Errors}}
 <div class="problems">
@@ -45,7 +45,7 @@ consent.</p>
 <legend>{{.Name}}</legend>
 {{range .Fields}}{{template "field" .}}{{end}}
 {{if .Rare}}
-<details>
+<details{{if .OpenRare}} open{{end}}>
 <summary>Rarely needed</summary>
 {{range .Rare}}{{template "field" .}}{{end}}
 </details>
@@ -56,7 +56,7 @@ consent.</p>
      fieldset, so a fieldset built only to hold its "Rarely needed"
      disclosure would be a box around a box: collapse straight to the
      disclosure instead, named for the group it replaces. */}}
-<details class="group">
+<details class="group"{{if .OpenRare}} open{{end}}>
 <summary>{{.Name}}</summary>
 {{range .Rare}}{{template "field" .}}{{end}}
 </details>
