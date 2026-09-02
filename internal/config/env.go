@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -78,12 +79,24 @@ func Resolve(getenv func(string) string, name string) string {
 	return v
 }
 
-// ResolveRootBaseURL is Resolve for a setting that must be an absolute
-// http(s) URL addressing the root of a host. It returns "" for anything Load
-// would refuse, so a caller printing a link for the operator to open falls
-// back to one that works rather than one that parses.
-func ResolveRootBaseURL(getenv func(string) string, name string) string {
-	return newLoader(getenv).rootBaseURL(name, false, "", "http", "https")
+// ResolveBaseURL is Resolve for a setting that must be an absolute http(s)
+// URL. It returns "" for anything Load would refuse, so a caller printing a
+// link for the operator to open falls back to one that works rather than one
+// that parses.
+func ResolveBaseURL(getenv func(string) string, name string) string {
+	return newLoader(getenv).publicBaseURL(name, false, "")
+}
+
+// BasePath is the subpath prefix a public base URL asks the appliance to
+// serve itself under: "/scanner" for https://nas.example/scanner/, and "" for
+// a host of its own. Load puts it on Config.PathPrefix; main asks the same
+// question of a raw value it has not loaded.
+func BasePath(base string) string {
+	u, err := url.Parse(base)
+	if err != nil {
+		return ""
+	}
+	return u.Path
 }
 
 // resolveRequired is like resolve, but records a well-worded "is required"
@@ -197,9 +210,10 @@ func (l *loader) int64Positive(name string, def int64) int64 {
 }
 
 // parseBaseURL parses value as an absolute URL whose scheme is one of
-// schemes, requires a host, forbids a query string or fragment, and strips a
-// trailing slash from the path so callers can safely concatenate further
-// path segments.
+// schemes, requires a host, forbids a query string or fragment, and strips
+// trailing slashes from the path so callers can safely concatenate further
+// path segments. All of them go: a path left as "/" would make the
+// appliance's own links start "//", which a browser reads as another host.
 func parseBaseURL(name, value string, schemes ...string) (string, error) {
 	u, err := url.Parse(value)
 	if err != nil {
@@ -224,7 +238,7 @@ func parseBaseURL(name, value string, schemes ...string) (string, error) {
 	if u.RawQuery != "" || u.Fragment != "" {
 		return "", fmt.Errorf("%s: must not include a query string or fragment, got %q", name, value)
 	}
-	u.Path = strings.TrimSuffix(u.Path, "/")
+	u.Path = strings.TrimRight(u.Path, "/")
 	return u.String(), nil
 }
 
@@ -245,17 +259,32 @@ func (l *loader) baseURL(name string, required bool, reason string, schemes ...s
 	return v
 }
 
-// rootBaseURL is baseURL for a URL that must address the root of a host.
-// The web UI's own links and its OIDC redirect are root-relative, so a base
-// URL carrying a path would send the browser to pages the appliance does not
-// serve. It runs on its own hostname, so a prefix has nothing to gain.
-func (l *loader) rootBaseURL(name string, required bool, reason string, schemes ...string) string {
-	v := l.baseURL(name, required, reason, schemes...)
+// plainSubpath is what the appliance's own base URL may carry as a path:
+// nothing, or unreserved ASCII segments - "/scanner", "/apps/scan2graph".
+// Empty, "." and ".." segments are out because the first character of one
+// cannot be "." or "/".
+var plainSubpath = regexp.MustCompile(`^(/[A-Za-z0-9_~-][A-Za-z0-9._~-]*)*$`)
+
+// publicBaseURL is baseURL with the one restriction the appliance's own
+// address has and a vendor's endpoint does not: its path is where the
+// appliance serves itself, so it becomes route patterns and cookie scopes,
+// and neither is forgiving. ServeMux panics at registration on a pattern
+// whose path is unclean or holds a "{", so "//scanner" or "/a/../b" would
+// take down every start after the one that saved it - the wizard that repairs
+// it included. http.SetCookie silently drops the bytes outside 0x20..0x7e
+// from a Path, so "/scänner" would route perfectly and make signing in
+// impossible, the session cookie being scoped to a path nothing serves. And
+// a path beginning "\" becomes "//evil.example" in a browser's URL parser,
+// which is another host. Refusing all of it here costs the operator a
+// hostname with a "+" in it, and Load says why.
+func (l *loader) publicBaseURL(name string, required bool, reason string) string {
+	v := l.baseURL(name, required, reason, "http", "https")
 	if v == "" {
 		return ""
 	}
-	if u, err := url.Parse(v); err == nil && u.Path != "" {
-		l.errorf("%s: must address the root of a host, got the path %q; give scan2graph its own hostname", name, u.Path)
+	u, err := url.Parse(v)
+	if err != nil || !plainSubpath.MatchString(u.EscapedPath()) {
+		l.errorf("%s: the path must be a plain subpath such as /scanner, got %q", name, v)
 		return ""
 	}
 	return v

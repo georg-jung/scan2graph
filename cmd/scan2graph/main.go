@@ -257,6 +257,14 @@ func wizard(path string, tokenHash []byte) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", plainOK)
 	mux.HandleFunc("GET /readyz", plainOK)
+	// And under the prefix as well, exactly as run() does it: a monitor
+	// pointed at the public URL is watching one address whichever mode the
+	// appliance is in, and setup mode is when it most wants an answer. Above
+	// the wizard's own gate, so a token-gated one still answers.
+	if p := config.BasePath(config.ResolveBaseURL(getenv, "S2G_PUBLIC_BASE_URL")); p != "" {
+		mux.HandleFunc("GET "+p+"/healthz", plainOK)
+		mux.HandleFunc("GET "+p+"/readyz", plainOK)
+	}
 	mux.Handle("/", web.NewSetup(web.SetupOptions{
 		Getenv:     os.Getenv,
 		FileValues: fileValues,
@@ -312,14 +320,16 @@ func setupListener(getenv func(string) string, fallback string) (net.Listener, s
 // problem is a stale secret already has one), else http://localhost on
 // addr's port, or the built-in default's port for an address shaped so
 // unusually that it has none, since nothing else is necessarily valid yet.
-// Usable is ResolveRootBaseURL's question rather than "is it set": a value
-// the loader refuses - a bare path, a scheme nothing browses - is exactly
-// what someone runs setup to repair, and printing it back as the one link
-// carrying the one-shot token would send the operator where nothing serves.
+// Usable is the loader's question rather than "is it set": a value it
+// refuses - a bare path, a scheme nothing browses - is exactly what someone
+// runs setup to repair, and printing it back as the one link carrying the
+// one-shot token would send the operator where nothing serves. A subpath
+// prefix in it is carried along, because that is where the wizard is: it is
+// mounted under the same prefix as the appliance it configures.
 // token, when not empty, is the one-shot query parameter "setup-next-start"
 // prints; the wizard's own startup banner never has one to show.
 func setupURL(getenv func(string) string, addr, token string) string {
-	base := config.ResolveRootBaseURL(getenv, "S2G_PUBLIC_BASE_URL")
+	base := config.ResolveBaseURL(getenv, "S2G_PUBLIC_BASE_URL")
 	if base == "" {
 		port := "8080"
 		if _, p, err := net.SplitHostPort(addr); err == nil {
@@ -687,7 +697,8 @@ func announceSMTPCredentials(cfg *config.Config) {
 	}
 }
 
-// newHTTPHandler serves the health endpoints always, and mounts the web UI
+// newHTTPHandler serves the health endpoints always - unauthenticated, at the
+// root and, under a subpath prefix, there too - and mounts the web UI
 // underneath them when a profile enables web downloads. Discovery against
 // Entra happens here, so a wrong authority is a startup failure rather than a
 // surprise at the first sign-in.
@@ -695,6 +706,19 @@ func newHTTPHandler(ctx context.Context, cfg *config.Config, store *jobs.Store) 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", plainOK)
 	mux.HandleFunc("GET /readyz", plainOK)
+	// Under a subpath prefix the same two answer there as well. Nothing here
+	// ships a probe path, so this is not about a default: it is that both
+	// callers are plausible and they cannot share one path - the container
+	// runtime talks to the port directly and knows nothing about any prefix,
+	// while an outside monitor checks the public URL, of which the proxy
+	// forwards only the prefix. Only when there is one: "" would be the very
+	// same pattern twice, which ServeMux panics on. Nothing is disclosed
+	// either way - plainOK writes a constant, and the proxy already serves
+	// the UI here.
+	if cfg.PathPrefix != "" {
+		mux.HandleFunc("GET "+cfg.PathPrefix+"/healthz", plainOK)
+		mux.HandleFunc("GET "+cfg.PathPrefix+"/readyz", plainOK)
+	}
 
 	if cfg.PublicBaseURL == "" {
 		slog.Info("web UI disabled: no profile enables web downloads")
@@ -705,7 +729,9 @@ func newHTTPHandler(ctx context.Context, cfg *config.Config, store *jobs.Store) 
 		return nil, fmt.Errorf("web UI: %w", err)
 	}
 	mux.Handle("/", ui.Handler())
-	slog.Info("web UI enabled", "base_url", cfg.PublicBaseURL)
+	// The prefix is derived rather than configured, so say what was derived:
+	// it is also what the reverse proxy has to forward unchanged.
+	slog.Info("web UI enabled", "base_url", cfg.PublicBaseURL, "path_prefix", cfg.PathPrefix)
 	return mux, nil
 }
 

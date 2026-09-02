@@ -1,6 +1,7 @@
 package web
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -52,16 +53,25 @@ func quiet() *slog.Logger {
 // over TLS (so the Secure session cookie behaves as it does behind the
 // proxy), and a real OpenID Connect provider.
 type harness struct {
-	t     *testing.T
-	idp   *fakeIDP
-	store *jobs.Store
-	ts    *httptest.Server
-	clock *testClock
+	t      *testing.T
+	idp    *fakeIDP
+	store  *jobs.Store
+	ts     *httptest.Server
+	clock  *testClock
+	prefix string // the subpath this appliance is published under, if any
 }
 
-// newHarness builds the whole web side. uiTitle, when given, is the
-// operator's brand for this appliance.
+// newHarness builds the whole web side, on a host of the appliance's own.
+// uiTitle, when given, is the operator's brand for this appliance.
 func newHarness(t *testing.T, uiTitle ...string) *harness {
+	t.Helper()
+	return newHarnessAt(t, "", uiTitle...)
+}
+
+// newHarnessAt is newHarness with the appliance published under a subpath
+// prefix, the way a NAS or an existing site reaches it: the public base URL
+// carries the path, and the appliance both routes and emits it.
+func newHarnessAt(t *testing.T, prefix string, uiTitle ...string) *harness {
 	t.Helper()
 	idp := newFakeIDP(t)
 	clock := newTestClock()
@@ -73,7 +83,8 @@ func newHarness(t *testing.T, uiTitle ...string) *harness {
 
 	ts := httptest.NewUnstartedServer(nil)
 	cfg := &config.Config{
-		PublicBaseURL: "https://" + ts.Listener.Addr().String(),
+		PublicBaseURL: "https://" + ts.Listener.Addr().String() + prefix,
+		PathPrefix:    prefix,
 		ClientID:      testClientID,
 		ClientSecret:  testClientSecret,
 		AuthorityURL:  idp.URL,
@@ -90,8 +101,13 @@ func newHarness(t *testing.T, uiTitle ...string) *harness {
 	ts.StartTLS()
 	t.Cleanup(ts.Close)
 
-	return &harness{t: t, idp: idp, store: store, ts: ts, clock: clock}
+	return &harness{t: t, idp: idp, store: store, ts: ts, clock: clock, prefix: prefix}
 }
+
+// url is where path lives on this appliance: under its prefix, when it has
+// one. Every test that asks for a page goes through it, so the prefixed run
+// of TestPathsFollowThePrefix exercises the same code as all the others.
+func (h *harness) url(path string) string { return h.ts.URL + h.prefix + path }
 
 // client is one browser: its own cookie jar, and no automatic redirects so
 // every hop is visible to the test.
@@ -136,7 +152,7 @@ func (h *harness) location(resp *http.Response) string {
 // the callback URL the provider redirected the browser to.
 func (h *harness) startSignIn(c *http.Client) string {
 	h.t.Helper()
-	resp, _ := h.get(c, h.ts.URL+"/auth/login")
+	resp, _ := h.get(c, h.url("/auth/login"))
 	if resp.StatusCode != http.StatusFound {
 		h.t.Fatalf("/auth/login: status %d, want 302", resp.StatusCode)
 	}
@@ -733,4 +749,129 @@ func TestIdentities(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPathsFollowThePrefix drives one whole journey twice: on a host of the
+// appliance's own, and under a subpath prefix on a host it shares with other
+// applications. Every path the appliance emits is asserted as the prefix plus
+// the path it has always had, so the first run is the proof that a deployment
+// without a prefix is exactly what it was before - and the second that
+// nothing is left pointing at the root, where the proxy forwards nothing.
+func TestPathsFollowThePrefix(t *testing.T) {
+	for _, prefix := range []string{"", "/scanner"} {
+		t.Run("prefix "+prefix, func(t *testing.T) {
+			h := newHarnessAt(t, prefix)
+			j := h.addJob("Rechnung Müller", []string{ann}, webCaps, "%PDF-1.7 one")
+			doc := j.Documents[0]
+			c := h.client()
+
+			// Signed out: the guard sends the browser to sign in where the
+			// sign-in actually is.
+			if resp, _ := h.get(c, h.url("/")); resp.StatusCode != http.StatusSeeOther ||
+				h.location(resp) != h.url("/auth/login") {
+				t.Fatalf("no session: status %d location %q, want 303 to %s",
+					resp.StatusCode, resp.Header.Get("Location"), prefix+"/auth/login")
+			}
+
+			// Signing in: the short-lived cookie is scoped to the callback's
+			// own path, and the identity provider is given a redirect URI
+			// that comes back to this appliance rather than to the host root.
+			resp, _ := h.get(c, h.url("/auth/login"))
+			if got := cookie(t, resp, authCookie).Path; got != prefix+authPath {
+				t.Errorf("sign-in cookie Path = %q, want %q", got, prefix+authPath)
+			}
+			authorize, err := url.Parse(h.location(resp))
+			if err != nil {
+				t.Fatalf("parse the authorize URL: %v", err)
+			}
+			if got, want := authorize.Query().Get("redirect_uri"), h.url("/auth/callback"); got != want {
+				t.Errorf("redirect_uri = %q, want %q", got, want)
+			}
+			resp, _ = h.get(c, authorize.String())
+			resp, _ = h.get(c, h.location(resp))
+			if resp.StatusCode != http.StatusSeeOther || h.location(resp) != h.url("/") {
+				t.Fatalf("callback: status %d location %q, want 303 to %s",
+					resp.StatusCode, resp.Header.Get("Location"), prefix+"/")
+			}
+			// The whole point on a shared host: the session cookie goes to
+			// this appliance and to nothing else living on that hostname.
+			if got, want := cookie(t, resp, sessionCookie).Path, cmp.Or(prefix, "/"); got != want {
+				t.Errorf("session cookie Path = %q, want %q", got, want)
+			}
+
+			// The list page, and every link it draws.
+			resp, body := h.get(c, h.url("/"))
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("list page: status %d, want 200", resp.StatusCode)
+			}
+			for _, want := range []string{
+				`href="` + prefix + `/static/style.css"`,
+				`href="` + prefix + `/"`, // the brand, home
+				`action="` + prefix + `/auth/logout"`,
+				`href="` + prefix + `/scan/` + j.ID + `"`,
+			} {
+				if !strings.Contains(body, want) {
+					t.Errorf("list page does not contain %s:\n%s", want, body)
+				}
+			}
+			if resp, _ := h.get(c, h.url("/static/style.css")); resp.StatusCode != http.StatusOK {
+				t.Errorf("stylesheet: status %d, want 200", resp.StatusCode)
+			}
+
+			// The detail page, its back link and its download.
+			resp, body = h.get(c, h.url("/scan/"+j.ID))
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("detail page: status %d, want 200", resp.StatusCode)
+			}
+			if want := `href="` + prefix + `/scan/` + j.ID + `/` + doc.ID + `"`; !strings.Contains(body, want) {
+				t.Errorf("detail page does not link the document as %s:\n%s", want, body)
+			}
+			if resp, body := h.get(c, h.url("/scan/"+j.ID+"/"+doc.ID)); resp.StatusCode != http.StatusOK ||
+				body != "%PDF-1.7 one" {
+				t.Errorf("download: status %d body %q, want the document", resp.StatusCode, body)
+			}
+
+			// Signing out has to clear the cookie on the path it was set
+			// with, or the browser keeps it and only the server-side drop
+			// signs the user out.
+			out, err := c.Post(h.url("/auth/logout"), "application/x-www-form-urlencoded", nil)
+			if err != nil {
+				t.Fatalf("POST %s/auth/logout: %v", prefix, err)
+			}
+			defer out.Body.Close()
+			cleared := cookie(t, out, sessionCookie)
+			if want := cmp.Or(prefix, "/"); cleared.Path != want || cleared.MaxAge >= 0 {
+				t.Errorf("logout cookie Path = %q MaxAge = %d, want %q and a negative MaxAge",
+					cleared.Path, cleared.MaxAge, want)
+			}
+			signedOut, err := io.ReadAll(out.Body)
+			if err != nil {
+				t.Fatalf("read the signed-out page: %v", err)
+			}
+			if want := `href="` + prefix + `/">Sign in again</a>`; !strings.Contains(string(signedOut), want) {
+				t.Errorf("signed-out page does not offer %s:\n%s", want, signedOut)
+			}
+
+			// Nothing outside the prefix belongs to this appliance: the proxy
+			// forwards the prefix and nothing else, so the root is a 404
+			// rather than a second way in.
+			if prefix != "" {
+				if resp, _ := h.get(c, h.ts.URL+"/"); resp.StatusCode != http.StatusNotFound {
+					t.Errorf("GET / under a prefix: status %d, want 404", resp.StatusCode)
+				}
+			}
+		})
+	}
+}
+
+// cookie is the named cookie a response sets, or a fatal.
+func cookie(t *testing.T, resp *http.Response, name string) *http.Cookie {
+	t.Helper()
+	for _, c := range resp.Cookies() {
+		if c.Name == name {
+			return c
+		}
+	}
+	t.Fatalf("no %s cookie on the %d response", name, resp.StatusCode)
+	return nil
 }

@@ -56,6 +56,14 @@ type SetupOptions struct {
 
 type setupServer struct {
 	SetupOptions
+	// prefix is the subpath the wizard is published under, "" for a host of
+	// the appliance's own. It is read once, from the configuration a package
+	// installer seeded before first boot, because a request cannot tell a
+	// proxy that forwards /scan2graph from a direct hit on that path - and on
+	// a NAS the proxy is how the operator first meets the wizard, when
+	// nothing else is configured yet. A prefix saved *in* the wizard applies
+	// at the restart that applies everything else it wrote.
+	prefix string
 	// pending is what each rendered form handed back, newest last and keyed
 	// by that render's id; remember says why it exists and why it is per page.
 	pending []pendingForm
@@ -88,15 +96,29 @@ type pendingForm struct {
 // the claim page in front of it, the stylesheet they need, and a 404 for
 // everything else. Mount /healthz and /readyz above it, exactly as in serve
 // mode.
+//
+// Under a subpath prefix the wizard lives entirely under it, exactly like the
+// appliance it configures - one mount, so the claim that makes the wizard one
+// browser's cannot exist twice - and the bare address redirects there, since
+// the one thing on the other end of it is a human who can be sent along.
 func NewSetup(opts SetupOptions) http.Handler {
 	s := &setupServer{SetupOptions: opts}
+	s.prefix = config.BasePath(config.ResolveBaseURL(config.Layer(opts.FileValues, opts.Getenv), "S2G_PUBLIC_BASE_URL"))
 	static, err := fs.Sub(assets, "static")
 	if err != nil {
 		panic(err) // embedded at build time, cannot fail
 	}
+	p := s.prefix
+	home := http.RedirectHandler(p+"/setup", http.StatusSeeOther)
 	mux := http.NewServeMux()
-	mux.Handle("GET /{$}", http.RedirectHandler("/setup", http.StatusSeeOther))
-	mux.HandleFunc("GET /setup", func(w http.ResponseWriter, r *http.Request) {
+	if p != "" {
+		// Where the proxy actually sends someone who opens it: /scan2graph/,
+		// and /scan2graph without the slash, which ServeMux redirects here
+		// itself. This one is inside the prefix, so the wizard's cookie
+		// reaches it.
+		mux.Handle("GET "+p+"/{$}", home)
+	}
+	mux.HandleFunc("GET "+p+"/setup", func(w http.ResponseWriter, r *http.Request) {
 		if !s.holder(r) {
 			// Nobody has claimed the wizard yet, so this is still the door
 			// rather than the room: ask before handing it over, because the
@@ -107,17 +129,29 @@ func NewSetup(opts SetupOptions) http.Handler {
 			// another browser's press has claimed out from under, which would
 			// otherwise be handed the form it holds no key to.
 			render(slog.Default(), w, setupTmpl, setupView{
-				page: page{Title: "Setup", Brand: setupBrand}, Claim: true,
+				page: page{Title: "Setup", Brand: setupBrand, Base: s.prefix + "/"}, Claim: true,
 			})
 			return
 		}
 		current, _, _ := s.values(nil)
 		render(slog.Default(), w, setupTmpl, s.view(current, nil, nil, nil))
 	})
-	mux.HandleFunc("POST /setup/start", s.start)
-	mux.HandleFunc("POST /setup", s.submit)
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)))
-	return secureHeaders(s.authenticate(mux))
+	mux.HandleFunc("POST "+p+"/setup/start", s.start)
+	mux.HandleFunc("POST "+p+"/setup", s.submit)
+	mux.Handle("GET "+p+"/static/", http.StripPrefix(p+"/static/", http.FileServerFS(static)))
+
+	// The bare address is the only thing outside the wizard's subpath, and it
+	// is deliberately in front of the gate rather than behind it: all it says
+	// is where the wizard is, which is the address the operator configured,
+	// and guarding it would be worth having only if the token cookie
+	// travelled the whole host - which is precisely what a shared host must
+	// not do. Everything that can read or write anything is on the other
+	// side. When there is no prefix this is the root route, and the wizard's
+	// own /{$} is not registered, so no pattern exists twice.
+	root := http.NewServeMux()
+	root.Handle("GET /{$}", home)
+	root.Handle("/", s.authenticate(mux))
+	return secureHeaders(root)
 }
 
 // holder reports whether this request carries the key to the wizard as it
@@ -158,8 +192,8 @@ func (s *setupServer) start(w http.ResponseWriter, r *http.Request) {
 	token := rand.Text()
 	sum := sha256.Sum256([]byte(token))
 	s.TokenHash = sum[:]
-	setTokenCookie(w, token)
-	http.Redirect(w, r, "/setup", http.StatusSeeOther)
+	s.setTokenCookie(w, token)
+	http.Redirect(w, r, s.prefix+"/setup", http.StatusSeeOther)
 }
 
 // authenticate admits a request: the token arrives once in the address bar
@@ -170,10 +204,10 @@ func (s *setupServer) authenticate(next http.Handler) http.Handler {
 		// tokenOK is false for a nil hash, so an unclaimed wizard falls
 		// straight through to authorized without a redirect loop.
 		if token := r.URL.Query().Get("t"); tokenOK(token, s.tokenHash()) {
-			setTokenCookie(w, token)
+			s.setTokenCookie(w, token)
 			// Away from the address bar and the history, so a shoulder or a
 			// bookmark does not keep the token.
-			http.Redirect(w, r, "/setup", http.StatusSeeOther)
+			http.Redirect(w, r, s.prefix+"/setup", http.StatusSeeOther)
 			return
 		}
 		// An unclaimed wizard is open - the claim page is what stands there
@@ -194,10 +228,12 @@ func tokenOK(token string, hash []byte) bool {
 
 // setTokenCookie gives the browser the token it presents from here on: the
 // one it brought in the address bar, or the one start minted for it when it
-// claimed the wizard.
-func setTokenCookie(w http.ResponseWriter, token string) {
+// claimed the wizard. It reaches no further than the wizard does, so on a NAS
+// where the appliance is one path among a dozen the key to its configuration
+// is not handed to the other eleven.
+func (s *setupServer) setTokenCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
-		Name: setupCookie, Value: token, Path: "/",
+		Name: setupCookie, Value: token, Path: cmp.Or(s.prefix, "/"),
 		HttpOnly: true, SameSite: http.SameSiteLaxMode,
 		// Deliberately not Secure, unlike the UI's cookies: the wizard is
 		// reached over plain http on the LAN, because the appliance
@@ -248,7 +284,7 @@ func (s *setupServer) submit(w http.ResponseWriter, r *http.Request) {
 		default:
 			if err := s.save(values); err == nil {
 				render(slog.Default(), w, setupTmpl, setupView{
-					page: page{Title: "Saved", Brand: setupBrand}, Saved: s.Path,
+					page: page{Title: "Saved", Brand: setupBrand, Base: s.prefix + "/"}, Saved: s.Path,
 					Steps: s.entraSteps(values),
 				})
 				return
@@ -678,7 +714,7 @@ type setupGroup struct {
 // would refuse resolves to nothing here rather than being offered with
 // confidence.
 func (s *setupServer) redirectURI(values map[string]string) string {
-	base := config.ResolveRootBaseURL(config.Layer(values, s.Getenv), "S2G_PUBLIC_BASE_URL")
+	base := config.ResolveBaseURL(config.Layer(values, s.Getenv), "S2G_PUBLIC_BASE_URL")
 	if base == "" {
 		return ""
 	}
@@ -747,7 +783,7 @@ type setupProfile struct {
 // they arrived, and is set only when the fold refused them; otherwise the
 // rows come from the folded value like every other field's box does.
 func (s *setupServer) view(values map[string]string, general []string, byField map[string]string, posted []setupProfile) setupView {
-	v := setupView{page: page{Title: "Setup", Brand: setupBrand}, Path: s.Path, Errors: general, Form: rand.Text()}
+	v := setupView{page: page{Title: "Setup", Brand: setupBrand, Base: s.prefix + "/"}, Path: s.Path, Errors: general, Form: rand.Text()}
 	for _, f := range setupFields {
 		in := setupInput{setupField: f, Value: values[f.Name]}
 		// The loader names the setting; the operator reads a label. Swapping

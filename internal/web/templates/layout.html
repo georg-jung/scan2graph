@@ -5,13 +5,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{if .Title}}{{.Title}} – {{end}}{{.Brand}}</title>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="{{.Base}}static/style.css">
 </head>
 <body>
 <header>
-  <a class="brand" href="/">{{.Brand}}</a>
+  <a class="brand" href="{{.Base}}">{{.Brand}}</a>
   {{if .SignedIn}}
-  <form method="post" action="/auth/logout">
+  <form method="post" action="{{.Base}}auth/logout">
     <span class="muted">{{.User}}</span>
     <button type="submit">Sign out</button>
   </form>

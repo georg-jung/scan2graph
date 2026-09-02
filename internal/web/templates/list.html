@@ -10,7 +10,7 @@
 <tr>
   <td data-label="Received" class="nowrap muted small">{{.Received}}</td>
   <td data-label="Scan">
-    <a href="/scan/{{.ID}}">{{if .Subject}}{{.Subject}}{{else}}(no subject){{end}}</a>
+    <a href="{{$.Base}}scan/{{.ID}}">{{if .Subject}}{{.Subject}}{{else}}(no subject){{end}}</a>
     <div class="muted small">from {{.Profile}}</div>
   </td>
   <td data-label="Size" class="nowrap small">{{.Size}}</td>

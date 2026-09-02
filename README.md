@@ -126,7 +126,8 @@ list can only describe.
 2. **Only if a profile offers web downloads** (i.e. you configure
    `S2G_PUBLIC_BASE_URL`): **Authentication → Add a platform → Web**,
    redirect URI `https://<your host>/auth/callback` (that base URL plus
-   `/auth/callback`, exactly). Use the **Web** platform, not SPA or a public
+   `/auth/callback`, exactly — including its subpath, if it has one, as in
+   `https://nas.acme.office/scanner/auth/callback`). Use the **Web** platform, not SPA or a public
    client — scan2graph holds a client secret and runs the code exchange
    server-side. An email-only deployment signs nobody in and needs no
    redirect URI at all.
@@ -193,12 +194,45 @@ scan2graph never terminates TLS and never manages certificates — put a
 reverse proxy (nginx, Caddy, Traefik, an existing ingress, ...) in front of
 the HTTP port for that. Two things it has to get right:
 
-* Give scan2graph **its own hostname** and proxy all of it — not a path
-  prefix under an existing site. `S2G_PUBLIC_BASE_URL` must address the root
-  of a host (it is what the OIDC redirect and every link on the page are
-  built from); scan2graph refuses to start with a path in it.
-* No forwarded-header handling is required: scan2graph never derives a URL
-  from the incoming request, only from `S2G_PUBLIC_BASE_URL`.
+* `S2G_PUBLIC_BASE_URL` is where the proxy publishes scan2graph, and
+  everything the appliance emits — the OIDC redirect URI, every link on the
+  page, the cookie scopes — is built from it and from nothing else. A host of
+  its own (`https://scanner.acme.office/`) and a subpath under an existing
+  one (`https://nas.acme.office/scanner/`) both work.
+* **With a subpath, the proxy must forward the path unchanged.** scan2graph
+  serves the prefix itself: it answers on `/scanner/...` and links to
+  `/scanner/...`. A proxy that strips the prefix before forwarding will be
+  answered with 404s. In nginx that is a `proxy_pass` with no path of its
+  own:
+
+  ```nginx
+  location /scanner/ {
+      proxy_pass http://scan2graph:8080;   # no trailing slash: nothing is stripped
+  }
+  ```
+
+  Synology DSM's reverse proxy forwards the path unchanged, which is what
+  makes scan2graph installable beside DSM's own applications on the NAS
+  hostname. A subpath also scopes the session cookie to `/scanner`, so it is
+  never sent to whatever else lives on that host.
+
+  The **setup wizard** is served under the same prefix — on a NAS it is the
+  first thing the operator meets through the proxy, before anything is
+  configured. That is also its one requirement: nothing in a request can tell
+  a proxy that forwards `/scanner` from a browser asking for `/scanner`
+  directly, so the prefix has to be in the configuration *before* the first
+  boot — a seeded `S2G_PUBLIC_BASE_URL` in the configuration file the package
+  installs, or in the environment. Whichever address the operator opens, the
+  bare `host:port` and the bare `host/scanner/` both redirect into the wizard.
+
+No forwarded-header handling is required either way: scan2graph never derives
+a URL from the incoming request, only from `S2G_PUBLIC_BASE_URL`.
+
+`/healthz` and `/readyz` answer at the root *and*, when there is one, under
+the prefix — the container runtime reaches the port directly and knows
+nothing about any prefix, while a monitor pointed at the public URL only ever
+gets the prefix forwarded. Both are unauthenticated and both write a constant
+`ok`.
 
 ## Configuration reference
 
@@ -256,7 +290,7 @@ real environment variables.
 | --- | --- | --- |
 | `S2G_PROFILES` | none — the default profile applies to every sender | — |
 | `S2G_ALLOWED_RECIPIENT_DOMAINS` | none | any profile (or the default profile) has `email` enabled |
-| `S2G_PUBLIC_BASE_URL` | none — web UI disabled | any profile (or the default profile) has `web` enabled |
+| `S2G_PUBLIC_BASE_URL` | none — web UI disabled | any profile (or the default profile) has `web` enabled; a path in it is the subpath the appliance serves itself under |
 
 **Entra ID (identity) — always required**
 
