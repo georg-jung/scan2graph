@@ -576,7 +576,9 @@ func (s *setupServer) serialize(values map[string]string) []byte {
 	}
 	if config.Resolve(config.Layer(values, s.Getenv), "S2G_GRAPH_SENDER") != "" {
 		b.WriteString("#\n# It also needs the Mail.Send application permission, with admin\n" +
-			"# consent granted, or nothing can be mailed out.\n")
+			"# consent granted, or nothing can be mailed out - and Mail.ReadWrite\n" +
+			"# beside it if a scan can be larger than 2.2 MB, which the default\n" +
+			"# 32 MiB message limit leaves plenty of room for.\n")
 	}
 	b.WriteString("\n")
 	for _, name := range slices.Sorted(maps.Keys(values)) {

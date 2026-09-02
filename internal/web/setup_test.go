@@ -1483,6 +1483,11 @@ func TestSetupDownloadedFileCarriesWhatIsLeftToDo(t *testing.T) {
 	for _, want := range []string{
 		"https://scan2graph.example.com/auth/callback",
 		"Mail.Send",
+		// The walkthrough on the page names this beside Mail.Send, and the
+		// default message limit is fifteen times the ceiling it is about, so
+		// a file that mentioned only the first would be the shorter of two
+		// different answers.
+		"Mail.ReadWrite",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the downloaded file does not mention %q:\n%s", want, body)
