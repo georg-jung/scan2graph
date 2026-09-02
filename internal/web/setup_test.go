@@ -532,7 +532,8 @@ func TestSetupDownloads(t *testing.T) {
 func roundTrip(t *testing.T, values map[string]string) map[string]string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "scan2graph.env")
-	if err := writeFile(path, serialize(values)); err != nil {
+	s := &setupServer{SetupOptions: SetupOptions{Getenv: noEnv}}
+	if err := writeFile(path, s.serialize(values)); err != nil {
 		t.Fatalf("writeFile: %v", err)
 	}
 	got, err := config.ParseFile(path)
@@ -1365,6 +1366,157 @@ func TestSetupErrorsUseTheLabel(t *testing.T) {
 	if strings.Contains(body, ">S2G_ENTRA_CLIENT_ID is required") ||
 		strings.Contains(body, ">is required") {
 		t.Errorf("the error still repeats the setting name, or lost its subject:\n%s", body)
+	}
+}
+
+// TestSetupGuideDerivesTheRedirectURI pins the one value on the page nobody
+// can look up anywhere: the redirect URI the app registration has to carry is
+// the public URL plus /auth/callback, exactly as web.go builds it, and a
+// trailing slash the operator typed must not become an empty path segment
+// Entra would then refuse to match. With no public URL nobody signs in at
+// all, so the page must not offer a URI to paste either.
+func TestSetupGuideDerivesTheRedirectURI(t *testing.T) {
+	for _, tc := range []struct {
+		name, base, env string
+		want            bool // the appliance signs people in, so a URI is due
+	}{
+		{name: "email only"},
+		{name: "public url", base: "https://scan2graph.example.com", want: true},
+		{name: "trailing slash", base: "https://scan2graph.example.com/", want: true},
+		// The loader lowercases the scheme, so a phone that capitalised the
+		// first letter must not be handed a URI Entra will never match.
+		{name: "shouted scheme", base: "HTTPS://scan2graph.example.com", want: true},
+		// A path is one of the values Load refuses outright. A plain GET does
+		// not run Load, so if the guide answered from the box alone this is
+		// where it would print a confident URI with nothing to contradict it.
+		{name: "a value Load refuses", base: "https://scan2graph.example.com/scans"},
+		// The documented compose deployment puts every setting in the
+		// process environment, where no box can show it.
+		{name: "from the environment", env: "https://scan2graph.example.com", want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// What the appliance itself would register, from the same loader
+			// a start goes through - so this pins the guide against the real
+			// thing rather than against a second opinion about URLs.
+			var want string
+			values := map[string]string{
+				"S2G_ENTRA_TENANT_ID":           "00000000-0000-0000-0000-000000000000",
+				"S2G_ENTRA_CLIENT_ID":           testClientID,
+				"S2G_ENTRA_CLIENT_SECRET":       testClientSecret,
+				"S2G_GRAPH_SENDER":              "scanner@example.com",
+				"S2G_ALLOWED_RECIPIENT_DOMAINS": "example.com",
+				"S2G_PUBLIC_BASE_URL":           tc.base,
+			}
+			getenv := func(k string) string {
+				if k == "S2G_PUBLIC_BASE_URL" && tc.env != "" {
+					return tc.env
+				}
+				return ""
+			}
+			if cfg, err := config.Load(config.Layer(values, getenv)); err == nil && cfg.PublicBaseURL != "" {
+				want = cfg.PublicBaseURL + "/auth/callback"
+			}
+			if (want != "") != tc.want {
+				t.Fatalf("the appliance would register %q, so this case does not test what it says", want)
+			}
+			h := newSetupHarness(t, SetupOptions{FileValues: values, Getenv: getenv})
+			_, body := h.get(h.claimed(), "/setup")
+			if want == "" {
+				if strings.Contains(body, "/auth/callback") {
+					t.Errorf("the page offers a redirect URI with no public URL set:\n%s", body)
+				}
+				return
+			}
+			// Once, and as its own value to copy: a second occurrence would
+			// mean an example alongside it, and an example is the thing that
+			// gets pasted into the portal by mistake.
+			if got := strings.Count(body, "/auth/callback"); got != 1 {
+				t.Errorf("the page names %d redirect URIs, want exactly the derived one:\n%s", got, body)
+			}
+			if shown := `<code>` + want + `</code>`; !strings.Contains(body, shown) {
+				t.Errorf("the page does not show %s:\n%s", shown, body)
+			}
+		})
+	}
+}
+
+// TestSetupGuideMailStepFollowsTheSendingMailbox: a permission asked for on a
+// deployment that never sends is authority granted for nothing, and consent
+// is the step an operator has to go and ask somebody else for. The sending
+// mailbox is what says whether this appliance mails anything, so the Mail.Send
+// step follows it, as the README's own conditional step does.
+// TestSetupSavedPageNamesTheRedirectURI pins the straight-through path, which
+// is the one an operator actually takes: fill the form in once and press
+// Save. The walkthrough on the card can only show the URI to somebody who
+// submits and comes back, so without this the promised value would reach
+// nobody who did not happen to press "Test the connection" first - and the
+// next thing that happens is a restart, after which a missing registration
+// is an AADSTS50011 at sign-in with nothing pointing back here.
+func TestSetupSavedPageNamesTheRedirectURI(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scan2graph.env")
+	h := newSetupHarness(t, SetupOptions{Path: path})
+	form := validForm()
+	form.Set("action", "save")
+	_, body := h.post(h.claimed(), form)
+	if !strings.Contains(body, "Saved") {
+		t.Fatalf("the configuration was not saved:\n%s", body)
+	}
+	want := "https://scan2graph.example.com/auth/callback"
+	if !strings.Contains(body, "<code>"+want+"</code>") {
+		t.Errorf("the page that sends the operator off to restart does not name %s:\n%s", want, body)
+	}
+}
+
+// TestSetupDownloadedFileCarriesWhatIsLeftToDo pins the one path with no page
+// to put anything on. Download answers with the file and nothing else, so the
+// form left on screen is whichever one the browser last rendered - on a
+// straight-through setup, the empty one from before any of this was typed.
+// That is also the read-only-container workflow, where the file is the only
+// thing that travels, so the file is where the reminder has to be.
+func TestSetupDownloadedFileCarriesWhatIsLeftToDo(t *testing.T) {
+	h := newSetupHarness(t, SetupOptions{})
+	form := validForm()
+	form.Set("S2G_GRAPH_SENDER", "scanner@example.com")
+	form.Set("S2G_ALLOWED_RECIPIENT_DOMAINS", "example.com")
+	form.Set("action", "download")
+	_, body := h.post(h.claimed(), form)
+	for _, want := range []string{
+		"https://scan2graph.example.com/auth/callback",
+		"Mail.Send",
+		// The walkthrough on the page names this beside Mail.Send, and the
+		// default message limit is fifteen times the ceiling it is about, so
+		// a file that mentioned only the first would be the shorter of two
+		// different answers.
+		"Mail.ReadWrite",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the downloaded file does not mention %q:\n%s", want, body)
+		}
+	}
+	// Whatever it says has to still parse as the configuration it is.
+	path := filepath.Join(t.TempDir(), "scan2graph.env")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	values, err := config.ParseFile(path)
+	if err != nil {
+		t.Fatalf("the downloaded file does not parse: %v", err)
+	}
+	if _, err := config.Load(config.Layer(values, noEnv)); err != nil {
+		t.Errorf("the downloaded file does not load: %v", err)
+	}
+}
+
+func TestSetupGuideMailStepFollowsTheSendingMailbox(t *testing.T) {
+	web := newSetupHarness(t, SetupOptions{})
+	if _, body := web.get(web.claimed(), "/setup"); strings.Contains(body, "Mail.Send") {
+		t.Errorf("the walkthrough asks for Mail.Send with no sending mailbox configured:\n%s", body)
+	}
+	mail := newSetupHarness(t, SetupOptions{FileValues: map[string]string{
+		"S2G_GRAPH_SENDER": "scanner@example.com",
+	}})
+	if _, body := mail.get(mail.claimed(), "/setup"); !strings.Contains(body, "Mail.Send") {
+		t.Errorf("the walkthrough leaves out Mail.Send although scans are mailed:\n%s", body)
 	}
 }
 

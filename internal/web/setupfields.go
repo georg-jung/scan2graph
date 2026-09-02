@@ -35,6 +35,11 @@ type setupField struct {
 	Placeholder string
 }
 
+// groupIdentity is the one card the wizard has more to say about than a
+// sentence: entraSteps hangs the app-registration walkthrough off this name,
+// so renaming the card moves the walkthrough with it.
+const groupIdentity = "Identity"
+
 // setupFields is every S2G_* setting a real deployment might set, in the
 // order the form asks for them. handEdited below covers the rest. A test
 // keeps the two lists and the loader in step: a new setting without an entry
@@ -42,15 +47,15 @@ type setupField struct {
 // the wizard.
 var setupFields = []setupField{
 	{
-		Name: "S2G_ENTRA_TENANT_ID", Label: "Directory (tenant) ID", Group: "Identity",
+		Name: "S2G_ENTRA_TENANT_ID", Label: "Directory (tenant) ID", Group: groupIdentity,
 		Help:        "The Directory (tenant) ID on the app registration's Overview page in the Azure portal.",
 		Placeholder: "00000000-0000-0000-0000-000000000000",
 	}, {
-		Name: "S2G_ENTRA_CLIENT_ID", Label: "Application (client) ID", Group: "Identity",
+		Name: "S2G_ENTRA_CLIENT_ID", Label: "Application (client) ID", Group: groupIdentity,
 		Help:        "The Application (client) ID on that same Overview page.",
 		Placeholder: "00000000-0000-0000-0000-000000000000",
 	}, {
-		Name: "S2G_ENTRA_CLIENT_SECRET", Label: "Client secret", Kind: fieldSecret, Group: "Identity",
+		Name: "S2G_ENTRA_CLIENT_SECRET", Label: "Client secret", Kind: fieldSecret, Group: groupIdentity,
 		Help: "The secret's Value (not its Secret ID) under Certificates & secrets in that app registration, which the portal shows only once, right after you create it.",
 	}, {
 		Name: "S2G_GRAPH_SENDER", Label: "Sending mailbox", Group: "Delivery",
@@ -122,6 +127,21 @@ var setupFields = []setupField{
 		Help:        "How many scans are worked on at the same time.",
 		Placeholder: "2",
 	},
+}
+
+// groupIntro is the sentence a card opens with: what it is for in the
+// operator's terms, and why they would want it - which is the half no
+// field's own Help answers, because a Help says what a setting does. Keyed
+// by the Group name above rather than carried on every field, where it
+// would be the same sentence to keep in step three or four times over.
+// A card whose fields already say it between them gets none, and neither
+// does Advanced: it stays folded away, and whoever opens it knows what
+// they came for.
+var groupIntro = map[string]string{
+	groupIdentity:      "One Entra app registration covers everything: signing people in to the web UI, and the tokens scan2graph calls Microsoft Graph and Document Intelligence with.",
+	"Web UI":           "Set the public URL and a scan can be picked up in a browser instead of being mailed; leave it empty and this stays an email-only appliance.",
+	"Scanner":          "How the printer talks to scan2graph: where it sends, how it signs in, and what a scan from each of its buttons may do.",
+	"Text recognition": "Optional: with a Document Intelligence resource, scans come out as PDFs you can search rather than pictures of paper.",
 }
 
 // handEdited are S2G_* settings that exist only for the end-to-end test

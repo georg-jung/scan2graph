@@ -243,12 +243,13 @@ func (s *setupServer) submit(w http.ResponseWriter, r *http.Request) {
 		case action == "download" || s.Path == "":
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.Header().Set("Content-Disposition", `attachment; filename="`+setupFileName+`"`)
-			_, _ = w.Write(serialize(values))
+			_, _ = w.Write(s.serialize(values))
 			return
 		default:
 			if err := s.save(values); err == nil {
 				render(slog.Default(), w, setupTmpl, setupView{
 					page: page{Title: "Saved", Brand: setupBrand}, Saved: s.Path,
+					Steps: s.entraSteps(values),
 				})
 				return
 			} else {
@@ -452,7 +453,7 @@ func profileRows(v string) ([]setupProfile, bool) {
 func (s *setupServer) save(values map[string]string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := writeFile(s.Path, serialize(values)); err != nil {
+	if err := writeFile(s.Path, s.serialize(values)); err != nil {
 		return err
 	}
 	s.FileValues, s.pending, s.file = values, nil, s.file+1 // the file is the answer again, for every page
@@ -558,10 +559,28 @@ func leadingSetting(line string) string {
 
 // serialize renders the settings as a sorted KEY=value file: a diff between
 // two saves stays easy to read.
-func serialize(values map[string]string) []byte {
+//
+// It also carries what still has to be done in the portal, because Download
+// answers with the file and nothing else - no page comes back, so the form
+// left on screen is the one rendered before any of this was typed. That is
+// the read-only-container workflow, where the file is the only thing that
+// travels, so the file is where the reminder has to be. A save gets it too,
+// and an operator who comes back to the file months later reads it there.
+func (s *setupServer) serialize(values map[string]string) []byte {
 	var b strings.Builder
 	b.WriteString("# scan2graph configuration, written by the setup wizard.\n" +
-		"# Editing it by hand is fine; real environment variables still win.\n\n")
+		"# Editing it by hand is fine; real environment variables still win.\n")
+	if uri := s.redirectURI(values); uri != "" {
+		b.WriteString("#\n# The Entra app registration needs this redirect URI, under\n" +
+			"# Authentication as a Web platform, or signing in fails:\n#   " + uri + "\n")
+	}
+	if config.Resolve(config.Layer(values, s.Getenv), "S2G_GRAPH_SENDER") != "" {
+		b.WriteString("#\n# It also needs the Mail.Send application permission, with admin\n" +
+			"# consent granted, or nothing can be mailed out - and Mail.ReadWrite\n" +
+			"# beside it if a scan can be larger than 2.2 MB, which the default\n" +
+			"# 32 MiB message limit leaves plenty of room for.\n")
+	}
+	b.WriteString("\n")
 	for _, name := range slices.Sorted(maps.Keys(values)) {
 		fmt.Fprintf(&b, "%s=%s\n", name, quoteValue(values[name]))
 	}
@@ -623,6 +642,13 @@ type setupView struct {
 	Checks []checkResult
 	Path   string // where Save would write; "" offers only the download
 	Saved  string // where it went, on the success page
+	// Steps is the walkthrough again, on that same page. The card shows it
+	// only to somebody who submits the form and comes back to it: fill
+	// everything in, press Save, and this is the last place any of it can
+	// still be said. What is missing by then is not visible until the
+	// restart, and then only as an AADSTS50011 at sign-in or a Graph refusal
+	// on the first scan, neither of which points back here.
+	Steps []setupStep
 	// Form is this render's id, handed back in a hidden field: it tells one
 	// open page from another, gates nothing, and losing it folds into the file.
 	Form string
@@ -633,12 +659,67 @@ type setupView struct {
 
 type setupGroup struct {
 	Name         string
+	Intro        string // one sentence saying what this card is for
 	Fields, Rare []setupInput
+	// Steps is the app-registration walkthrough, on the Identity card alone.
+	Steps []setupStep
 	// OpenRare unfolds the disclosure because something inside it was
 	// rejected. A complaint is only ever rendered under the box that caused
 	// it, so a folded-away one is a dead end: the operator presses Save, the
 	// page comes back looking identical, and nothing on it says why.
 	OpenRare bool
+}
+
+// redirectURI is what the appliance will register with Entra for these
+// settings, or "" when it will register nothing because it signs nobody in.
+// It answers through the loader's own resolver over the loader's own
+// precedence, so it cannot disagree with a real start: the environment sits
+// above the file, the S2G_..._FILE spelling is followed, and a value Load
+// would refuse resolves to nothing here rather than being offered with
+// confidence.
+func (s *setupServer) redirectURI(values map[string]string) string {
+	base := config.ResolveRootBaseURL(config.Layer(values, s.Getenv), "S2G_PUBLIC_BASE_URL")
+	if base == "" {
+		return ""
+	}
+	return base + "/auth/callback"
+}
+
+// setupStep is one step of the Identity card's walkthrough: what to do in
+// the portal, and the value this page worked out for it, if any.
+type setupStep struct{ Text, Code string }
+
+// entraSteps is README's "Entra ID app registration" section cut down to the
+// steps this configuration actually needs - the one thing the README cannot
+// do, because it does not know what the operator has typed. The redirect URI
+// is why it exists at all: it is the step people get wrong, and the wizard is
+// the only place that already knows the answer.
+//
+// Which makes being wrong here worse than saying nothing: a URI the appliance
+// will not actually register is one the operator pastes into Entra and then
+// meets again as AADSTS50011, naming neither this page nor the box that
+// caused it. So the answer comes from the loader's own resolver over the
+// loader's own precedence rather than from string surgery on the box: the
+// environment sits above the file and the S2G_..._FILE spelling is followed,
+// exactly as a start would, and a value Load would refuse resolves to nothing
+// here rather than being printed with confidence. A plain GET never runs
+// Load, so nothing else on the page would have contradicted it.
+func (s *setupServer) entraSteps(values map[string]string) []setupStep {
+	getenv := config.Layer(values, s.Getenv)
+	steps := []setupStep{{Text: "New registration → a single-tenant app is enough. Its Overview page then shows the Directory (tenant) ID and the Application (client) ID for the two boxes below."}}
+	if uri := s.redirectURI(values); uri != "" {
+		steps = append(steps, setupStep{
+			Text: "Authentication → Add a platform → Web, not SPA: scan2graph holds a client secret and exchanges the code server-side. The redirect URI is exactly:",
+			Code: uri,
+		})
+	} else {
+		steps = append(steps, setupStep{Text: "Nothing to add under Authentication yet: the redirect URI is worked out from the Public URL further down this page, so fill that in and come back here for it. An appliance that only mails scans out signs nobody in and needs none at all."})
+	}
+	steps = append(steps, setupStep{Text: "Certificates & secrets → New client secret. The portal shows its Value once, right after you create it; that is what goes in the Client secret box below."})
+	if config.Resolve(getenv, "S2G_GRAPH_SENDER") != "" {
+		steps = append(steps, setupStep{Text: "API permissions → Microsoft Graph → Application permissions → Mail.Send, then Grant admin consent, or nothing can be mailed out. Add Mail.ReadWrite beside it if a scan can be larger than 2.2 MB; the README explains why."})
+	}
+	return steps
 }
 
 // setupInput is one field ready to render. Value is empty for a secret, which
@@ -716,7 +797,11 @@ func (s *setupServer) view(values map[string]string, general []string, byField m
 			}
 		}
 		if len(v.Groups) == 0 || v.Groups[len(v.Groups)-1].Name != f.Group {
-			v.Groups = append(v.Groups, setupGroup{Name: f.Group})
+			g := setupGroup{Name: f.Group, Intro: groupIntro[f.Group]}
+			if f.Group == groupIdentity {
+				g.Steps = s.entraSteps(values)
+			}
+			v.Groups = append(v.Groups, g)
 		}
 		g := &v.Groups[len(v.Groups)-1]
 		if f.Rare {

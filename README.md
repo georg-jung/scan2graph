@@ -112,6 +112,13 @@ to call Microsoft Graph and Azure Document Intelligence (client credentials
 flow) — there is nothing to register twice. Steps 1 and 3 are always needed;
 the rest depend on what your profiles actually do.
 
+The setup wizard shows these same steps on its Identity card, cut down to
+the ones your configuration actually needs — and with the redirect URI
+already worked out from the public URL you gave it, which is the value this
+list can only describe.
+
+![The Identity card, with the walkthrough open and the redirect URI filled in](docs/screenshots/setup-guide.png)
+
 1. **Microsoft Entra ID → App registrations → New registration.** A
    single-tenant app is enough. Note the **Directory (tenant) ID** and
    **Application (client) ID** from the Overview page —

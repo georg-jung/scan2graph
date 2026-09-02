@@ -114,7 +114,11 @@ test('the appliance runs on the file the wizard writes', async () => {
   await fillForm(FIXTURE_SECRET);
   await page.getByRole('button', { name: 'Save the configuration file' }).click();
   await expect(page.getByRole('heading', { name: 'Saved' })).toBeVisible();
-  await expect(page.locator('code')).toHaveText(CONFIG);
+  // The path it wrote, and - because this run configured a public URL - the
+  // redirect URI the app registration needs, which is the last chance to say
+  // so before the restart below.
+  await expect(page.locator('p code')).toHaveText(CONFIG);
+  await expect(page.locator('.guide code')).toHaveText(`${APPLIANCE}/auth/callback`);
 
   appliance = startAppliance({
     args: ['serve', '--config', CONFIG],

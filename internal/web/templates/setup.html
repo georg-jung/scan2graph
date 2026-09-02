@@ -13,6 +13,10 @@ you lose this window.</p>
 <p>The configuration was written to <code>{{.Saved}}</code>.</p>
 <p class="empty">Restart scan2graph to apply it. This wizard only writes the
 file; it does not start the appliance.</p>
+{{if .Steps}}<p>Two things happen next, and only one of them is the restart.
+The app registration still needs this, or the appliance will start and then
+fail at the first thing it tries:</p>
+<div class="guide">{{template "steps" .Steps}}</div>{{end}}
 {{else}}
 <h1>Set up scan2graph</h1>
 <p class="empty">Everything here ends up in one KEY=value file. Leave a box
@@ -43,6 +47,18 @@ consent.</p>
 {{if .Fields}}
 <fieldset>
 <legend>{{.Name}}</legend>
+{{if .Intro}}<p class="intro muted">{{.Intro}}</p>{{end}}
+{{if .Steps}}
+<details class="guide">
+<summary>How do I get these?</summary>
+<p>In the Azure portal, open
+<a href="https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener noreferrer">App registrations</a>, then:</p>
+{{template "steps" .Steps}}
+<p class="muted">The <a href="https://github.com/georg-jung/scan2graph#entra-id-app-registration" target="_blank" rel="noopener noreferrer">README</a> has
+all of it in full, including how to scope the mail permission to the one
+mailbox it is meant for.</p>
+</details>
+{{end}}
 {{range .Fields}}{{template "field" .}}{{end}}
 {{if .Rare}}
 <details{{if .OpenRare}} open{{end}}>
@@ -127,4 +143,8 @@ consent.</p>
 {{if .Error}}<p class="error small">{{.Error}}</p>{{end}}
 <p class="muted small">{{.Help}}</p>
 </div>
+{{- end}}
+
+{{define "steps" -}}
+<ol>{{range .}}<li>{{.Text}}{{if .Code}}<code>{{.Code}}</code>{{end}}</li>{{end}}</ol>
 {{- end}}
