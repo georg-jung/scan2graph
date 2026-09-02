@@ -69,8 +69,7 @@ anything; it overrides habit, not judgement.
 * Public repository: synthetic values only — no real tenant ids, domains,
   addresses or secrets, anywhere, including tests. Keep test credentials in a
   single obviously-fake constant; secret scanners flag scattered literals.
-* Commit messages explain *why*, in prose, wrapped. No model names, no tool
-  attribution in anything pushed to the repository.
+* Commit messages explain *why*, in prose, wrapped.
 * Keep branch history clean and signed. Squashing a branch is better than
   leaving an intermediate commit that a scanner or a reader will trip over.
 * Never log document content, OCR text, tokens, secrets, cookies, whole MIME

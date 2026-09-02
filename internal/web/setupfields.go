@@ -23,6 +23,11 @@ type setupField struct {
 	Choice            []string // fieldChoice only
 	Group             string   // fieldset heading
 	Rare              bool     // renders inside the group's <details> block
+	// Placeholder is a synthetic example shown in an empty box, so the shape
+	// of an answer needs no sentence of its own. It never shows once Set is
+	// true: what the box then has to say is that something is configured,
+	// not what one might look like.
+	Placeholder string
 }
 
 // setupFields is every S2G_* setting a real deployment might set, in the
@@ -33,40 +38,51 @@ type setupField struct {
 var setupFields = []setupField{
 	{
 		Name: "S2G_ENTRA_TENANT_ID", Label: "Directory (tenant) ID", Group: "Identity",
-		Help: "The Directory (tenant) ID on the app registration's Overview page in the Azure portal, e.g. 00000000-0000-0000-0000-000000000000.",
+		Help:        "The Directory (tenant) ID on the app registration's Overview page in the Azure portal.",
+		Placeholder: "00000000-0000-0000-0000-000000000000",
 	}, {
 		Name: "S2G_ENTRA_CLIENT_ID", Label: "Application (client) ID", Group: "Identity",
-		Help: "The Application (client) ID on that same Overview page.",
+		Help:        "The Application (client) ID on that same Overview page.",
+		Placeholder: "00000000-0000-0000-0000-000000000000",
 	}, {
 		Name: "S2G_ENTRA_CLIENT_SECRET", Label: "Client secret", Kind: fieldSecret, Group: "Identity",
 		Help: "The secret's Value (not its Secret ID) under Certificates & secrets in that app registration, which the portal shows only once, right after you create it.",
 	}, {
 		Name: "S2G_GRAPH_SENDER", Label: "Sending mailbox", Group: "Delivery",
-		Help: "The mailbox scans are mailed from, e.g. scanner@example.com; setting it together with the allowlist below is what turns email delivery on.",
+		Help:        "The mailbox scans are mailed from; setting it together with the allowlist below is what turns email delivery on.",
+		Placeholder: "scanner@example.com",
 	}, {
 		Name: "S2G_ALLOWED_RECIPIENT_DOMAINS", Label: "Allowed recipient domains", Group: "Delivery",
-		Help: "Comma-separated domains a scan may be mailed to, without a leading @ and matched exactly, e.g. example.com; email delivery requires it, or the appliance would be an open relay.",
+		Help:        "Comma-separated domains a scan may be mailed to, without a leading @ and matched exactly; email delivery requires it, or the appliance would be an open relay.",
+		Placeholder: "example.com, example.org",
 	}, {
 		Name: "S2G_RECIPIENT_ALIASES", Label: "Recipient aliases", Kind: fieldArea, Group: "Delivery",
-		Help: `JSON object mapping a shorthand address the printer's address book can hold to the real one, e.g. {"printer-shortcut@scanner.local":"jane.doe@example.com"}.`,
+		Help:        "JSON object mapping a shorthand address the printer's address book can hold to the real one.",
+		Placeholder: `{"printer-shortcut@scanner.local":"jane.doe@example.com"}`,
 	}, {
 		Name: "S2G_PUBLIC_BASE_URL", Label: "Public URL", Group: "Web UI",
-		Help: "Where this appliance is reached through the reverse proxy that terminates TLS, e.g. https://scan2graph.example.com; setting it is what turns the web UI on, and it must address the root of a host of its own.",
+		Help:        "Where this appliance is reached through the reverse proxy that terminates TLS; setting it is what turns the web UI on, and it must address the root of a host of its own.",
+		Placeholder: "https://scan2graph.example.com",
 	}, {
 		Name: "S2G_UI_TITLE", Label: "Name shown in the UI", Group: "Web UI",
-		Help: "What the web UI calls itself in its title and header, so it can say the household's or the office's name; defaults to scan2graph.",
+		Help:        "What the web UI calls itself in its title and header, so it can say the household's or the office's name.",
+		Placeholder: "scan2graph",
 	}, {
-		Name: "S2G_JOB_TTL", Label: "How long a scan stays available", Group: "Web UI",
-		Help: "How long a scan can be downloaded before it and its files are deleted, written like 90m or 2h and at least 1m.",
+		Name: "S2G_JOB_TTL", Label: "How long a scan stays available", Group: "Web UI", Rare: true,
+		Help:        "How long a scan can be downloaded before it and its files are deleted; must be at least 1m.",
+		Placeholder: "8h",
 	}, {
 		Name: "S2G_HTTP_ADDR", Label: "HTTP listen address", Group: "Web UI", Rare: true,
-		Help: "Address the web UI listens on inside the container; defaults to :8080.",
+		Help:        "Address the web UI listens on inside the container.",
+		Placeholder: ":8080",
 	}, {
 		Name: "S2G_SMTP_ADDR", Label: "SMTP listen address", Group: "Scanner",
-		Help: "Address the printer sends its scans to; defaults to :2525.",
+		Help:        "Address the printer sends its scans to.",
+		Placeholder: ":2525",
 	}, {
 		Name: "S2G_SMTP_USERNAME", Label: "SMTP username", Group: "Scanner",
-		Help: "Username the printer signs in with; defaults to scanner, and only means anything once a password is set.",
+		Help:        "Username the printer signs in with; only means anything once a password is set.",
+		Placeholder: "scanner",
 	}, {
 		Name: "S2G_SMTP_PASSWORD", Label: "SMTP password", Kind: fieldSecret, Group: "Scanner",
 		Help: "Password the printer signs in with; leave it unset and scan2graph makes up a new one on every start, which means reconfiguring the printer after every restart.",
@@ -75,30 +91,36 @@ var setupFields = []setupField{
 		Help: "For a printer that cannot authenticate at all: only on a trusted, isolated network segment, and not together with a username or password.",
 	}, {
 		Name: "S2G_PROFILES", Label: "Sender profiles", Kind: fieldArea, Group: "Scanner", Rare: true,
-		Help: `JSON object giving each printer sender address the features it may use, e.g. {"scan-web@scanner.local":{"email":false,"web":true,"ocr":true}}; leave it empty and every sender gets whatever the settings above enable.`,
+		Help:        "JSON object giving each printer sender address the features it may use; leave it empty and every sender gets whatever the settings above enable.",
+		Placeholder: `{"scan-web@scanner.local":{"email":false,"web":true,"ocr":true}}`,
 	}, {
 		Name: "S2G_MAX_MESSAGE_BYTES", Label: "Largest accepted message", Group: "Scanner", Rare: true,
-		Help: "Biggest message the SMTP listener accepts, in bytes; defaults to 33554432, which is 32 MiB.",
+		Help:        "Biggest message the SMTP listener accepts, in bytes; the default is 32 MiB.",
+		Placeholder: "33554432",
 	}, {
 		Name: "S2G_DI_ENDPOINT", Label: "Document Intelligence endpoint", Group: "Text recognition",
-		Help: "The https URL of the Azure Document Intelligence resource that makes scans searchable, e.g. https://replace-me.cognitiveservices.azure.com; setting it is what turns text recognition on.",
+		Help:        "The https URL of the Azure Document Intelligence resource that makes scans searchable; setting it is what turns text recognition on.",
+		Placeholder: "https://example.cognitiveservices.azure.com",
 	}, {
 		Name: "S2G_LOG_LEVEL", Label: "Log level", Kind: fieldChoice,
-		Choice: []string{"debug", "info", "warn", "error"}, Group: "Advanced",
+		Choice: []string{"debug", "info", "warn", "error"}, Group: "Advanced", Rare: true,
 		Help: "How much scan2graph writes to its log; defaults to info.",
 	}, {
 		Name: "S2G_LOG_FORMAT", Label: "Log format", Kind: fieldChoice,
-		Choice: []string{"json", "text"}, Group: "Advanced",
+		Choice: []string{"json", "text"}, Group: "Advanced", Rare: true,
 		Help: "json for a log collector, text for reading it yourself; defaults to json.",
 	}, {
 		Name: "S2G_TEMP_DIR", Label: "Temporary directory", Group: "Advanced", Rare: true,
-		Help: "Where scans are kept while they are worked on; it is wiped on every start and defaults to the operating system's temp directory.",
+		Help:        "Where scans are kept while they are worked on; it is wiped on every start and defaults to the operating system's temp directory.",
+		Placeholder: "/tmp",
 	}, {
 		Name: "S2G_MAX_JOBS", Label: "Most scans kept at once", Group: "Advanced", Rare: true,
-		Help: "How many scans may be queued, in flight or waiting to be picked up together; defaults to 32.",
+		Help:        "How many scans may be queued, in flight or waiting to be picked up together.",
+		Placeholder: "32",
 	}, {
 		Name: "S2G_MAX_CONCURRENT_JOBS", Label: "Scans processed at once", Group: "Advanced", Rare: true,
-		Help: "How many scans are worked on at the same time; defaults to 2.",
+		Help:        "How many scans are worked on at the same time.",
+		Placeholder: "2",
 	},
 }
 

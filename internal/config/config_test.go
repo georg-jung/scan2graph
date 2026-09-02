@@ -132,8 +132,8 @@ func TestLoadMinimalValidConfigAndDefaults(t *testing.T) {
 	if c.GraphScope != "https://graph.microsoft.com/.default" {
 		t.Errorf("GraphScope = %q", c.GraphScope)
 	}
-	if c.JobTTL != 90*time.Minute {
-		t.Errorf("JobTTL = %v, want 90m", c.JobTTL)
+	if c.JobTTL != 8*time.Hour {
+		t.Errorf("JobTTL = %v, want 8h", c.JobTTL)
 	}
 	wantLimits := Limits{
 		MaxMessageBytes:   33554432,

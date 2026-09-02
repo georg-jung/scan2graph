@@ -353,7 +353,7 @@ func TestSetupRejectsAndAttributes(t *testing.T) {
 	if strings.Contains(body, testClientSecret) {
 		t.Fatal("the re-rendered form rendered the client secret")
 	}
-	if !strings.Contains(body, "One is configured already") {
+	if !strings.Contains(body, "configured — leave empty to keep") {
 		t.Error("the page does not offer to keep the secret it is holding")
 	}
 	fixed := validForm()
@@ -426,6 +426,11 @@ func TestSetupKeepsAFileSuppliedValue(t *testing.T) {
 		{"a secret", "S2G_ENTRA_CLIENT_SECRET_FILE", testClientSecret, nil},
 		{"a plain setting", "S2G_GRAPH_SENDER_FILE", "scanner@example.com\n",
 			map[string]string{"S2G_ALLOWED_RECIPIENT_DOMAINS": "example.com"}},
+		// A dropdown has no placeholder to carry the hint, and "(default)"
+		// where something is configured misstates the configuration. The
+		// value is one the loader takes but the options do not offer, so
+		// finding it in the page would mean it really had been rendered.
+		{"a choice", "S2G_LOG_LEVEL_FILE", "warning\n", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -451,7 +456,7 @@ func TestSetupKeepsAFileSuppliedValue(t *testing.T) {
 				t.Fatal("the configured value was rendered into the page")
 			}
 			field, _, _ := strings.Cut(body[strings.Index(body, `id="`+name+`"`):], "</div>")
-			if !strings.Contains(field, "One is configured already") {
+			if !strings.Contains(field, "configured — leave empty to keep") {
 				t.Errorf("the page does not say that an empty box keeps the configured value:\n%s", field)
 			}
 
@@ -1008,6 +1013,12 @@ func TestSetupErrorStaysUnderItsOwnBox(t *testing.T) {
 	}
 	if strings.Contains(body, "problems") {
 		t.Error("the error was pushed above the form by a value that merely names another setting")
+	}
+	// That box is one of the rarely-needed ones, so it sits behind a
+	// disclosure - which has to open itself, or the only account of the
+	// refusal is folded away and the page comes back looking unchanged.
+	if !strings.Contains(body, "<details open>") {
+		t.Error("the disclosure holding the rejected box stayed folded")
 	}
 }
 

@@ -16,7 +16,7 @@ file; it does not start the appliance.</p>
 {{else}}
 <h1>Set up scan2graph</h1>
 <p class="empty">Everything here ends up in one KEY=value file. Leave a box
-empty to keep the built-in default, and open “Rarely needed” only when
+empty to keep the built-in default, and open a folded-away section only when
 something asks you to.</p>
 {{if .Errors}}
 <div class="problems">
@@ -40,16 +40,27 @@ consent.</p>
 <form method="post" action="/setup">
 <input type="hidden" name="form" value="{{.Form}}">
 {{range .Groups}}
+{{if .Fields}}
 <fieldset>
 <legend>{{.Name}}</legend>
 {{range .Fields}}{{template "field" .}}{{end}}
 {{if .Rare}}
-<details>
+<details{{if .OpenRare}} open{{end}}>
 <summary>Rarely needed</summary>
 {{range .Rare}}{{template "field" .}}{{end}}
 </details>
 {{end}}
 </fieldset>
+{{else}}
+{{/* A group that is entirely Rare has nothing ordinary to put in a
+     fieldset, so a fieldset built only to hold its "Rarely needed"
+     disclosure would be a box around a box: collapse straight to the
+     disclosure instead, named for the group it replaces. */}}
+<details class="group"{{if .OpenRare}} open{{end}}>
+<summary>{{.Name}}</summary>
+{{range .Rare}}{{template "field" .}}{{end}}
+</details>
+{{end}}
 {{end}}
 <div class="actions">
 {{if .Path}}<button type="submit" name="action" value="save" class="primary">Save the configuration file</button>{{end}}
@@ -64,23 +75,32 @@ consent.</p>
 {{define "field" -}}
 <div class="field{{if .Error}} bad{{end}}">
 {{if eq .Kind "bool"}}
+<span class="field-head">
 <label class="check"><input type="checkbox" id="{{.Name}}" name="{{.Name}}" value="true"{{if .Checked}} checked{{end}}> {{.Label}}</label>
+<code>{{.Name}}</code>
+</span>
 {{else}}
+<span class="field-head">
 <label for="{{.Name}}">{{.Label}}</label>
+<code>{{.Name}}</code>
+</span>
 {{if eq .Kind "choice"}}
 <select id="{{.Name}}" name="{{.Name}}">
-<option value="">(default)</option>
+{{/* A select shows no placeholder, so its empty option says what the
+     placeholder would have: "(default)", unless something is configured
+     that this box cannot show - the only way a choice field has one. */}}
+<option value="">{{if .Placeholder}}{{.Placeholder}}{{else}}(default){{end}}</option>
 {{range .Choice}}<option value="{{.}}"{{if eq . $.Value}} selected{{end}}>{{.}}</option>{{end}}
 </select>
 {{else if eq .Kind "area"}}
-<textarea id="{{.Name}}" name="{{.Name}}" rows="3" spellcheck="false">{{.Value}}</textarea>
+<textarea id="{{.Name}}" name="{{.Name}}" rows="3" spellcheck="false"{{if .Placeholder}} placeholder="{{.Placeholder}}"{{end}}>{{.Value}}</textarea>
 {{else if eq .Kind "secret"}}
-<input type="password" id="{{.Name}}" name="{{.Name}}" value="" autocomplete="new-password">
+<input type="password" id="{{.Name}}" name="{{.Name}}" value="" autocomplete="new-password"{{if .Placeholder}} placeholder="{{.Placeholder}}"{{end}}>
 {{else}}
-<input type="text" id="{{.Name}}" name="{{.Name}}" value="{{.Value}}" spellcheck="false">
+<input type="text" id="{{.Name}}" name="{{.Name}}" value="{{.Value}}" spellcheck="false"{{if .Placeholder}} placeholder="{{.Placeholder}}"{{end}}>
 {{end}}
 {{end}}
 {{if .Error}}<p class="error small">{{.Error}}</p>{{end}}
-<p class="muted small">{{.Help}}{{if .Set}} One is configured already and cannot be shown here; leave this empty to keep it.{{end}} <code>{{.Name}}</code></p>
+<p class="muted small">{{.Help}}</p>
 </div>
 {{- end}}

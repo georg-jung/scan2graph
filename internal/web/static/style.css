@@ -117,7 +117,7 @@ tbody a:hover { text-decoration: underline; }
 .nowrap { white-space: nowrap; }
 .muted { color: var(--muted); }
 .small { font-size: .875rem; }
-.empty { color: var(--muted); max-width: 34rem; }
+.empty { color: var(--muted); }
 .error { color: var(--warn); }
 
 /* A five-column table does not fit a phone, so each scan becomes a small
@@ -138,7 +138,10 @@ tbody a:hover { text-decoration: underline; }
 
 /* The setup wizard: one long form, filled in once. The groups carry the
    structure, so the boxes themselves can stay quiet. */
-fieldset {
+/* A group that is entirely "rarely needed" collapses straight to the
+   disclosure (see setup.html) and still has to read like the card it stands
+   in for, so the two share one box. */
+fieldset, details.group {
   margin: 0 0 1.5rem;
   padding: 1.25rem;
   background: var(--panel);
@@ -147,9 +150,16 @@ fieldset {
 }
 legend { padding: 0 .4rem; font-weight: 600; }
 summary { cursor: pointer; color: var(--muted); font-size: .9rem; margin-bottom: .9rem; }
+details.group summary { font-weight: 600; color: inherit; font-size: 1rem; margin-bottom: 0; }
+details.group[open] summary { margin-bottom: .9rem; }
 .field { margin-bottom: 1.1rem; }
 .field:last-child { margin-bottom: 0; }
-.field > label { display: block; font-weight: 600; margin-bottom: .3rem; }
+/* The S2G_* key rides along the label's row instead of the help line below,
+   small and out of the way, so the setting's name never competes with the
+   sentence explaining it. */
+.field-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .3rem .75rem; margin-bottom: .3rem; }
+.field-head label { font-weight: 600; }
+.field-head code { color: var(--muted); }
 .field p { margin: .3rem 0 0; }
 .field input, .field select, .field textarea {
   font: inherit;

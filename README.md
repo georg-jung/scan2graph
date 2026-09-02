@@ -283,7 +283,7 @@ real environment variables.
 
 | variable | default | required when |
 | --- | --- | --- |
-| `S2G_JOB_TTL` | `90m` (minimum `1m`) | — |
+| `S2G_JOB_TTL` | `8h` (minimum `1m`) | — |
 | `S2G_MAX_MESSAGE_BYTES` | `33554432` (32 MiB) — the SMTP DATA cap, which also bounds PDF size | — |
 | `S2G_MAX_JOBS` | `32` — queued + in-flight + web-visible jobs | — |
 | `S2G_MAX_CONCURRENT_JOBS` | `2` — pipeline workers, also the OCR concurrency cap | — |
@@ -480,7 +480,7 @@ and the document has to be scanned again. That is a deliberate trade-off for
 an appliance that otherwise needs zero operational care — the paper original
 is still lying on the scanner glass.
 
-Web-visible scans expire `S2G_JOB_TTL` (90 minutes by default) after the
+Web-visible scans expire `S2G_JOB_TTL` (8 hours by default) after the
 pipeline finishes with them — ready or failed — rather than from when the
 printer sent them. OCR can take a while, and failing takes longer still
 because every retry has to be spent first; measured from arrival, a scan

@@ -164,7 +164,7 @@ func Load(getenv func(string) string) (*Config, error) {
 	c.GraphBaseURL = l.baseURLDefault("S2G_GRAPH_BASE_URL", "https://graph.microsoft.com/v1.0", "http", "https")
 	c.GraphScope = l.stringDefault("S2G_GRAPH_SCOPE", "https://graph.microsoft.com/.default")
 
-	c.JobTTL = l.durationAtLeast("S2G_JOB_TTL", 90*time.Minute, time.Minute)
+	c.JobTTL = l.durationAtLeast("S2G_JOB_TTL", 8*time.Hour, time.Minute)
 
 	c.Limits = l.limits()
 
