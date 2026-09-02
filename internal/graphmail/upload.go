@@ -3,6 +3,7 @@ package graphmail
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +20,12 @@ import (
 // under 4 MB: 12 * 320 KiB is 3.75 MiB, the largest multiple that fits. A
 // constant, not a knob -- the only numbers that work here are Graph's.
 const uploadChunkBytes = 12 * 320 * 1024
+
+// graphAttachmentFloorBytes is where Graph splits the two ways to attach a
+// file: under it, one POST carrying the bytes; at or above it, an upload
+// session. Below the floor a session is refused outright, with
+// ErrorAttachmentSizeShouldNotBeLessThanMinimumSize.
+const graphAttachmentFloorBytes = 3 * 1024 * 1024
 
 // uploadClient is the only client the chunk PUTs may use, and it is
 // deliberately not c.HTTP.
@@ -37,11 +44,11 @@ var uploadClient = &http.Client{
 	},
 }
 
-// sendLarge delivers m the long way round: create it as a draft, stream
-// each attachment into it through its own upload session, then send the
-// draft. Four calls instead of sendMail's one, and Mail.ReadWrite instead
-// of Mail.Send, which is why Send only comes here for a scan that cannot
-// fit in a single request.
+// sendLarge delivers m the long way round: create it as a draft, put each
+// attachment into it the way its size demands, then send the draft. Several
+// calls instead of sendMail's one, and Mail.ReadWrite instead of Mail.Send,
+// which is why Send only comes here for a scan that cannot fit in a single
+// request.
 //
 // A failure part way through leaves an unsent draft in the sender's
 // mailbox. Nothing half-composed reaches the recipient, which is what
@@ -53,7 +60,7 @@ func (c *Client) sendLarge(ctx context.Context, m Message) error {
 		return err
 	}
 	for _, a := range m.Attachments {
-		if err := c.uploadAttachment(ctx, id, a); err != nil {
+		if err := c.attach(ctx, id, a); err != nil {
 			return err
 		}
 	}
@@ -61,8 +68,8 @@ func (c *Client) sendLarge(ctx context.Context, m Message) error {
 }
 
 // createDraft creates m as a draft message and returns its id. The draft is
-// the same mail the MIME path composes, minus the attachments, which only
-// exist on the mailbox side once their upload sessions complete.
+// the same mail the MIME path composes, minus the attachments, which each
+// take a call of their own once the draft exists to hang them on.
 func (c *Client) createDraft(ctx context.Context, m Message) (string, error) {
 	to := make([]any, len(m.To))
 	for i, addr := range m.To {
@@ -84,10 +91,10 @@ func (c *Client) createDraft(ctx context.Context, m Message) (string, error) {
 	return out.ID, nil
 }
 
-// uploadAttachment opens an upload session for a and feeds the file into it
-// one chunk at a time, reusing a single buffer so a scan is never held in
-// memory whole.
-func (c *Client) uploadAttachment(ctx context.Context, draftID string, a Attachment) error {
+// attach adds a to the draft. Under Graph's floor that is one POST carrying
+// the bytes; at or above it, an upload session fed one chunk at a time out
+// of a single buffer, so a scan is never held in memory whole.
+func (c *Client) attach(ctx context.Context, draftID string, a Attachment) error {
 	f, err := os.Open(a.Path)
 	if err != nil {
 		return fmt.Errorf("graphmail: open attachment %q: %w", a.Name, err)
@@ -98,6 +105,22 @@ func (c *Client) uploadAttachment(ctx context.Context, draftID string, a Attachm
 		return fmt.Errorf("graphmail: stat attachment %q: %w", a.Name, err)
 	}
 	size := fi.Size()
+
+	if size < graphAttachmentFloorBytes {
+		// Whole, in memory, on purpose: this branch is only reached under
+		// 3 MiB, and the request has to carry the bytes anyway. The chunk
+		// loop below is what keeps the scans that are not this small out of
+		// memory.
+		raw, err := io.ReadAll(f)
+		if err != nil {
+			return fmt.Errorf("graphmail: read attachment %q: %w", a.Name, err)
+		}
+		return c.postJSON(ctx, "/messages/"+url.PathEscape(draftID)+"/attachments", map[string]any{
+			"@odata.type":  "#microsoft.graph.fileAttachment",
+			"name":         a.Name,
+			"contentBytes": base64.StdEncoding.EncodeToString(raw),
+		}, nil)
+	}
 
 	var session struct {
 		UploadURL string `json:"uploadUrl"`

@@ -32,6 +32,13 @@ type attachment struct {
 	Base64   string `json:"base64"`
 }
 
+// graphAttachmentFloorBytes is Graph's 3 MB minimum for an upload session.
+// Under it a session is refused and the attachment has to go as a single
+// POST on the attachments navigation property; at or above it, only a
+// session will do. A fake that took either one for any size would let the
+// appliance pick the wrong call and still look correct.
+const graphAttachmentFloorBytes = 3 * 1024 * 1024
+
 // upload is one open attachment upload session: which draft it belongs to,
 // the attachment's name, and the bytes assembled so far. data is allocated at
 // its declared size, so a chunk that does not fit the attachment the session
@@ -210,6 +217,10 @@ func (f *fakes) createUploadSession(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "an upload session needs an AttachmentItem with a size")
 		return
 	}
+	if body.AttachmentItem.Size < graphAttachmentFloorBytes {
+		writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("ErrorAttachmentSizeShouldNotBeLessThanMinimumSize: %d bytes is under the 3 MB minimum for an upload session; POST it to the attachments navigation property instead", body.AttachmentItem.Size))
+		return
+	}
 	id := rand.Text()
 	f.mu.Lock()
 	draft, known := f.drafts[r.PathValue("id")]
@@ -222,6 +233,43 @@ func (f *fakes) createUploadSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"uploadUrl": "http://" + r.Host + "/upload/" + id})
+}
+
+// addAttachment is how an attachment under the floor arrives: one POST
+// carrying the bytes, recorded on the draft in the shape a completed upload
+// session reports, so the suite asserts the same way whichever call carried
+// it.
+func (f *fakes) addAttachment(w http.ResponseWriter, r *http.Request) {
+	if !mailbox(w, r) {
+		return
+	}
+	var body struct {
+		Type         string `json:"@odata.type"`
+		Name         string `json:"name"`
+		ContentBytes []byte `json:"contentBytes"` // decoded from base64 as it is read
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Type != "#microsoft.graph.fileAttachment" || body.Name == "" || len(body.ContentBytes) == 0 {
+		writeAPIError(w, http.StatusBadRequest, "an attachment needs @odata.type #microsoft.graph.fileAttachment, a name and base64 contentBytes")
+		return
+	}
+	if len(body.ContentBytes) >= graphAttachmentFloorBytes {
+		writeAPIError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("%d bytes is at or over the 3 MB ceiling for a single attachment POST; use an upload session", len(body.ContentBytes)))
+		return
+	}
+	f.mu.Lock()
+	draft, known := f.drafts[r.PathValue("id")]
+	if known {
+		draft.Attachments = append(draft.Attachments, attachment{
+			Filename: body.Name,
+			Base64:   base64.StdEncoding.EncodeToString(body.ContentBytes),
+		})
+	}
+	f.mu.Unlock()
+	if !known {
+		writeAPIError(w, http.StatusNotFound, "no such draft message")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"id": rand.Text()})
 }
 
 // uploadChunk places one chunk at the offset its Content-Range names, and

@@ -107,6 +107,11 @@ test.describe('a scan too large for sendMail', () => {
   // one chunk, so the upload has to get a second offset right rather than
   // only the first.
   const SIZE = 4 * 1024 * 1024;
+  // And the gap between the two: past the 2.25 MB sendMail ceiling but under
+  // the 3 MB below which Graph refuses to open an upload session at all
+  // (ErrorAttachmentSizeShouldNotBeLessThanMinimumSize). 11 * 256 KiB is
+  // 2.75 MB, in the middle of it.
+  const GAP_SIZE = 11 * 256 * 1024;
   // Ports of their own, clear of the harness's. Started in beforeAll rather
   // than here: a test file is loaded more than once per run, and a process
   // spawned at load time would be spawned again with nothing to stop it.
@@ -141,6 +146,21 @@ test.describe('a scan too large for sendMail', () => {
     // The permission is granted here, so there is nothing for the operator to
     // do and nothing shouting at them about it.
     expect(uploads.proc.log).not.toContain('Large scans');
+  });
+
+  test('in the gap between sendMail and an upload session it is attached whole', async () => {
+    const subject = unique('large-gap');
+    const pdf = bigPdf(subject, GAP_SIZE);
+    const codes = await sendScan({ from: 'big@scanner.local', to: ALICE, subject, pdf, port: uploads.smtp });
+    expect(codes.body).toBe(250);
+
+    const message = await mailedWithSubject(subject);
+    expect(message.error).toBeUndefined();
+    expect(message.attachments).toHaveLength(1);
+    expect(message.attachments[0].filename).toBe('scan.pdf');
+    // The fake refuses a session under 3 MB the way Graph does, so arriving
+    // at all means this one went as a single attachments POST.
+    expect(Buffer.from(message.attachments[0].base64, 'base64').equals(pdf)).toBe(true);
   });
 
   test('gets the too-large notice where it is not, and the operator is told why', async () => {

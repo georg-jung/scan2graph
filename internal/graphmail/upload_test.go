@@ -28,6 +28,11 @@ const fakeAccessToken = "fake-graph-token-for-tests-only"
 // under its 4 MB request ceiling.
 const chunkBytes = 12 * 320 * 1024
 
+// floorBytes must match graphmail's unexported graphAttachmentFloorBytes:
+// Graph's 3 MB minimum for an upload session, and the size at which an
+// attachment stops being a single POST.
+const floorBytes = 3 * 1024 * 1024
+
 // draftID stands in for the message id Graph returns for a new draft:
 // URL-safe base64 with padding, like the real thing.
 const draftID = "AAMkAGI2fake-draft-id="
@@ -95,9 +100,27 @@ func (g *fakeGraph) handle(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPut && r.URL.Path == uploadPath:
 		g.putChunk(w, body, r.Header.Get("Content-Range"))
 	case strings.HasSuffix(r.URL.Path, "/attachments/createUploadSession"):
+		var s struct {
+			AttachmentItem struct {
+				Size int64 `json:"size"`
+			} `json:"AttachmentItem"`
+		}
+		json.Unmarshal(body, &s)
+		if s.AttachmentItem.Size < floorBytes {
+			// Graph's own refusal, by name: under the floor an attachment is
+			// a single POST, and a session for one is invalid.
+			http.Error(w, `{"error":{"code":"ErrorAttachmentSizeShouldNotBeLessThanMinimumSize","message":"attachment size is less than the minimum size for an upload session"}}`, http.StatusBadRequest)
+			return
+		}
 		// The session's uploadUrl is a full URL Graph chooses; this fake
 		// serves it from the same host so the test needs one server.
 		writeJSON(w, map[string]string{"uploadUrl": "http://" + r.Host + uploadPath})
+	case strings.HasSuffix(r.URL.Path, "/attachments"):
+		if a := g.directAttachment(body); len(a.Content) >= floorBytes {
+			http.Error(w, `{"error":{"message":"at or over 3 MB an attachment needs an upload session"}}`, http.StatusRequestEntityTooLarge)
+			return
+		}
+		writeJSON(w, map[string]string{"id": "fake-attachment-id"})
 	case strings.HasSuffix(r.URL.Path, "/messages"):
 		writeJSON(w, map[string]string{"id": draftID})
 	case strings.HasSuffix(r.URL.Path, "/send"), strings.HasSuffix(r.URL.Path, "/sendMail"):
@@ -138,6 +161,38 @@ func (g *fakeGraph) putChunk(w http.ResponseWriter, body []byte, contentRange st
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// directAttachment is the body of the POST that carries an attachment under
+// Graph's floor, checked as the fake decodes it: a request that is not a
+// fileAttachment is a bug in the client, not something to report back.
+type directAttachment struct {
+	Type    string `json:"@odata.type"`
+	Name    string `json:"name"`
+	Content []byte `json:"contentBytes"` // decoded from base64 as it is read
+}
+
+func (g *fakeGraph) directAttachment(body []byte) directAttachment {
+	var a directAttachment
+	if err := json.Unmarshal(body, &a); err != nil {
+		g.t.Errorf("direct attachment body does not decode: %v", err)
+	}
+	if a.Type != "#microsoft.graph.fileAttachment" {
+		g.t.Errorf("direct attachment @odata.type = %q, want #microsoft.graph.fileAttachment", a.Type)
+	}
+	return a
+}
+
+// attached is what arrived by direct POST, by attachment name.
+func (g *fakeGraph) attached() map[string][]byte {
+	out := map[string][]byte{}
+	for _, r := range g.seen() {
+		if r.method == http.MethodPost && strings.HasSuffix(r.path, "/attachments") {
+			a := g.directAttachment(r.body)
+			out[a.Name] = a.Content
+		}
+	}
+	return out
 }
 
 // uploaded is the reassembled scan, read under the fake's lock.
@@ -351,23 +406,96 @@ func TestSend_LargeScanUploadFailureIsNotSent(t *testing.T) {
 	}
 }
 
+// Graph's two ways to attach a file do not meet: sendMail stops carrying a
+// scan at MaxAttachmentBytes (2.25 MB) and an upload session refuses one
+// under 3 MB with ErrorAttachmentSizeShouldNotBeLessThanMinimumSize. The
+// 768 KB in between can only go as a single attachments POST.
+func TestSend_ScanInTheGapIsAttachedWithoutAnUploadSession(t *testing.T) {
+	content := scanBytes(graphmail.MaxAttachmentBytes + 1024) // in the gap, and past sendMail
+	if len(content) >= floorBytes {
+		t.Fatalf("this test's scan is %d bytes, which is not under Graph's %d byte floor", len(content), floorBytes)
+	}
+	path := writeTemp(t, "scan.pdf", content)
+	g := newFakeGraph(t)
+
+	if err := g.client(true).Send(context.Background(), largeMessage(path)); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	base := "/users/" + testSender + "/messages"
+	want := []string{
+		"POST " + base,
+		"POST " + base + "/" + draftID + "/attachments",
+		"POST " + base + "/" + draftID + "/send",
+	}
+	if got := g.calls(); !slices.Equal(got, want) {
+		t.Fatalf("calls =\n %q\nwant\n %q (no session under the floor)", got, want)
+	}
+	if got := g.attached()["scan.pdf"]; !bytes.Equal(got, content) {
+		t.Errorf("attached scan.pdf is %d bytes and differs from the %d byte source file", len(got), len(content))
+	}
+}
+
+// The case the appliance actually meets: mimescan lets through up to sixteen
+// PDFs, and a handful of ordinary scans clears sendMail's ceiling between
+// them while every one of them is far under Graph's session floor. Each has
+// to go as its own attachments POST; a session for any of them is refused.
+func TestSend_SeveralScansUnderTheFloorAreEachAttachedOnTheirOwn(t *testing.T) {
+	const each = 700 * 1024 // four of these clear MaxAttachmentBytes together
+	m := graphmail.Message{To: []string{"alice@corp.example"}, Subject: "Scan", Body: "Your scans are attached.\n"}
+	want := map[string][]byte{}
+	for i := range 4 {
+		name := fmt.Sprintf("scan-%d.pdf", i)
+		content := scanBytes(each + i) // a different length each, so a swap shows up
+		want[name] = content
+		m.Attachments = append(m.Attachments, graphmail.Attachment{Name: name, Path: writeTemp(t, name, content)})
+	}
+	g := newFakeGraph(t)
+
+	if err := g.client(true).Send(context.Background(), m); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	base := "/users/" + testSender + "/messages"
+	wantCalls := []string{"POST " + base}
+	for range m.Attachments {
+		wantCalls = append(wantCalls, "POST "+base+"/"+draftID+"/attachments")
+	}
+	wantCalls = append(wantCalls, "POST "+base+"/"+draftID+"/send")
+	if got := g.calls(); !slices.Equal(got, wantCalls) {
+		t.Fatalf("calls =\n %q\nwant\n %q", got, wantCalls)
+	}
+	for name, content := range want {
+		if got := g.attached()[name]; !bytes.Equal(got, content) {
+			t.Errorf("attached %s is %d bytes and differs from the %d byte source file", name, len(got), len(content))
+		}
+	}
+}
+
 // The stat Send routes on is an estimate: MaxAttachmentBytes cannot know
 // what the headers cost, nor the CRLF the MIME builder adds every 76
 // characters inside the inner base64. So there is a band of some 60 KB that
 // passes the first check and then composes too big for sendMail after all.
-// With the upload path available that band belongs to it - a notice there
-// would refuse a scan the appliance was configured to send.
-func TestSend_ScanUnderTheStatCeilingThatComposesTooBigStillUploads(t *testing.T) {
+// With the draft path available that band belongs to it - a notice there
+// would refuse a scan the appliance was configured to send. Under the floor,
+// the draft carries it as one attachments POST.
+func TestSend_ScanUnderTheStatCeilingThatComposesTooBigIsStillAttached(t *testing.T) {
 	// Under MaxAttachmentBytes by a hair, so the first check lets it past.
-	path := writeTemp(t, "scan.pdf", scanBytes(graphmail.MaxAttachmentBytes-1))
+	content := scanBytes(graphmail.MaxAttachmentBytes - 1)
+	path := writeTemp(t, "scan.pdf", content)
 	g := newFakeGraph(t)
 	if err := g.client(true).Send(context.Background(), largeMessage(path)); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	for _, r := range g.calls() {
-		if strings.HasSuffix(r, "/sendMail") {
-			t.Fatalf("calls = %q, want the upload path: sendMail cannot carry this one", g.calls())
-		}
+	base := "/users/" + testSender + "/messages"
+	want := []string{
+		"POST " + base,
+		"POST " + base + "/" + draftID + "/attachments",
+		"POST " + base + "/" + draftID + "/send",
+	}
+	if got := g.calls(); !slices.Equal(got, want) {
+		t.Fatalf("calls =\n %q\nwant\n %q: sendMail cannot carry this one and a session would refuse it", got, want)
+	}
+	if got := g.attached()["scan.pdf"]; !bytes.Equal(got, content) {
+		t.Errorf("attached scan.pdf is %d bytes and differs from the %d byte source file", len(got), len(content))
 	}
 
 	// And with no upload path to fall back on it is still a notice.

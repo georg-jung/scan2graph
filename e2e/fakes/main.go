@@ -172,6 +172,7 @@ func (f *fakes) httpRoutes() http.Handler {
 	mux.HandleFunc("POST /graph/users/{sender}/sendMail", f.sendMail)
 	mux.HandleFunc("POST /graph/users/{sender}/messages", f.createDraft)
 	mux.HandleFunc("POST /graph/users/{sender}/messages/{id}/attachments/createUploadSession", f.createUploadSession)
+	mux.HandleFunc("POST /graph/users/{sender}/messages/{id}/attachments", f.addAttachment)
 	mux.HandleFunc("POST /graph/users/{sender}/messages/{id}/send", f.sendDraft)
 	// Not under /graph: an upload session's URL is one Graph hands out on a
 	// host of its own, and the appliance must not carry its token there.
