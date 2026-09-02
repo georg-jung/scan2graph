@@ -293,9 +293,11 @@ parts, 10 levels of nesting, 16 PDF attachments); a message over any of these
 is rejected with SMTP `552`, the same code a too-large message gets.
 
 What can be *emailed* is a second ceiling, not this one: with
-`Mail.ReadWrite` granted, `S2G_MAX_MESSAGE_BYTES` is the only limit left;
-without it, one message carries about 2.2 MB — see the app registration
-section above for what that permission buys and how scan2graph reports it.
+`Mail.ReadWrite` granted, `S2G_MAX_MESSAGE_BYTES` is the limit scan2graph
+imposes, and the mailbox's own — 35 MB unless the tenant changed it — is the
+one behind it; without the permission, one message carries about 2.2 MB. See
+the app registration section above for what it buys and how scan2graph
+reports which of the two you are on.
 
 ## Run modes and the setup wizard
 

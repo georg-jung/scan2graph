@@ -101,10 +101,20 @@ func (c *Client) Send(ctx context.Context, m Message) error {
 	if err != nil {
 		return err
 	}
-	body := make([]byte, base64.StdEncoding.EncodedLen(len(raw)))
-	if len(body) > maxGraphMessageBytes {
-		return fmt.Errorf("graphmail: message is %d bytes encoded, limit is %d: %w", len(body), maxGraphMessageBytes, ErrTooLarge)
+	// The stat above is an estimate: MaxAttachmentBytes cannot know what the
+	// headers cost, nor the CRLF lineWrap adds every 76 characters inside the
+	// inner base64. So a scan just under it can still compose too big, and
+	// this is the check that knows for certain. With the upload path
+	// available that is a reason to take it, not to refuse the scan - the
+	// band between the two is some 60 KB wide, and a notice for a scan the
+	// appliance was configured to send would be the wrong answer in it.
+	if n := base64.StdEncoding.EncodedLen(len(raw)); n > maxGraphMessageBytes {
+		if c.LargeScans {
+			return c.sendLarge(ctx, m)
+		}
+		return fmt.Errorf("graphmail: message is %d bytes encoded, limit is %d: %w", n, maxGraphMessageBytes, ErrTooLarge)
 	}
+	body := make([]byte, base64.StdEncoding.EncodedLen(len(raw)))
 	base64.StdEncoding.Encode(body, raw)
 	return c.post(ctx, body)
 }

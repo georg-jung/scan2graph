@@ -437,7 +437,7 @@ func run(cfg *config.Config) error {
 			HTTP:       client,
 			BaseURL:    cfg.GraphBaseURL,
 			Sender:     cfg.GraphSender,
-			LargeScans: mailReadWrite(tokens),
+			LargeScans: mailReadWrite(ctx, tokens),
 		}
 		announceGraphCeiling(cfg, m.LargeScans)
 		mailer = m
@@ -547,6 +547,12 @@ func msClient(cfg *config.Config, scope string) (*http.Client, oauth2.TokenSourc
 	return c, ts
 }
 
+// startupTokenTimeout bounds the one token request the start makes, to learn
+// which Graph permissions were granted. Long enough for a slow link, short
+// enough that a black-holed Entra costs a boot seconds rather than the five
+// minutes the token client's own timeout would.
+const startupTokenTimeout = 15 * time.Second
+
 // mailReadWrite answers whether the app registration was granted
 // Mail.ReadWrite, which is what lets graphmail send a scan too large for
 // sendMail. It reads one app-only token's roles claim rather than asking the
@@ -555,19 +561,42 @@ func msClient(cfg *config.Config, scope string) (*http.Client, oauth2.TokenSourc
 // A token that cannot be fetched leaves large scans off instead of failing
 // the start: Graph is a per-job dependency, and an appliance that will not
 // boot because Entra was briefly unreachable is worse than one that sends a
-// notice for the first big scan. The token source is the process-lifetime one
-// msClient built, deliberately not tied to the signal context, so this
-// startup fetch is also the token every later request reuses.
-func mailReadWrite(tokens oauth2.TokenSource) bool {
-	tok, err := tokens.Token()
-	if err != nil {
-		// err is Entra's refusal, never a token: a token request that failed
-		// did not come back with one.
-		slog.Warn("could not read the Graph token's permissions at startup; large scans stay off until a restart", "err", err)
+// notice for the first big scan.
+//
+// Which is why this waits in a goroutine rather than on the call. The token
+// source is the process-lifetime one msClient built, so Token() takes no
+// context and answers to nothing but that client's five minute timeout: an
+// Entra that drops packets rather than refusing them would otherwise hold
+// the boot for five minutes with no listener up and SIGTERM already
+// disarmed by signal.NotifyContext. The fetch is left running - it is the
+// same token every later request wants anyway, and reuseTokenSource keeps
+// it if it does arrive.
+func mailReadWrite(ctx context.Context, tokens oauth2.TokenSource) bool {
+	type fetched struct {
+		tok *oauth2.Token
+		err error
+	}
+	ch := make(chan fetched, 1) // buffered: nothing is left blocking on it
+	go func() {
+		tok, err := tokens.Token()
+		ch <- fetched{tok, err}
+	}()
+	select {
+	case f := <-ch:
+		if f.err != nil {
+			// f.err is Entra's refusal, never a token: a token request that
+			// failed did not come back with one.
+			slog.Warn("could not read the Graph token's permissions at startup; large scans stay off until a restart", "err", f.err)
+			return false
+		}
+		// The token itself and every other claim in it stay here.
+		return slices.Contains(msapi.TokenRoles(f.tok.AccessToken), "Mail.ReadWrite")
+	case <-time.After(startupTokenTimeout):
+		slog.Warn("Entra did not answer in time; large scans stay off until a restart", "timeout", startupTokenTimeout)
+		return false
+	case <-ctx.Done():
 		return false
 	}
-	// The token itself and every other claim in it stay here.
-	return slices.Contains(msapi.TokenRoles(tok.AccessToken), "Mail.ReadWrite")
 }
 
 // announceGraphCeiling says how large a scan this appliance can actually

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -347,5 +348,31 @@ func TestSend_LargeScanUploadFailureIsNotSent(t *testing.T) {
 		if strings.HasSuffix(r, "/send") {
 			t.Errorf("the draft was sent anyway (%s), want no send after a failed upload", r)
 		}
+	}
+}
+
+// The stat Send routes on is an estimate: MaxAttachmentBytes cannot know
+// what the headers cost, nor the CRLF the MIME builder adds every 76
+// characters inside the inner base64. So there is a band of some 60 KB that
+// passes the first check and then composes too big for sendMail after all.
+// With the upload path available that band belongs to it - a notice there
+// would refuse a scan the appliance was configured to send.
+func TestSend_ScanUnderTheStatCeilingThatComposesTooBigStillUploads(t *testing.T) {
+	// Under MaxAttachmentBytes by a hair, so the first check lets it past.
+	path := writeTemp(t, "scan.pdf", scanBytes(graphmail.MaxAttachmentBytes-1))
+	g := newFakeGraph(t)
+	if err := g.client(true).Send(context.Background(), largeMessage(path)); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	for _, r := range g.calls() {
+		if strings.HasSuffix(r, "/sendMail") {
+			t.Fatalf("calls = %q, want the upload path: sendMail cannot carry this one", g.calls())
+		}
+	}
+
+	// And with no upload path to fall back on it is still a notice.
+	g2 := newFakeGraph(t)
+	if err := g2.client(false).Send(context.Background(), largeMessage(path)); !errors.Is(err, graphmail.ErrTooLarge) {
+		t.Errorf("Send without LargeScans: err = %v, want ErrTooLarge", err)
 	}
 }

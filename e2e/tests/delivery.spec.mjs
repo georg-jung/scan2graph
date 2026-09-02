@@ -230,7 +230,10 @@ function start({ clientID, http, smtp }) {
       PATH: process.env.PATH,
       S2G_HTTP_ADDR: `127.0.0.1:${http}`,
       S2G_SMTP_ADDR: `127.0.0.1:${smtp}`,
-      S2G_TEMP_DIR: path.join(e2e, '.tmp'),
+      // A directory of its own: jobs.New wipes its root on start and
+      // removes it on shutdown, so sharing .tmp would delete the harness
+      // appliance's job store twice per run, underneath it.
+      S2G_TEMP_DIR: path.join(e2e, '.tmp', `appliance-${smtp}`),
       S2G_LOG_FORMAT: 'text',
       S2G_SMTP_USERNAME: 'printer',
       S2G_SMTP_PASSWORD: FIXTURE_SECRET,
