@@ -1444,6 +1444,28 @@ func TestSetupGuideDerivesTheRedirectURI(t *testing.T) {
 // is the step an operator has to go and ask somebody else for. The sending
 // mailbox is what says whether this appliance mails anything, so the Mail.Send
 // step follows it, as the README's own conditional step does.
+// TestSetupSavedPageNamesTheRedirectURI pins the straight-through path, which
+// is the one an operator actually takes: fill the form in once and press
+// Save. The walkthrough on the card can only show the URI to somebody who
+// submits and comes back, so without this the promised value would reach
+// nobody who did not happen to press "Test the connection" first - and the
+// next thing that happens is a restart, after which a missing registration
+// is an AADSTS50011 at sign-in with nothing pointing back here.
+func TestSetupSavedPageNamesTheRedirectURI(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scan2graph.env")
+	h := newSetupHarness(t, SetupOptions{Path: path})
+	form := validForm()
+	form.Set("action", "save")
+	_, body := h.post(h.claimed(), form)
+	if !strings.Contains(body, "Saved") {
+		t.Fatalf("the configuration was not saved:\n%s", body)
+	}
+	want := "https://scan2graph.example.com/auth/callback"
+	if !strings.Contains(body, "<code>"+want+"</code>") {
+		t.Errorf("the page that sends the operator off to restart does not name %s:\n%s", want, body)
+	}
+}
+
 func TestSetupGuideMailStepFollowsTheSendingMailbox(t *testing.T) {
 	web := newSetupHarness(t, SetupOptions{})
 	if _, body := web.get(web.claimed(), "/setup"); strings.Contains(body, "Mail.Send") {

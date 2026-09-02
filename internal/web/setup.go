@@ -249,6 +249,7 @@ func (s *setupServer) submit(w http.ResponseWriter, r *http.Request) {
 			if err := s.save(values); err == nil {
 				render(slog.Default(), w, setupTmpl, setupView{
 					page: page{Title: "Saved", Brand: setupBrand}, Saved: s.Path,
+					Redirect: s.redirectURI(values),
 				})
 				return
 			} else {
@@ -623,6 +624,12 @@ type setupView struct {
 	Checks []checkResult
 	Path   string // where Save would write; "" offers only the download
 	Saved  string // where it went, on the success page
+	// Redirect is the URI Entra has to have registered, on that same page.
+	// The walkthrough shows it too, but only to somebody who submits the
+	// form and comes back to the card: fill everything in, press Save, and
+	// this is the one place it can still be said before the restart that
+	// makes a missing registration an AADSTS50011 at sign-in.
+	Redirect string
 	// Form is this render's id, handed back in a hidden field: it tells one
 	// open page from another, gates nothing, and losing it folds into the file.
 	Form string
@@ -642,6 +649,21 @@ type setupGroup struct {
 	// it, so a folded-away one is a dead end: the operator presses Save, the
 	// page comes back looking identical, and nothing on it says why.
 	OpenRare bool
+}
+
+// redirectURI is what the appliance will register with Entra for these
+// settings, or "" when it will register nothing because it signs nobody in.
+// It answers through the loader's own resolver over the loader's own
+// precedence, so it cannot disagree with a real start: the environment sits
+// above the file, the S2G_..._FILE spelling is followed, and a value Load
+// would refuse resolves to nothing here rather than being offered with
+// confidence.
+func (s *setupServer) redirectURI(values map[string]string) string {
+	base := config.ResolveRootBaseURL(config.Layer(values, s.Getenv), "S2G_PUBLIC_BASE_URL")
+	if base == "" {
+		return ""
+	}
+	return base + "/auth/callback"
 }
 
 // setupStep is one step of the Identity card's walkthrough: what to do in
@@ -666,10 +688,10 @@ type setupStep struct{ Text, Code string }
 func (s *setupServer) entraSteps(values map[string]string) []setupStep {
 	getenv := config.Layer(values, s.Getenv)
 	steps := []setupStep{{Text: "New registration → a single-tenant app is enough. Its Overview page then shows the Directory (tenant) ID and the Application (client) ID for the two boxes below."}}
-	if base := config.ResolveRootBaseURL(getenv, "S2G_PUBLIC_BASE_URL"); base != "" {
+	if uri := s.redirectURI(values); uri != "" {
 		steps = append(steps, setupStep{
 			Text: "Authentication → Add a platform → Web, not SPA: scan2graph holds a client secret and exchanges the code server-side. The redirect URI is exactly:",
-			Code: base + "/auth/callback",
+			Code: uri,
 		})
 	} else {
 		steps = append(steps, setupStep{Text: "Nothing to add under Authentication yet: the redirect URI is worked out from the Public URL further down this page, so fill that in and come back here for it. An appliance that only mails scans out signs nobody in and needs none at all."})

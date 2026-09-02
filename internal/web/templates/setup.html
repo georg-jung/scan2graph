@@ -13,6 +13,10 @@ you lose this window.</p>
 <p>The configuration was written to <code>{{.Saved}}</code>.</p>
 <p class="empty">Restart scan2graph to apply it. This wizard only writes the
 file; it does not start the appliance.</p>
+{{if .Redirect}}<p>One thing to do in the Azure portal first, or signing in
+will fail: the app registration needs this redirect URI, added under
+<b>Authentication</b> as a <b>Web</b> platform.</p>
+<div class="guide"><code>{{.Redirect}}</code></div>{{end}}
 {{else}}
 <h1>Set up scan2graph</h1>
 <p class="empty">Everything here ends up in one KEY=value file. Leave a box
