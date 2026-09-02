@@ -426,6 +426,11 @@ func TestSetupKeepsAFileSuppliedValue(t *testing.T) {
 		{"a secret", "S2G_ENTRA_CLIENT_SECRET_FILE", testClientSecret, nil},
 		{"a plain setting", "S2G_GRAPH_SENDER_FILE", "scanner@example.com\n",
 			map[string]string{"S2G_ALLOWED_RECIPIENT_DOMAINS": "example.com"}},
+		// A dropdown has no placeholder to carry the hint, and "(default)"
+		// where something is configured misstates the configuration. The
+		// value is one the loader takes but the options do not offer, so
+		// finding it in the page would mean it really had been rendered.
+		{"a choice", "S2G_LOG_LEVEL_FILE", "warning\n", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

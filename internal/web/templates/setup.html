@@ -86,7 +86,10 @@ consent.</p>
 </span>
 {{if eq .Kind "choice"}}
 <select id="{{.Name}}" name="{{.Name}}">
-<option value="">(default)</option>
+{{/* A select shows no placeholder, so its empty option says what the
+     placeholder would have: "(default)", unless something is configured
+     that this box cannot show - the only way a choice field has one. */}}
+<option value="">{{if .Placeholder}}{{.Placeholder}}{{else}}(default){{end}}</option>
 {{range .Choice}}<option value="{{.}}"{{if eq . $.Value}} selected{{end}}>{{.}}</option>{{end}}
 </select>
 {{else if eq .Kind "area"}}
