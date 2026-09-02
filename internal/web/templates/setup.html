@@ -92,6 +92,18 @@ consent.</p>
 <option value="">{{if .Placeholder}}{{.Placeholder}}{{else}}(default){{end}}</option>
 {{range .Choice}}<option value="{{.}}"{{if eq . $.Value}} selected{{end}}>{{.}}</option>{{end}}
 </select>
+{{else if eq .Kind "pairs"}}
+{{/* Two standing spare rows instead of an "add" button: a second submit
+     above the actions row would become the form's default, so Enter in any
+     of these boxes would add a row instead of saving. */}}
+<div class="pairs">
+<span>Address the printer sends to</span>
+<span>Real address</span>
+{{range $i, $p := .Pairs}}
+<input type="text"{{if not $i}} id="{{$.Name}}"{{end}} name="alias-from" value="{{$p.From}}" spellcheck="false" placeholder="{{if $.Placeholder}}{{$.Placeholder}}{{else}}printer-shortcut@scanner.local{{end}}">
+<input type="text" name="alias-to" value="{{$p.To}}" spellcheck="false" placeholder="{{if $.Placeholder}}{{$.Placeholder}}{{else}}jane.doe@example.com{{end}}">
+{{end}}
+</div>
 {{else if eq .Kind "area"}}
 <textarea id="{{.Name}}" name="{{.Name}}" rows="3" spellcheck="false"{{if .Placeholder}} placeholder="{{.Placeholder}}"{{end}}>{{.Value}}</textarea>
 {{else if eq .Kind "secret"}}

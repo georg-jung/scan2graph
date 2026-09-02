@@ -11,6 +11,10 @@ const (
 	fieldBool   fieldKind = "bool"
 	fieldChoice fieldKind = "choice"
 	fieldArea   fieldKind = "area"
+	// fieldPairs is a setting whose value is a JSON object of address to
+	// address, asked for as two columns of boxes: nobody should have to type
+	// JSON by hand to give the printer a shorthand address.
+	fieldPairs fieldKind = "pairs"
 )
 
 // setupField is one setting as the wizard asks for it. Help is one sentence,
@@ -56,9 +60,8 @@ var setupFields = []setupField{
 		Help:        "Comma-separated domains a scan may be mailed to, without a leading @ and matched exactly; email delivery requires it, or the appliance would be an open relay.",
 		Placeholder: "example.com, example.org",
 	}, {
-		Name: "S2G_RECIPIENT_ALIASES", Label: "Recipient aliases", Kind: fieldArea, Group: "Delivery",
-		Help:        "JSON object mapping a shorthand address the printer's address book can hold to the real one.",
-		Placeholder: `{"printer-shortcut@scanner.local":"jane.doe@example.com"}`,
+		Name: "S2G_RECIPIENT_ALIASES", Label: "Recipient aliases", Kind: fieldPairs, Group: "Delivery",
+		Help: "One row per alias: a shorthand address the printer's address book can hold, and the real address it stands for. Type into the blank rows to add more, and two fresh ones come back with every submission.",
 	}, {
 		Name: "S2G_PUBLIC_BASE_URL", Label: "Public URL", Group: "Web UI",
 		Help:        "Where this appliance is reached through the reverse proxy that terminates TLS; setting it is what turns the web UI on, and it must address the root of a host of its own.",

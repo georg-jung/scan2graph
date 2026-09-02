@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -108,7 +110,7 @@ func NewSetup(opts SetupOptions) http.Handler {
 			})
 			return
 		}
-		current, _ := s.values(nil)
+		current, _, _ := s.values(nil)
 		render(slog.Default(), w, setupTmpl, s.view(current, nil, nil))
 	})
 	mux.HandleFunc("POST /setup/start", s.start)
@@ -218,12 +220,16 @@ func (s *setupServer) submit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the submitted form is malformed or too large", http.StatusBadRequest)
 		return
 	}
-	values, file := s.values(r.PostForm)
+	values, file, pairErr := s.values(r.PostForm)
 
 	// The real loader through the real precedence, so the wizard cannot
-	// disagree with the next start about what is valid.
+	// disagree with the next start about what is valid. The pair editor's own
+	// complaint is written like a loader message and joined in front of them,
+	// so it lands under its box through the same path and, being first, is the
+	// one shown there rather than the loader's account of the half-typed row
+	// the fold left behind.
 	cfg, err := config.Load(config.Layer(values, s.Getenv))
-	general, byField := attribute(err)
+	general, byField := attribute(errors.Join(pairErr, err))
 	var checks []checkResult
 	if len(general) == 0 && len(byField) == 0 {
 		action := r.PostForm.Get("action")
@@ -265,19 +271,28 @@ func (s *setupServer) submit(w http.ResponseWriter, r *http.Request) {
 // form can turn something off - except where that page holds an answer the
 // form cannot show, which a blank box keeps instead: a secret, and any
 // setting supplied by its S2G_..._FILE spelling. A nil form changes nothing.
-func (s *setupServer) values(form url.Values) (map[string]string, uint64) {
+// The error is the pair editor's alone, and reads like a loader message so
+// that submit can attribute it to its box the same way.
+func (s *setupServer) values(form url.Values) (map[string]string, uint64, error) {
 	base, file := s.base(form.Get("form"))
 	values := maps.Clone(base)
 	if values == nil {
 		values = make(map[string]string, len(setupFields))
 	}
 	if form == nil {
-		return values, file
+		return values, file, nil
 	}
+	var pairErr error
 	for _, f := range setupFields {
 		// A newline would end the KEY=value line; the JSON in a textarea does
 		// not care where its whitespace is.
 		v := strings.TrimSpace(strings.NewReplacer("\r", "", "\n", " ").Replace(form.Get(f.Name)))
+		// The pair editor names its boxes for itself, so a submission carrying
+		// them is one the editor rendered - and one without them came from the
+		// textarea the unparseable-value fallback puts under f.Name instead.
+		if f.Kind == fieldPairs && form.Has(pairFrom) {
+			v, pairErr = foldPairs(form)
+		}
 		switch {
 		case v != "":
 			values[f.Name] = v
@@ -301,7 +316,66 @@ func (s *setupServer) values(form url.Values) (map[string]string, uint64) {
 			delete(values, f.Name+"_FILE")
 		}
 	}
-	return values, file
+	return values, file, pairErr
+}
+
+// pairFrom and pairTo are what the alias editor calls its two columns on the
+// wire: one pair of boxes per row, repeated, so the two slices come back
+// index-aligned. Deliberately not S2G_ names, which the fold loop iterates,
+// and deliberately not numbered, which would need the page to remember how
+// many rows it drew.
+const pairFrom, pairTo = "alias-from", "alias-to"
+
+// foldPairs composes the editor's rows into the JSON object the loader already
+// parses, so nothing downstream knows the form changed. Rows nobody typed into
+// - every page ends with two spares - are dropped, and no row at all leaves the
+// setting empty, which reads as "delete it" exactly like an empty box. A row
+// with one side filled is kept and named instead: dropping it would quietly
+// lose an address the operator did type, and keeping it is what puts it back
+// in front of them. Marshalling a map is what sorts the keys, so saving the
+// same aliases twice writes the same file.
+func foldPairs(form url.Values) (string, error) {
+	froms, tos := form[pairFrom], form[pairTo]
+	aliases := make(map[string]string, len(froms))
+	var err error
+	for i, from := range froms {
+		from = strings.TrimSpace(from)
+		var to string
+		if i < len(tos) {
+			to = strings.TrimSpace(tos[i])
+		}
+		if from == "" && to == "" {
+			continue
+		}
+		if from == "" || to == "" {
+			err = errors.New("S2G_RECIPIENT_ALIASES: an alias needs both addresses, and one row has only one of them")
+		}
+		aliases[from] = to
+	}
+	if len(aliases) == 0 {
+		return "", nil
+	}
+	out, _ := json.Marshal(aliases) // a map of strings always marshals
+	return string(out), err
+}
+
+// pairRows is the stored value as the editor shows it: one row per alias,
+// ordered by the address the printer sends to so two renders agree, then two
+// blank rows to type the next alias into. Two standing spares rather than an
+// "add" button, which as a second submit before the actions row would become
+// the form's default - and Enter in any box would then add a row instead of
+// saving. The false answer means the value is not an object of addresses at
+// all, which no pair editor can show.
+func pairRows(v string) ([]setupPair, bool) {
+	aliases := map[string]string{}
+	if v != "" && json.Unmarshal([]byte(v), &aliases) != nil {
+		return nil, false
+	}
+	rows := make([]setupPair, 0, len(aliases)+2)
+	for _, from := range slices.Sorted(maps.Keys(aliases)) {
+		rows = append(rows, setupPair{from, aliases[from]})
+	}
+	return append(rows, setupPair{}, setupPair{}), true
 }
 
 // save writes the configuration file and republishes what the wizard reads
@@ -513,7 +587,12 @@ type setupInput struct {
 	Checked bool
 	Set     bool // a value is configured that no box can show
 	Error   string
+	Pairs   []setupPair // fieldPairs only
 }
+
+// setupPair is one row of the alias editor: the address the printer sends to,
+// and the real address it stands for.
+type setupPair struct{ From, To string }
 
 func (s *setupServer) view(values map[string]string, general []string, byField map[string]string) setupView {
 	v := setupView{page: page{Title: "Setup", Brand: setupBrand}, Path: s.Path, Errors: general, Form: rand.Text()}
@@ -548,6 +627,17 @@ func (s *setupServer) view(values map[string]string, general []string, byField m
 			// option of its own instead.
 			if in.Value != "" && !slices.Contains(f.Choice, in.Value) {
 				in.Choice = append(slices.Clone(f.Choice), in.Value)
+			}
+		case fieldPairs:
+			// Rows, unless the file holds something that is not an object of
+			// addresses at all: somebody hand-edited it, and the wizard is
+			// the tool they would reach for to fix it, so show them the text
+			// itself in a textarea rather than empty rows that would silently
+			// replace it on the next save.
+			if rows, ok := pairRows(in.Value); ok {
+				in.Pairs = rows
+			} else {
+				in.Kind = fieldArea
 			}
 		}
 		if len(v.Groups) == 0 || v.Groups[len(v.Groups)-1].Name != f.Group {

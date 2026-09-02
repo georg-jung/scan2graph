@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -431,6 +432,11 @@ func TestSetupKeepsAFileSuppliedValue(t *testing.T) {
 		// value is one the loader takes but the options do not offer, so
 		// finding it in the page would mean it really had been rendered.
 		{"a choice", "S2G_LOG_LEVEL_FILE", "warning\n", nil},
+		// The pair editor has no single box to leave empty: what a browser
+		// sends from it is the two spare rows, blank. That has to read as
+		// "nothing typed" rather than as "delete the aliases".
+		{"a pair editor", "S2G_RECIPIENT_ALIASES_FILE",
+			`{"printer-shortcut@scanner.local":"jane.doe@example.com"}`, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -467,6 +473,10 @@ func TestSetupKeepsAFileSuppliedValue(t *testing.T) {
 				form.Set(k, v)
 			}
 			form.Set("S2G_UI_TITLE", "Hallway printer")
+			// Every rendered page ends with the alias editor's two spare
+			// rows, and a browser sends them whether or not anything was
+			// typed into them.
+			form[pairFrom], form[pairTo] = []string{"", ""}, []string{"", ""}
 			form.Set("action", "save")
 			if resp, body := h.post(c, form); resp.StatusCode != http.StatusOK || !strings.Contains(body, "Saved") {
 				t.Fatalf("status %d, body:\n%s", resp.StatusCode, body)
@@ -575,7 +585,7 @@ func FuzzSetupFileRoundTrip(f *testing.F) {
 	}
 	s := &setupServer{}
 	f.Fuzz(func(t *testing.T, v string) {
-		values, _ := s.values(url.Values{"S2G_UI_TITLE": {v}, "S2G_TEMP_DIR": {v}})
+		values, _, _ := s.values(url.Values{"S2G_UI_TITLE": {v}, "S2G_TEMP_DIR": {v}})
 		got := roundTrip(t, values)
 		if len(got) != len(values) {
 			t.Errorf("input %q: wrote %d settings, read back %d: %#v", v, len(values), len(got), got)
@@ -623,7 +633,7 @@ func FuzzSetupFilePreservesTheFileItRead(f *testing.F) {
 			t.Skip() // not a configuration file at all
 		}
 		s := &setupServer{SetupOptions: SetupOptions{FileValues: fileValues}}
-		values, _ := s.values(url.Values{"S2G_UI_TITLE": {typed}})
+		values, _, _ := s.values(url.Values{"S2G_UI_TITLE": {typed}})
 		got := roundTrip(t, values)
 		if len(got) != len(values) {
 			t.Fatalf("file %q typed %q: wrote %d settings, read back %d: %#v", file, typed, len(values), len(got), got)
@@ -960,6 +970,132 @@ func TestSetupWritesJSONUnquoted(t *testing.T) {
 	}
 }
 
+// aliasRows is the pair editor as the page rendered it, in order and spares
+// included: the two boxes of every row, straight out of the HTML, so what
+// these tests read is what a browser would send back.
+func aliasRows(t *testing.T, body string) [][2]string {
+	t.Helper()
+	re := regexp.MustCompile(`name="alias-from" value="([^"]*)"[^>]*>\s*<input type="text" name="alias-to" value="([^"]*)"`)
+	var rows [][2]string
+	for _, m := range re.FindAllStringSubmatch(body, -1) {
+		rows = append(rows, [2]string{m[1], m[2]})
+	}
+	return rows
+}
+
+// TestSetupAliasRowsFoldIntoJSON is the whole point of the pair editor: two
+// columns of address boxes come back as exactly the JSON object the loader
+// already parses, so nothing downstream knows the form changed. The keys come
+// out sorted because a map is what they are marshalled from - saving the same
+// aliases twice has to write the same file - and the spare rows nobody typed
+// into leave no trace.
+func TestSetupAliasRowsFoldIntoJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scan2graph.env")
+	h := newSetupHarness(t, SetupOptions{Path: path})
+	form := validForm()
+	form[pairFrom] = []string{"scan-b@scanner.local", "scan-a@scanner.local", "", ""}
+	form[pairTo] = []string{" bob@example.com ", "alice@example.com", "", ""}
+	form.Set("action", "save")
+	if resp, body := h.post(h.claimed(), form); resp.StatusCode != http.StatusOK ||
+		!strings.Contains(body, "Saved") {
+		t.Fatalf("status %d, body:\n%s", resp.StatusCode, body)
+	}
+	const want = `{"scan-a@scanner.local":"alice@example.com","scan-b@scanner.local":"bob@example.com"}`
+	if got := loads(t, path)["S2G_RECIPIENT_ALIASES"]; got != want {
+		t.Errorf("S2G_RECIPIENT_ALIASES = %q, want %q", got, want)
+	}
+}
+
+// TestSetupAliasHalfRowIsNamed pins the one row the fold must not drop: an
+// operator who typed an alias and forgot its target would otherwise be told
+// the file was saved and find the address gone. The complaint lands under the
+// box, and what they typed is in the page they get back - a complaint about a
+// row that is no longer there would be worse than none.
+func TestSetupAliasHalfRowIsNamed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scan2graph.env")
+	h := newSetupHarness(t, SetupOptions{Path: path})
+	form := validForm()
+	form[pairFrom] = []string{"scan-a@scanner.local", ""}
+	form[pairTo] = []string{"", ""}
+	form.Set("action", "save")
+	resp, body := h.post(h.claimed(), form)
+	if resp.StatusCode != http.StatusOK || strings.Contains(body, "Saved") {
+		t.Fatalf("the half-typed row was saved anyway: status %d, body:\n%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "Recipient aliases: an alias needs both addresses") {
+		t.Errorf("the page does not say what is wrong with the row:\n%s", body)
+	}
+	if got, want := aliasRows(t, body), ([][2]string{{"scan-a@scanner.local", ""}, {"", ""}, {"", ""}}); !slices.Equal(got, want) {
+		t.Errorf("the rows came back as %q, want the typed one kept: %q", got, want)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("a configuration file was written: %v", err)
+	}
+}
+
+// TestSetupAliasRoundTrip is the operator's whole loop: rows typed in, saved
+// to the file, and the wizard opened again on what it wrote showing the same
+// aliases - ordered by the address the printer sends to, and followed by the
+// two blank rows that are all there is to press instead of an "add" button.
+func TestSetupAliasRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scan2graph.env")
+	h := newSetupHarness(t, SetupOptions{Path: path})
+	c := h.claimed()
+	form := validForm()
+	form[pairFrom] = []string{"scan-b@scanner.local", "scan-a@scanner.local", ""}
+	form[pairTo] = []string{"bob@example.com", "alice@example.com", ""}
+	form.Set("action", "save")
+	if resp, body := h.post(c, form); resp.StatusCode != http.StatusOK ||
+		!strings.Contains(body, "Saved") {
+		t.Fatalf("status %d, body:\n%s", resp.StatusCode, body)
+	}
+	_, body := h.get(c, "/setup")
+	want := [][2]string{
+		{"scan-a@scanner.local", "alice@example.com"},
+		{"scan-b@scanner.local", "bob@example.com"},
+		{"", ""}, {"", ""},
+	}
+	if got := aliasRows(t, body); !slices.Equal(got, want) {
+		t.Errorf("the wizard reopened on %q, want %q", got, want)
+	}
+}
+
+// TestSetupAliasFallsBackToText pins the one value the pair editor cannot
+// show: a configuration file somebody hand-edited into something that is not
+// an object of addresses. Empty rows there would silently replace it on the
+// next save, so the broken text goes into the textarea instead - the wizard
+// is exactly the tool they would reach for to fix it - and the fix typed
+// there is what gets saved.
+func TestSetupAliasFallsBackToText(t *testing.T) {
+	const broken = "jane.doe@example.com" // an address where an object belongs
+	path := filepath.Join(t.TempDir(), "scan2graph.env")
+	h := newSetupHarness(t, SetupOptions{
+		Path:       path,
+		FileValues: map[string]string{"S2G_RECIPIENT_ALIASES": broken},
+	})
+	c := h.claimed()
+	_, body := h.get(c, "/setup")
+	if rows := aliasRows(t, body); rows != nil {
+		t.Errorf("a value no pair editor can show was rendered as rows: %q", rows)
+	}
+	if !strings.Contains(body, `<textarea id="S2G_RECIPIENT_ALIASES" name="S2G_RECIPIENT_ALIASES" rows="3" spellcheck="false">`+broken) {
+		t.Errorf("the broken value is not in a box the operator can fix it in:\n%s", body)
+	}
+
+	const fixed = `{"printer-shortcut@scanner.local":"jane.doe@example.com"}`
+	form := validForm()
+	form.Set("form", h.formID(body))
+	form.Set("S2G_RECIPIENT_ALIASES", fixed)
+	form.Set("action", "save")
+	if resp, body := h.post(c, form); resp.StatusCode != http.StatusOK ||
+		!strings.Contains(body, "Saved") {
+		t.Fatalf("status %d, body:\n%s", resp.StatusCode, body)
+	}
+	if got := loads(t, path)["S2G_RECIPIENT_ALIASES"]; got != fixed {
+		t.Errorf("S2G_RECIPIENT_ALIASES = %q, want the typed fix %q", got, fixed)
+	}
+}
+
 // TestSetupChoiceKeepsAnUnlistedValue pins the defect that a <select> silently
 // dropped a value it had no option for: S2G_LOG_LEVEL=warning is valid to the
 // loader, so the box showed "(default)" and the next save deleted a setting
@@ -1115,13 +1251,13 @@ func TestSetupSaveDuringATestWins(t *testing.T) {
 	s := &setupServer{SetupOptions: SetupOptions{Path: path, Getenv: noEnv}}
 
 	// The slow test folds first, and its results page will carry this id.
-	slow, slowFile := s.values(validForm())
+	slow, slowFile, _ := s.values(validForm())
 	slowPage := "the-slow-test's-page"
 
 	// The other tab saves a rotated secret while that test is still waiting.
 	rotated := validForm()
 	rotated.Set("S2G_ENTRA_CLIENT_SECRET", "rotated-"+testClientSecret)
-	saved, _ := s.values(rotated)
+	saved, _, _ := s.values(rotated)
 	if err := s.save(saved); err != nil {
 		t.Fatal(err)
 	}
@@ -1133,7 +1269,7 @@ func TestSetupSaveDuringATestWins(t *testing.T) {
 	blank := validForm()
 	blank.Del("S2G_ENTRA_CLIENT_SECRET")
 	blank.Set("form", slowPage)
-	next, _ := s.values(blank)
+	next, _, _ := s.values(blank)
 	if got := next["S2G_ENTRA_CLIENT_SECRET"]; got != "rotated-"+testClientSecret {
 		t.Errorf("a blank box folded into %q, want the secret the save wrote", got)
 	}

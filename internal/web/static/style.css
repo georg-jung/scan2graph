@@ -171,6 +171,20 @@ details.group[open] summary { margin-bottom: .9rem; }
   color: inherit;
 }
 .field textarea { resize: vertical; }
+/* The alias editor: one row per alias, under a heading per column, so the
+   two addresses read as the pair they are. */
+.pairs { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem .6rem; }
+.pairs span { color: var(--muted); font-size: .8rem; }
+/* Two address boxes side by side are too narrow to read on a phone, so the
+   pair stacks - and its column headings, now heading nothing, give way to the
+   boxes' own examples, with a gap marking where one row ends. A block of its
+   own rather than the scan table's above, which the wizard's rules all come
+   after: an override has to be later in the file than what it overrides. */
+@media (max-width: 34rem) {
+  .pairs { grid-template-columns: 1fr; }
+  .pairs span { display: none; }
+  .pairs input:nth-of-type(even) { margin-bottom: .6rem; }
+}
 .field.bad input, .field.bad select, .field.bad textarea { border-color: var(--warn); }
 /* A checkbox is the one control whose label belongs beside it. */
 .check { display: flex; gap: .5rem; align-items: center; font-weight: 600; }
