@@ -3,11 +3,17 @@
 // The printer's original MIME message is long gone by the time Send is
 // called: this package composes a fresh RFC 5322 message and posts it,
 // base64-encoded, to Graph's MIME sendMail endpoint
-// (POST /users/{sender}/sendMail, Content-Type: text/plain). That single
-// form is why there is no separate small-attachment vs. upload-session code
-// path here -- Graph parses recipients, subject and attachments straight
-// out of the MIME headers, up to a size limit Send checks before ever
-// making a request.
+// (POST /users/{sender}/sendMail, Content-Type: text/plain). Graph parses
+// recipients, subject and attachments straight out of the MIME headers,
+// in one request that needs no more than the Mail.Send permission.
+//
+// That request body is capped at ~4 MB, though, and two rounds of base64
+// eat most of it before the first page, which a colour scan clears easily.
+// So there is a second path, in upload.go: a draft, an upload session per
+// attachment, and a send. Send routes to it by size, and only when
+// LargeScans says the token carries Mail.ReadWrite - writing a draft is a
+// write to the mailbox, and a deployment that never sends a big scan
+// should not have to grant that.
 package graphmail
 
 import (
@@ -28,14 +34,18 @@ import (
 // the API, not something an operator can usefully change.
 const maxGraphMessageBytes = 4 * 1024 * 1024
 
-// MaxAttachmentBytes is how much scan one message can carry, and the number
-// a notice quotes to the user. The MIME message base64-encodes every
-// attachment and Graph's request body base64-encodes that message again, so
-// two encodings' worth of the limit above is gone before the first page.
+// MaxAttachmentBytes is how much scan one sendMail message can carry, and
+// the number a notice quotes to the user. The MIME message base64-encodes
+// every attachment and Graph's request body base64-encodes that message
+// again, so two encodings' worth of the limit above is gone before the
+// first page. Past this, Send needs the upload path.
 const MaxAttachmentBytes = maxGraphMessageBytes * 9 / 16
 
 // ErrTooLarge is returned by Send when the composed message would exceed
-// Graph's size limit. The caller sends a notice instead.
+// Graph's size limit. The caller sends a notice instead. With LargeScans
+// on, an attachment past MaxAttachmentBytes goes up in chunks instead, so
+// the only scans that still land here are ones the SMTP cap already let
+// through -- which is to say none.
 var ErrTooLarge = errors.New("graphmail: message exceeds Graph's size limit")
 
 // Client sends mail through one Microsoft Graph mailbox.
@@ -43,6 +53,11 @@ type Client struct {
 	HTTP    *http.Client // must already carry a bearer token
 	BaseURL string       // e.g. https://graph.microsoft.com/v1.0, no trailing slash
 	Sender  string       // the mailbox to send from; also the message's From
+
+	// LargeScans decides which path Send takes past MaxAttachmentBytes.
+	// Derived at startup from the access token's roles, not configured: true
+	// exactly when Mail.ReadWrite is granted.
+	LargeScans bool
 }
 
 // Message is one email to compose and send. Attachments, if any, are
@@ -76,27 +91,43 @@ func (c *Client) Send(ctx context.Context, m Message) error {
 		attached += fi.Size()
 	}
 	if attached > MaxAttachmentBytes {
-		return fmt.Errorf("graphmail: attachments are %d bytes, limit is %d: %w", attached, int64(MaxAttachmentBytes), ErrTooLarge)
+		if !c.LargeScans {
+			return fmt.Errorf("graphmail: attachments are %d bytes, limit is %d: %w", attached, int64(MaxAttachmentBytes), ErrTooLarge)
+		}
+		return c.sendLarge(ctx, m)
 	}
 
 	raw, err := buildMessage(c.Sender, m)
 	if err != nil {
 		return err
 	}
-	body := make([]byte, base64.StdEncoding.EncodedLen(len(raw)))
-	if len(body) > maxGraphMessageBytes {
-		return fmt.Errorf("graphmail: message is %d bytes encoded, limit is %d: %w", len(body), maxGraphMessageBytes, ErrTooLarge)
+	// The stat above is an estimate: MaxAttachmentBytes cannot know what the
+	// headers cost, nor the CRLF lineWrap adds every 76 characters inside the
+	// inner base64. So a scan just under it can still compose too big, and
+	// this is the check that knows for certain. With the upload path
+	// available that is a reason to take it, not to refuse the scan - the
+	// band between the two is some 60 KB wide, and a notice for a scan the
+	// appliance was configured to send would be the wrong answer in it.
+	if n := base64.StdEncoding.EncodedLen(len(raw)); n > maxGraphMessageBytes {
+		if c.LargeScans {
+			return c.sendLarge(ctx, m)
+		}
+		return fmt.Errorf("graphmail: message is %d bytes encoded, limit is %d: %w", n, maxGraphMessageBytes, ErrTooLarge)
 	}
+	body := make([]byte, base64.StdEncoding.EncodedLen(len(raw)))
 	base64.StdEncoding.Encode(body, raw)
 	return c.post(ctx, body)
 }
 
-// post sends the already-encoded body to sendMail through the shared msapi
-// retry loop, wrapping any error so it is clear which service failed.
+// mailboxURL is the Graph resource every call in this package hangs off.
+func (c *Client) mailboxURL() string {
+	return c.BaseURL + "/users/" + url.PathEscape(c.Sender)
+}
+
+// post sends the already-encoded body to sendMail.
 func (c *Client) post(ctx context.Context, body []byte) error {
-	endpoint := c.BaseURL + "/users/" + url.PathEscape(c.Sender) + "/sendMail"
 	resp, err := (&msapi.Client{HTTP: c.HTTP}).Do(ctx, func(ctx context.Context) (*http.Request, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.mailboxURL()+"/sendMail", bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}

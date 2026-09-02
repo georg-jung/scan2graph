@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -132,7 +133,7 @@ func (f *fakes) token(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		id, secret = r.PostFormValue("client_id"), r.PostFormValue("client_secret")
 	}
-	if id != clientID || secret != fixtureSecret {
+	if _, registered := appRoles[id]; !registered || secret != fixtureSecret {
 		// With the sentence Entra sends, because the wizard's whole claim is
 		// that an operator reads their own tenant's words rather than
 		// oauth2's rendering of "invalid_client".
@@ -146,19 +147,44 @@ func (f *fakes) token(w http.ResponseWriter, r *http.Request) {
 
 	switch r.PostFormValue("grant_type") {
 	case "client_credentials":
-		// The scope is part of the token, so a service can refuse one minted
-		// for another - which is what real Entra does with a resource it was
-		// not asked for.
-		writeJSON(w, http.StatusOK, map[string]any{
-			"access_token": appToken + "|" + r.PostFormValue("scope"),
-			"token_type":   "Bearer",
-			"expires_in":   3600,
-		})
+		f.clientCredentials(w, r, id)
 	case "authorization_code":
 		f.authorizationCode(w, r)
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported_grant_type"})
 	}
+}
+
+// clientCredentials mints an app-only access token, as the JWT Entra really
+// issues rather than an opaque string: the appliance reads the application
+// permissions out of its "roles" claim at startup to decide whether it may
+// send a scan too large for sendMail, and that detection only proves anything
+// if it runs against a token shaped like the real one. Which permissions an
+// app registration was granted is a property of the registration, so they
+// come from appRoles rather than from a switch the suite has to flip.
+//
+// The scope goes in too, so a service can refuse a token minted for another -
+// which is what real Entra's audience does with a resource it was not asked
+// for.
+func (f *fakes) clientCredentials(w http.ResponseWriter, r *http.Request, id string) {
+	now := time.Now()
+	token, err := f.sign(map[string]any{
+		"iss":   f.issuer,
+		"appid": id,
+		"iat":   now.Unix(),
+		"exp":   now.Add(time.Hour).Unix(),
+		"scope": r.PostFormValue("scope"),
+		"roles": appRoles[id],
+	})
+	if err != nil {
+		http.Error(w, "signing failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"access_token": token,
+		"token_type":   "Bearer",
+		"expires_in":   3600,
+	})
 }
 
 func (f *fakes) authorizationCode(w http.ResponseWriter, r *http.Request) {
@@ -218,3 +244,20 @@ func (f *fakes) sign(claims map[string]any) (string, error) {
 }
 
 func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
+
+// appClaims is the claims in r's bearer token, or nil if it doesn't decode - unverified.
+func appClaims(r *http.Request) map[string]any {
+	parts := strings.Split(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), ".")
+	if len(parts) != 3 {
+		return nil
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil
+	}
+	var claims map[string]any
+	if json.Unmarshal(payload, &claims) != nil {
+		return nil
+	}
+	return claims
+}

@@ -7,9 +7,11 @@ package msapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 )
@@ -49,6 +51,16 @@ func (c *Client) Do(ctx context.Context, newReq func(context.Context) (*http.Req
 		case err != nil:
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
+			}
+			// Strip the *url.Error wrapper, which repeats the whole URL -
+			// query string included. Graph hands out upload session URLs
+			// carrying their own authorization as ?authtoken=..., so a
+			// dropped connection mid-upload would otherwise put a credential
+			// in the log the moment the pipeline reports the failure. The
+			// method and path below say which request died without it.
+			var ue *url.Error
+			if errors.As(err, &ue) {
+				err = ue.Err
 			}
 			lastErr = fmt.Errorf("%s %s: %w", req.Method, req.URL.Path, err)
 		case resp.StatusCode < 300:

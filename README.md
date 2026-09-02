@@ -111,7 +111,7 @@ scan2graph needs exactly one Entra app registration. It serves both the web
 UI's sign-in (authorization code flow with PKCE) and the app-only tokens used
 to call Microsoft Graph and Azure Document Intelligence (client credentials
 flow) — there is nothing to register twice. Steps 1 and 3 are always needed;
-2 and 4 depend on what your profiles actually do.
+the rest depend on what your profiles actually do.
 
 1. **Microsoft Entra ID → App registrations → New registration.** A
    single-tenant app is enough. Note the **Directory (tenant) ID** and
@@ -134,6 +134,40 @@ flow) — there is nothing to register twice. Steps 1 and 3 are always needed;
    never constructs a mailer and should not be granted it. Sign-in itself
    needs no extra permission either: it only requests the standard OIDC
    `openid`, `profile` and `email` scopes, none of which need consent.
+5. **Only if a scan can be larger than 2.2 MB**: add `Mail.ReadWrite` next to
+   it and consent to that as well. One `sendMail` request carries at most
+   4 MB, and two rounds of base64 eat all but about 2.2 MB of that before the
+   first page — so past that size scan2graph creates the mail as a draft,
+   streams the attachment into it in 3.75 MB chunks and sends the draft, and
+   writing a draft is a write to the mailbox rather than a send. Nothing
+   breaks without it: a scan over the ceiling gets the same "too large"
+   notice it gets today, so a deployment whose scans are small keeps the
+   narrower permission. scan2graph reads its own token at startup, logs which
+   ceiling it ended up with, and prints a banner if it will accept scans over
+   SMTP that it would then have to refuse.
+
+**Scope the mail permissions to the one mailbox.** As granted they are
+tenant-wide: `Mail.Send` lets the app send as anybody, and `Mail.ReadWrite`
+lets it read and rewrite every mailbox in the tenant — for an appliance that
+only ever writes one draft in one mailbox, that is a lot of authority sitting
+on a client secret in a container. Exchange Online has one lever that closes
+it, and it takes five minutes:
+
+```powershell
+Connect-ExchangeOnline
+New-ApplicationAccessPolicy -AppId <application (client) id> `
+  -PolicyScopeGroupId scanner@example.com `
+  -AccessRight RestrictAccess `
+  -Description "scan2graph may only use the scanner mailbox"
+Test-ApplicationAccessPolicy -AppId <application (client) id> `
+  -Identity someone.else@example.com
+```
+
+Use the address in `S2G_GRAPH_SENDER` as the scope, and a mail-enabled
+security group instead if you ever need more than one. The policy can take
+up to an hour to take effect; `Test-ApplicationAccessPolicy` is how you know
+it did — it must answer `Denied` for a mailbox that is not the scanner's and
+`Granted` for the one that is.
 
 ## Azure Document Intelligence
 
@@ -257,6 +291,13 @@ real environment variables.
 A message's MIME structure has its own, non-configurable ceiling (at most 100
 parts, 10 levels of nesting, 16 PDF attachments); a message over any of these
 is rejected with SMTP `552`, the same code a too-large message gets.
+
+What can be *emailed* is a second ceiling, not this one: with
+`Mail.ReadWrite` granted, `S2G_MAX_MESSAGE_BYTES` is the limit scan2graph
+imposes, and the mailbox's own — 35 MB unless the tenant changed it — is the
+one behind it; without the permission, one message carries about 2.2 MB. See
+the app registration section above for what it buys and how scan2graph
+reports which of the two you are on.
 
 ## Run modes and the setup wizard
 
@@ -419,9 +460,11 @@ systemd-resolved means a unix socket the unit is not allowed to open.
   re-checks, server-side, that the signed-in user was an envelope recipient
   of that scan. Unguessable IDs in the URLs are a defence-in-depth measure,
   never the authorization mechanism.
-* The app registration's `Mail.Send` application permission lets scan2graph
-  send as any mailbox in the tenant by default; an Exchange Online
-  application access policy scoping it to `S2G_GRAPH_SENDER` closes that gap.
+* The app registration's `Mail.Send` application permission — and
+  `Mail.ReadWrite`, where large scans are wanted — reach every mailbox in the
+  tenant by default; an Exchange Online application access policy scoping the
+  app to `S2G_GRAPH_SENDER` closes that gap, and the recipe for it is in the
+  app registration section above.
 * HTTPS, HSTS and the public hostname are the reverse proxy's job.
 
 ## Data retention and failure semantics
@@ -454,9 +497,10 @@ or a token. Two failure modes are worth calling out specifically:
   TTL rather than being lost outright; the notice email (if any) links to it.
   scan2graph never silently substitutes the original for a searchable PDF it
   failed to produce — the failed status and reason say so plainly.
-* A scan too large for Graph to send is not treated as a failure: the
-  recipients get a notice instead, with a download link when the profile has
-  `web`, or advice to rescan at a lower resolution when it does not.
+* A scan too large for Graph to send — see "Lifetimes & limits" above for
+  what that ceiling is — is not treated as a failure: the recipients get a
+  notice instead, with a download link when the profile has `web`, or advice
+  to rescan at a lower resolution when it does not.
 
 ## Non-goals
 

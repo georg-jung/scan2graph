@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -29,16 +32,46 @@ type attachment struct {
 	Base64   string `json:"base64"`
 }
 
-func (f *fakes) sendMail(w http.ResponseWriter, r *http.Request) {
+// graphAttachmentFloorBytes is Graph's 3 MB minimum for an upload session.
+// Under it a session is refused and the attachment has to go as a single
+// POST on the attachments navigation property; at or above it, only a
+// session will do. A fake that took either one for any size would let the
+// appliance pick the wrong call and still look correct.
+const graphAttachmentFloorBytes = 3 * 1024 * 1024
+
+// graphRequestMaxBytes is Graph's ceiling on one request body, which bounds
+// both a chunk PUT and a direct attachment POST.
+const graphRequestMaxBytes = 4 * 1024 * 1024
+
+// upload is one open attachment upload session: which draft it belongs to,
+// the attachment's name, and the bytes assembled so far. data is allocated at
+// its declared size, so a chunk that does not fit the attachment the session
+// was opened for is a failure rather than a silent resize.
+type upload struct {
+	draft *graphMessage
+	name  string
+	data  []byte
+	got   int64 // what has arrived, and the offset the next chunk must start at
+}
+
+// mailbox is the check every call on the sender's mailbox shares. The mailbox
+// in the path is the one production URL built from operator configuration
+// (S2G_GRAPH_SENDER). Real Graph refuses a mailbox the application may not
+// write; a fake that ignored it would let the appliance address the wrong one
+// and still look correct.
+func mailbox(w http.ResponseWriter, r *http.Request) bool {
 	if !authorized(w, r, graphScope) {
-		return
+		return false
 	}
-	// The mailbox in the path is the one production URL built from operator
-	// configuration (S2G_GRAPH_SENDER). Real Graph refuses a mailbox the
-	// application may not send as; a fake that ignored it would let the
-	// appliance address the wrong one and still look correct.
 	if sender := r.PathValue("sender"); sender != graphSender {
 		writeAPIError(w, http.StatusForbidden, "not allowed to send as "+sender)
+		return false
+	}
+	return true
+}
+
+func (f *fakes) sendMail(w http.ResponseWriter, r *http.Request) {
+	if !mailbox(w, r) {
 		return
 	}
 	rec := parseMessage(r.Body)
@@ -130,4 +163,199 @@ func addPart(rec *graphMessage, p *multipart.Part) error {
 		Base64:   base64.StdEncoding.EncodeToString(data),
 	})
 	return nil
+}
+
+// createDraft is the first of the four calls a scan too large for sendMail
+// makes: the message the MIME path would have composed, as JSON and without
+// its attachments, which arrive later through upload sessions of their own.
+func (f *fakes) createDraft(w http.ResponseWriter, r *http.Request) {
+	if !mailbox(w, r) {
+		return
+	}
+	var body struct {
+		Subject string `json:"subject"`
+		Body    struct {
+			Content string `json:"content"`
+		} `json:"body"`
+		ToRecipients []struct {
+			EmailAddress struct {
+				Address string `json:"address"`
+			} `json:"emailAddress"`
+		} `json:"toRecipients"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "the draft is not JSON: "+err.Error())
+		return
+	}
+	msg := &graphMessage{
+		Sender:      graphSender,
+		Subject:     body.Subject,
+		Body:        body.Body.Content,
+		To:          []string{},
+		Attachments: []attachment{},
+	}
+	for _, t := range body.ToRecipients {
+		msg.To = append(msg.To, t.EmailAddress.Address)
+	}
+	id := rand.Text()
+	f.mu.Lock()
+	f.drafts[id] = msg
+	f.mu.Unlock()
+	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
+}
+
+// createUploadSession opens a session for one attachment and answers with the
+// URL its chunks go to - on this host but off the /graph prefix, the way real
+// Graph hands out a pre-authorized URL somewhere else entirely.
+func (f *fakes) createUploadSession(w http.ResponseWriter, r *http.Request) {
+	if !mailbox(w, r) {
+		return
+	}
+	var body struct {
+		AttachmentItem struct {
+			Name string `json:"name"`
+			Size int64  `json:"size"`
+		} `json:"AttachmentItem"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.AttachmentItem.Size <= 0 {
+		writeAPIError(w, http.StatusBadRequest, "an upload session needs an AttachmentItem with a size")
+		return
+	}
+	if body.AttachmentItem.Size < graphAttachmentFloorBytes {
+		writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("ErrorAttachmentSizeShouldNotBeLessThanMinimumSize: %d bytes is under the 3 MB minimum for an upload session; POST it to the attachments navigation property instead", body.AttachmentItem.Size))
+		return
+	}
+	id := rand.Text()
+	f.mu.Lock()
+	draft, known := f.drafts[r.PathValue("id")]
+	if known {
+		f.uploads[id] = &upload{draft: draft, name: body.AttachmentItem.Name, data: make([]byte, body.AttachmentItem.Size)}
+	}
+	f.mu.Unlock()
+	if !known {
+		writeAPIError(w, http.StatusNotFound, "no such draft message")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"uploadUrl": "http://" + r.Host + "/upload/" + id})
+}
+
+// addAttachment is how an attachment under the floor arrives: one POST
+// carrying the bytes, recorded on the draft in the shape a completed upload
+// session reports, so the suite asserts the same way whichever call carried
+// it.
+func (f *fakes) addAttachment(w http.ResponseWriter, r *http.Request) {
+	if !mailbox(w, r) {
+		return
+	}
+	var body struct {
+		Type         string `json:"@odata.type"`
+		Name         string `json:"name"`
+		ContentBytes []byte `json:"contentBytes"` // decoded from base64 as it is read
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Type != "#microsoft.graph.fileAttachment" || body.Name == "" || len(body.ContentBytes) == 0 {
+		writeAPIError(w, http.StatusBadRequest, "an attachment needs @odata.type #microsoft.graph.fileAttachment, a name and base64 contentBytes")
+		return
+	}
+	if len(body.ContentBytes) >= graphAttachmentFloorBytes {
+		writeAPIError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("%d bytes is at or over the 3 MB ceiling for a single attachment POST; use an upload session", len(body.ContentBytes)))
+		return
+	}
+	f.mu.Lock()
+	draft, known := f.drafts[r.PathValue("id")]
+	if known {
+		draft.Attachments = append(draft.Attachments, attachment{
+			Filename: body.Name,
+			Base64:   base64.StdEncoding.EncodeToString(body.ContentBytes),
+		})
+	}
+	f.mu.Unlock()
+	if !known {
+		writeAPIError(w, http.StatusNotFound, "no such draft message")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"id": rand.Text()})
+}
+
+// uploadChunk places one chunk at the offset its Content-Range names, and
+// refuses one that does not continue what has already arrived. Tolerating a
+// wrong offset would let the fake assemble the right scan out of the wrong
+// requests, which is a green test proving nothing. Every chunk but the last
+// is answered 200 and the last one 201, as Graph does.
+func (f *fakes) uploadChunk(w http.ResponseWriter, r *http.Request) {
+	// No bearer token here, ever: an uploadUrl is pre-authorized and points at
+	// a host Graph picks, so an appliance that sent its Graph token would hand
+	// a credential for every mailbox in the tenant to somebody it never chose.
+	// Refusing is how that regression gets caught.
+	if r.Header.Get("Authorization") != "" {
+		writeAPIError(w, http.StatusForbidden, "an upload session is pre-authorized; do not send a bearer token")
+		return
+	}
+	chunk, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "could not read the chunk")
+		return
+	}
+	// Graph caps a request at 4 MB, so a client that grew its chunk size past
+	// that would be refused there and must be refused here: a fake that takes
+	// what the service will not is how the 3 MB attachment floor got missed.
+	if len(chunk) >= graphRequestMaxBytes {
+		writeAPIError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("chunk of %d bytes is at or over Graph's %d byte request ceiling", len(chunk), graphRequestMaxBytes))
+		return
+	}
+	var first, last, total int64
+	if _, err := fmt.Sscanf(r.Header.Get("Content-Range"), "bytes %d-%d/%d", &first, &last, &total); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "Content-Range must read bytes first-last/total")
+		return
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	up, known := f.uploads[r.PathValue("id")]
+	if !known {
+		writeAPIError(w, http.StatusNotFound, "no such upload session")
+		return
+	}
+	// last+1 against the body's length, not just against up.got: advancing
+	// on the header alone would let a client that under-sends a chunk look
+	// correct here and leave a hole in the reassembly for the byte
+	// comparison downstream to find, which is a worse place to find it.
+	if first != up.got || last+1 != first+int64(len(chunk)) || last+1 > total {
+		writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("chunk %d-%d of %d does not continue the %d bytes already uploaded, or does not match its %d byte body", first, last, total, up.got, len(chunk)))
+		return
+	}
+	copy(up.data[first:], chunk)
+	up.got = first + int64(len(chunk))
+	if up.got < total {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	// Complete: the attachment joins the draft, in the shape /inspect/graph
+	// reports for a message that went out through sendMail, so the suite
+	// asserts the same way whichever path carried the scan.
+	up.draft.Attachments = append(up.draft.Attachments, attachment{
+		Filename: up.name,
+		Base64:   base64.StdEncoding.EncodeToString(up.data),
+	})
+	delete(f.uploads, r.PathValue("id"))
+	w.WriteHeader(http.StatusCreated)
+}
+
+// sendDraft sends the draft, which is the moment it becomes a message the
+// suite can see: everything before this is a mailbox no recipient hears about.
+func (f *fakes) sendDraft(w http.ResponseWriter, r *http.Request) {
+	if !mailbox(w, r) {
+		return
+	}
+	f.mu.Lock()
+	msg, known := f.drafts[r.PathValue("id")]
+	if known {
+		delete(f.drafts, r.PathValue("id"))
+		f.messages = append(f.messages, *msg)
+	}
+	f.mu.Unlock()
+	if !known {
+		writeAPIError(w, http.StatusNotFound, "no such draft message")
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
 }

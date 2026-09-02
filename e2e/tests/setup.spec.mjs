@@ -10,13 +10,12 @@
 // Playwright's default, and a fresh cookie jar - would be locked out of the
 // wizard this suite itself claimed.
 
-import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { createConnection } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 
+import { serving as pollSmtp, startAppliance } from '../lib/appliance.mjs';
 import { FIXTURE_SECRET, resetFakes } from '../lib/fakes.mjs';
 import { signIn } from '../lib/sign-in.mjs';
 import { makePdf, sendScan } from '../lib/smtp.mjs';
@@ -117,7 +116,11 @@ test('the appliance runs on the file the wizard writes', async () => {
   await expect(page.getByRole('heading', { name: 'Saved' })).toBeVisible();
   await expect(page.locator('code')).toHaveText(CONFIG);
 
-  appliance = startAppliance();
+  appliance = startAppliance({
+    args: ['serve', '--config', CONFIG],
+    env: { PATH: process.env.PATH, SSL_CERT_FILE: CA },
+    smtpPort: SMTP_PORT,
+  });
   await serving();
 
   const subject = `e2e setup ${randomUUID().slice(0, 8)}`;
@@ -173,42 +176,13 @@ async function fillForm(entraSecret) {
   for (const [name, value] of Object.entries(boxes)) await page.locator(`#${name}`).fill(value);
 }
 
-// startAppliance runs the real binary on the file the wizard just wrote, with
-// nothing in its environment but the fakes' certificate: a setting the file is
-// missing fails this test rather than being quietly made up for by the
-// harness. Its stderr is kept because "it would not start on that file" is
-// precisely what this test is here to catch, and the reason is in there.
-function startAppliance() {
-  const child = spawn(path.join(e2e, '.bin', 'scan2graph'), ['serve', '--config', CONFIG], {
-    env: { PATH: process.env.PATH, SSL_CERT_FILE: CA },
-    stdio: ['ignore', 'ignore', 'pipe'],
-  });
-  const started = { child, log: '', exited: false };
-  child.stderr.setEncoding('utf8');
-  child.stderr.on('data', (chunk) => {
-    started.log += chunk;
-  });
-  child.once('exit', (code) => {
-    started.exited = true;
-    started.log += `\nthe appliance exited with code ${code}`;
-  });
-  return started;
-}
-
 // serving waits for both listeners: /healthz says the process came up and got
-// through OIDC discovery, but the scan goes to the SMTP port, which is bound
-// on a goroutine of its own.
+// through OIDC discovery, and the shared socket poll confirms the SMTP port,
+// which is bound on a goroutine of its own.
 async function serving() {
   await expect(async () => {
     expect(appliance.exited, appliance.log).toBe(false);
     expect((await fetch(`${APPLIANCE}/healthz`)).ok).toBe(true);
-    await new Promise((resolve, reject) => {
-      const socket = createConnection({ host: '127.0.0.1', port: SMTP_PORT });
-      socket.once('connect', () => {
-        socket.end();
-        resolve();
-      });
-      socket.once('error', reject);
-    });
   }).toPass({ intervals: [50], timeout: 30_000 });
+  await pollSmtp(appliance);
 }
