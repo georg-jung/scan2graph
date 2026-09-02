@@ -633,12 +633,52 @@ type setupView struct {
 
 type setupGroup struct {
 	Name         string
+	Intro        string // one sentence saying what this card is for
 	Fields, Rare []setupInput
+	// Steps is the app-registration walkthrough, on the Identity card alone.
+	Steps []setupStep
 	// OpenRare unfolds the disclosure because something inside it was
 	// rejected. A complaint is only ever rendered under the box that caused
 	// it, so a folded-away one is a dead end: the operator presses Save, the
 	// page comes back looking identical, and nothing on it says why.
 	OpenRare bool
+}
+
+// setupStep is one step of the Identity card's walkthrough: what to do in
+// the portal, and the value this page worked out for it, if any.
+type setupStep struct{ Text, Code string }
+
+// entraSteps is README's "Entra ID app registration" section cut down to the
+// steps this configuration actually needs - the one thing the README cannot
+// do, because it does not know what the operator has typed. The redirect URI
+// is why it exists at all: it is the step people get wrong, and the wizard is
+// the only place that already knows the answer.
+//
+// Which makes being wrong here worse than saying nothing: a URI the appliance
+// will not actually register is one the operator pastes into Entra and then
+// meets again as AADSTS50011, naming neither this page nor the box that
+// caused it. So the answer comes from the loader's own resolver over the
+// loader's own precedence rather than from string surgery on the box: the
+// environment sits above the file and the S2G_..._FILE spelling is followed,
+// exactly as a start would, and a value Load would refuse resolves to nothing
+// here rather than being printed with confidence. A plain GET never runs
+// Load, so nothing else on the page would have contradicted it.
+func (s *setupServer) entraSteps(values map[string]string) []setupStep {
+	getenv := config.Layer(values, s.Getenv)
+	steps := []setupStep{{Text: "New registration → a single-tenant app is enough. Its Overview page then shows the Directory (tenant) ID and the Application (client) ID for the two boxes below."}}
+	if base := config.ResolveRootBaseURL(getenv, "S2G_PUBLIC_BASE_URL"); base != "" {
+		steps = append(steps, setupStep{
+			Text: "Authentication → Add a platform → Web, not SPA: scan2graph holds a client secret and exchanges the code server-side. The redirect URI is exactly:",
+			Code: base + "/auth/callback",
+		})
+	} else {
+		steps = append(steps, setupStep{Text: "Nothing to add under Authentication yet: the redirect URI is worked out from the Public URL further down this page, so fill that in and come back here for it. An appliance that only mails scans out signs nobody in and needs none at all."})
+	}
+	steps = append(steps, setupStep{Text: "Certificates & secrets → New client secret. The portal shows its Value once, right after you create it; that is what goes in the Client secret box below."})
+	if config.Resolve(getenv, "S2G_GRAPH_SENDER") != "" {
+		steps = append(steps, setupStep{Text: "API permissions → Microsoft Graph → Application permissions → Mail.Send, then Grant admin consent, or nothing can be mailed out. Add Mail.ReadWrite beside it if a scan can be larger than 2.2 MB; the README explains why."})
+	}
+	return steps
 }
 
 // setupInput is one field ready to render. Value is empty for a secret, which
@@ -716,7 +756,11 @@ func (s *setupServer) view(values map[string]string, general []string, byField m
 			}
 		}
 		if len(v.Groups) == 0 || v.Groups[len(v.Groups)-1].Name != f.Group {
-			v.Groups = append(v.Groups, setupGroup{Name: f.Group})
+			g := setupGroup{Name: f.Group, Intro: groupIntro[f.Group]}
+			if f.Group == groupIdentity {
+				g.Steps = s.entraSteps(values)
+			}
+			v.Groups = append(v.Groups, g)
 		}
 		g := &v.Groups[len(v.Groups)-1]
 		if f.Rare {

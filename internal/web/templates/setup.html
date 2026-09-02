@@ -43,6 +43,18 @@ consent.</p>
 {{if .Fields}}
 <fieldset>
 <legend>{{.Name}}</legend>
+{{if .Intro}}<p class="intro muted">{{.Intro}}</p>{{end}}
+{{if .Steps}}
+<details class="guide">
+<summary>How do I get these?</summary>
+<p>In the Azure portal, open
+<a href="https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noreferrer">App registrations</a>, then:</p>
+<ol>{{range .Steps}}<li>{{.Text}}{{if .Code}}<code>{{.Code}}</code>{{end}}</li>{{end}}</ol>
+<p class="muted">The <a href="https://github.com/georg-jung/scan2graph#entra-id-app-registration" target="_blank" rel="noreferrer">README</a> has
+all of it in full, including how to scope the mail permission to the one
+mailbox it is meant for.</p>
+</details>
+{{end}}
 {{range .Fields}}{{template "field" .}}{{end}}
 {{if .Rare}}
 <details{{if .OpenRare}} open{{end}}>

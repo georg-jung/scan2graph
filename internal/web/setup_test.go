@@ -1368,6 +1368,96 @@ func TestSetupErrorsUseTheLabel(t *testing.T) {
 	}
 }
 
+// TestSetupGuideDerivesTheRedirectURI pins the one value on the page nobody
+// can look up anywhere: the redirect URI the app registration has to carry is
+// the public URL plus /auth/callback, exactly as web.go builds it, and a
+// trailing slash the operator typed must not become an empty path segment
+// Entra would then refuse to match. With no public URL nobody signs in at
+// all, so the page must not offer a URI to paste either.
+func TestSetupGuideDerivesTheRedirectURI(t *testing.T) {
+	for _, tc := range []struct {
+		name, base, env string
+		want            bool // the appliance signs people in, so a URI is due
+	}{
+		{name: "email only"},
+		{name: "public url", base: "https://scan2graph.example.com", want: true},
+		{name: "trailing slash", base: "https://scan2graph.example.com/", want: true},
+		// The loader lowercases the scheme, so a phone that capitalised the
+		// first letter must not be handed a URI Entra will never match.
+		{name: "shouted scheme", base: "HTTPS://scan2graph.example.com", want: true},
+		// A path is one of the values Load refuses outright. A plain GET does
+		// not run Load, so if the guide answered from the box alone this is
+		// where it would print a confident URI with nothing to contradict it.
+		{name: "a value Load refuses", base: "https://scan2graph.example.com/scans"},
+		// The documented compose deployment puts every setting in the
+		// process environment, where no box can show it.
+		{name: "from the environment", env: "https://scan2graph.example.com", want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// What the appliance itself would register, from the same loader
+			// a start goes through - so this pins the guide against the real
+			// thing rather than against a second opinion about URLs.
+			var want string
+			values := map[string]string{
+				"S2G_ENTRA_TENANT_ID":           "00000000-0000-0000-0000-000000000000",
+				"S2G_ENTRA_CLIENT_ID":           testClientID,
+				"S2G_ENTRA_CLIENT_SECRET":       testClientSecret,
+				"S2G_GRAPH_SENDER":              "scanner@example.com",
+				"S2G_ALLOWED_RECIPIENT_DOMAINS": "example.com",
+				"S2G_PUBLIC_BASE_URL":           tc.base,
+			}
+			getenv := func(k string) string {
+				if k == "S2G_PUBLIC_BASE_URL" && tc.env != "" {
+					return tc.env
+				}
+				return ""
+			}
+			if cfg, err := config.Load(config.Layer(values, getenv)); err == nil && cfg.PublicBaseURL != "" {
+				want = cfg.PublicBaseURL + "/auth/callback"
+			}
+			if (want != "") != tc.want {
+				t.Fatalf("the appliance would register %q, so this case does not test what it says", want)
+			}
+			h := newSetupHarness(t, SetupOptions{FileValues: values, Getenv: getenv})
+			_, body := h.get(h.claimed(), "/setup")
+			tc := struct{ want string }{want}
+			if tc.want == "" {
+				if strings.Contains(body, "/auth/callback") {
+					t.Errorf("the page offers a redirect URI with no public URL set:\n%s", body)
+				}
+				return
+			}
+			// Once, and as its own value to copy: a second occurrence would
+			// mean an example alongside it, and an example is the thing that
+			// gets pasted into the portal by mistake.
+			if got := strings.Count(body, "/auth/callback"); got != 1 {
+				t.Errorf("the page names %d redirect URIs, want exactly the derived one:\n%s", got, body)
+			}
+			if want := `<code>` + tc.want + `</code>`; !strings.Contains(body, want) {
+				t.Errorf("the page does not show %s:\n%s", want, body)
+			}
+		})
+	}
+}
+
+// TestSetupGuideMailStepFollowsTheSendingMailbox: a permission asked for on a
+// deployment that never sends is authority granted for nothing, and consent
+// is the step an operator has to go and ask somebody else for. The sending
+// mailbox is what says whether this appliance mails anything, so the Mail.Send
+// step follows it, as the README's own conditional step does.
+func TestSetupGuideMailStepFollowsTheSendingMailbox(t *testing.T) {
+	web := newSetupHarness(t, SetupOptions{})
+	if _, body := web.get(web.claimed(), "/setup"); strings.Contains(body, "Mail.Send") {
+		t.Errorf("the walkthrough asks for Mail.Send with no sending mailbox configured:\n%s", body)
+	}
+	mail := newSetupHarness(t, SetupOptions{FileValues: map[string]string{
+		"S2G_GRAPH_SENDER": "scanner@example.com",
+	}})
+	if _, body := mail.get(mail.claimed(), "/setup"); !strings.Contains(body, "Mail.Send") {
+		t.Errorf("the walkthrough leaves out Mail.Send although scans are mailed:\n%s", body)
+	}
+}
+
 // TestSetupConcurrentSavesAndReads is the race the wizard's mutable state
 // introduces: a successful save replaces the map every other request
 // goroutine renders the form from, while every one of them also reads the

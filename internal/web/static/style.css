@@ -152,6 +152,18 @@ legend { padding: 0 .4rem; font-weight: 600; }
 summary { cursor: pointer; color: var(--muted); font-size: .9rem; margin-bottom: .9rem; }
 details.group summary { font-weight: 600; color: inherit; font-size: 1rem; margin-bottom: 0; }
 details.group[open] summary { margin-bottom: .9rem; }
+/* One sentence per card, saying what filling it in gets the operator, and
+   the folded-away walkthrough for the one card whose values have to be
+   fetched from somewhere else. The redirect URI gets a line of its own: it
+   is the only value on the page that has to be copied character for
+   character into another website. */
+.intro { margin: 0 0 1.1rem; }
+.guide { margin-bottom: 1.25rem; font-size: .875rem; }
+.guide summary { margin-bottom: 0; }
+.guide[open] summary { margin-bottom: .6rem; }
+.guide p, .guide li { margin: .6rem 0; }
+.guide ol { margin: .6rem 0; padding-left: 1.4rem; }
+.guide code { display: block; margin-top: .35rem; padding: .3rem .55rem; background: var(--bg); border: 1px solid var(--line); border-radius: .4rem; }
 .field { margin-bottom: 1.1rem; }
 .field:last-child { margin-bottom: 0; }
 /* The S2G_* key rides along the label's row instead of the help line below,
