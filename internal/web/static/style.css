@@ -171,6 +171,26 @@ details.group[open] summary { margin-bottom: .9rem; }
   color: inherit;
 }
 .field textarea { resize: vertical; }
+/* The profile editor: one row per printer profile, under a heading per
+   column, so a row reads as the address and what a scan from it may do. The
+   three feature columns are only as wide as their headings; the address takes
+   whatever is left. */
+.profiles { display: grid; grid-template-columns: 1fr repeat(3, auto); gap: .4rem .6rem; align-items: center; justify-items: center; }
+.profiles > span { color: var(--muted); font-size: .8rem; }
+.profiles > input, .profiles > span:first-of-type { justify-self: stretch; }
+/* The heading says which column a checkbox is in, so it says it once. */
+.profiles .check span { display: none; }
+/* An address box beside three checkboxes is too narrow to read on a phone, so
+   the row stacks - and its column headings, now heading nothing, give way to
+   the boxes' own words, with a gap marking where one row ends. A block of its
+   own rather than the scan table's above, which the wizard's rules all come
+   after: an override has to be later in the file than what it overrides. */
+@media (max-width: 34rem) {
+  .profiles { grid-template-columns: 1fr; justify-items: start; }
+  .profiles > span { display: none; }
+  .profiles .check span { display: inline; }
+  .profiles label:nth-of-type(3n) { margin-bottom: .6rem; }
+}
 .field.bad input, .field.bad select, .field.bad textarea { border-color: var(--warn); }
 /* A checkbox is the one control whose label belongs beside it. */
 .check { display: flex; gap: .5rem; align-items: center; font-weight: 600; }

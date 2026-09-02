@@ -115,10 +115,12 @@ func (s *session) Mail(from string, _ *smtp.MailOptions) error {
 	return nil
 }
 
-// Rcpt canonicalizes and authorizes one recipient, deduplicating repeats.
-// MaxRecipients (set on the *smtp.Server) bounds how many are accepted.
+// Rcpt normalizes and authorizes one recipient, deduplicating repeats: the
+// job and the web UI match a signed-in user against these addresses, so both
+// sides have to have spelled them the same way. MaxRecipients (set on the
+// *smtp.Server) bounds how many are accepted.
 func (s *session) Rcpt(to string, _ *smtp.RcptOptions) error {
-	canon := s.cfg.Canonical(to)
+	canon := config.NormalizeAddress(to)
 	if canon == "" || !s.cfg.RecipientAllowed(canon) {
 		s.reject("rcpt", errRecipient)
 		return errRecipient

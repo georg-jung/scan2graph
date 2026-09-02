@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -275,41 +276,42 @@ func (l *loader) baseURLDefault(name, def string, schemes ...string) string {
 	return v
 }
 
-// decodeStringMap resolves name (defaulting to an empty object when unset)
-// and decodes it as a JSON object with string keys. It rejects duplicate
-// keys at any depth, unknown fields in the values and trailing data, so a
-// mangled or typo'd configuration value fails at startup instead of quietly
-// taking the last of two entries.
-func decodeStringMap[V any](l *loader, name string) (map[string]V, bool) {
-	raw, set := l.resolve(name)
-	if !set {
-		raw = "{}"
-	}
-
+// ParseProfiles decodes an S2G_PROFILES value: a JSON object of address to
+// Capabilities. Nothing at all is spelled "{}" and not "", so that a caller
+// has to say which it means: an S2G_PROFILES_FILE pointing at a file with
+// nothing in it resolves to the empty string, and reading that as "no
+// profiles" would be a mount that failed quietly turning "these addresses
+// may do exactly this" into "every sender may do whatever else is
+// configured". It rejects
+// duplicate keys at any depth, unknown fields in the values and trailing
+// data, so a mangled or typo'd value fails instead of quietly taking the
+// last of two entries or ignoring a misspelled capability.
+//
+// Exported because the setup wizard has to ask exactly this question before
+// it offers to edit such a value: a form built on a laxer reading would show
+// only the surviving entry and write the other one away on the next save.
+// Sharing the function rather than the answer is what keeps the two from
+// drifting apart.
+func ParseProfiles(raw string) (map[string]Capabilities, error) {
+	out := map[string]Capabilities{}
 	switch dup, err := duplicateJSONKey(strings.NewReader(raw)); {
 	case err != nil:
-		l.errorf("%s: invalid JSON: %v", name, err)
-		return nil, false
+		return nil, fmt.Errorf("invalid JSON: %v", err)
 	case dup != "":
-		l.errorf("%s: duplicate key %q", name, dup)
-		return nil, false
+		return nil, fmt.Errorf("duplicate key %q", dup)
 	}
-
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.DisallowUnknownFields()
-	var out map[string]V
 	if err := dec.Decode(&out); err != nil {
-		l.errorf("%s: invalid JSON: %v", name, err)
-		return nil, false
+		return nil, fmt.Errorf("invalid JSON: %v", err)
 	}
 	if dec.More() {
-		l.errorf("%s: trailing data after the JSON object", name)
-		return nil, false
+		return nil, errors.New("trailing data after the JSON object")
 	}
 	if out == nil {
-		out = make(map[string]V)
+		out = map[string]Capabilities{} // the literal "null"
 	}
-	return out, true
+	return out, nil
 }
 
 // duplicateJSONKey returns the first object key that occurs twice in the

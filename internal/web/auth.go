@@ -9,6 +9,8 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
+
+	"github.com/georg-jung/scan2graph/internal/config"
 )
 
 const (
@@ -123,15 +125,15 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	render(s.log, w, signedOutTmpl, page{Title: "Signed out", Brand: s.cfg.UITitle})
 }
 
-// identities are the canonical addresses the signed-in user is known by,
-// taken from the verified claims and put through the same canonicalization
-// (alias map included) that the SMTP side applied to the envelope recipients.
-// Anything that is not a plausible address drops out, which is why a user
-// whose claims match nothing simply sees an empty list.
+// identities are the addresses the signed-in user is known by, taken from the
+// verified claims and put through the same normalization the SMTP side
+// applied to the envelope recipients, so the two spell an address the same
+// way. Anything that is not a plausible address drops out, which is why a
+// user whose claims match nothing simply sees an empty list.
 func (s *Server) identities(claims ...string) []string {
 	out := make([]string, 0, len(claims))
 	for _, c := range claims {
-		id := s.cfg.Canonical(c)
+		id := config.NormalizeAddress(c)
 		if id != "" && !slices.Contains(out, id) {
 			out = append(out, id)
 		}
