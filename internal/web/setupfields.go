@@ -67,7 +67,7 @@ var setupFields = []setupField{
 		Placeholder: "example.com, example.org",
 	}, {
 		Name: "S2G_PUBLIC_BASE_URL", Label: "Public URL", Group: "Web UI",
-		Help:        "Where this appliance is reached through the reverse proxy that terminates TLS; setting it is what turns the web UI on, and it must address the root of a host of its own.",
+		Help:        "Where this appliance is reached through the reverse proxy that terminates TLS; setting it is what turns the web UI on. A host of its own, or a subpath under a shared one (https://nas.acme.office/scanner/) that the proxy forwards unchanged.",
 		Placeholder: "https://scan2graph.example.com",
 	}, {
 		Name: "S2G_UI_TITLE", Label: "Name shown in the UI", Group: "Web UI",

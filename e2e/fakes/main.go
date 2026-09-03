@@ -54,12 +54,15 @@ var appRoles = map[string][]string{
 }
 
 // redirectURIs is what this app registration has registered, and authorize
-// accepts nothing else: the appliance the harness configures, and the second
-// one that e2e/tests/setup.spec.mjs has the setup wizard write a
-// configuration file for and then starts on a port of its own.
+// accepts nothing else: the appliance the harness configures, the second one
+// that e2e/tests/setup.spec.mjs has the setup wizard write a configuration
+// file for and then starts on a port of its own, and the third that
+// e2e/tests/prefix.spec.mjs publishes under a subpath - whose callback
+// carries that subpath, which is the point of registering it here.
 var redirectURIs = []string{
 	"http://127.0.0.1:18080/auth/callback",
 	"http://127.0.0.1:18082/auth/callback",
+	"http://127.0.0.1:18083/scanner/auth/callback",
 }
 
 // fixtureSecret is the one credential this harness knows, supplied by the

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"html"
 	"io"
@@ -49,6 +50,9 @@ type setupHarness struct {
 	t    *testing.T
 	ts   *httptest.Server
 	path string
+	// prefix is the subpath this wizard mounted itself under, worked out the
+	// way NewSetup works it out: from the configuration it was seeded with.
+	prefix string
 }
 
 func newSetupHarness(t *testing.T, opts SetupOptions) *setupHarness {
@@ -58,7 +62,8 @@ func newSetupHarness(t *testing.T, opts SetupOptions) *setupHarness {
 	}
 	ts := httptest.NewServer(NewSetup(opts))
 	t.Cleanup(ts.Close)
-	return &setupHarness{t: t, ts: ts, path: opts.Path}
+	prefix := config.BasePath(config.ResolveBaseURL(config.Layer(opts.FileValues, opts.Getenv), "S2G_PUBLIC_BASE_URL"))
+	return &setupHarness{t: t, ts: ts, path: opts.Path, prefix: prefix}
 }
 
 // client is one browser: its own cookie jar, and no automatic redirects.
@@ -94,26 +99,36 @@ func (h *setupHarness) get(c *http.Client, path string) (*http.Response, string)
 
 func (h *setupHarness) post(c *http.Client, form url.Values) (*http.Response, string) {
 	h.t.Helper()
-	resp, err := c.PostForm(h.ts.URL+"/setup", form)
-	return h.do(resp, err, "POST /setup")
+	resp, err := c.PostForm(h.ts.URL+h.prefix+"/setup", form)
+	return h.do(resp, err, "POST "+h.prefix+"/setup")
 }
 
 // start presses "Start configuration", which is how any browser gets past the
 // claim page to the form - and closes the wizard behind it.
 func (h *setupHarness) start(c *http.Client) *http.Response {
 	h.t.Helper()
-	resp, err := c.PostForm(h.ts.URL+"/setup/start", nil)
-	got, _ := h.do(resp, err, "POST /setup/start")
+	resp, err := c.PostForm(h.ts.URL+h.prefix+"/setup/start", nil)
+	got, _ := h.do(resp, err, "POST "+h.prefix+"/setup/start")
 	return got
 }
 
 // claim is start for the browser that is meant to win: the 303 and the cookie
 // its jar keeps from here on.
-func (h *setupHarness) claim(c *http.Client) {
+// claim presses Start and returns the cookie that came back: the key to this
+// wizard, which every test past the claim page carries in its jar.
+func (h *setupHarness) claim(c *http.Client) *http.Cookie {
 	h.t.Helper()
-	if resp := h.start(c); resp.StatusCode != http.StatusSeeOther {
+	resp := h.start(c)
+	if resp.StatusCode != http.StatusSeeOther {
 		h.t.Fatalf("claiming the wizard: status %d, want 303", resp.StatusCode)
 	}
+	for _, ck := range resp.Cookies() {
+		if ck.Name == setupCookie {
+			return ck
+		}
+	}
+	h.t.Fatal("claiming the wizard handed back no cookie")
+	return nil
 }
 
 // claimed is the browser every test that reaches the form needs: an unclaimed
@@ -293,11 +308,15 @@ func TestSetupToken(t *testing.T) {
 	t.Run("without the token nothing is here", func(t *testing.T) {
 		h := newSetupHarness(t, SetupOptions{TokenHash: sum})
 		c := h.client()
-		for _, path := range []string{"/", "/setup", "/setup?t=" + setupToken + "x", "/static/style.css"} {
+		for _, path := range []string{"/setup", "/setup?t=" + setupToken + "x", "/static/style.css"} {
 			resp, _ := h.get(c, path)
 			if resp.StatusCode != http.StatusNotFound {
 				t.Errorf("GET %s: status %d, want 404", path, resp.StatusCode)
 			}
+		}
+		// The bare address still points the way, which is all it ever says.
+		if resp, _ := h.get(c, "/"); resp.StatusCode != http.StatusSeeOther {
+			t.Errorf("GET /: status %d, want 303", resp.StatusCode)
 		}
 		if resp, _ := h.post(c, validForm()); resp.StatusCode != http.StatusNotFound {
 			t.Errorf("POST /setup: status %d, want 404", resp.StatusCode)
@@ -858,10 +877,8 @@ func TestSetupClaim(t *testing.T) {
 		// there is no claim page and nothing mints a hash over the top of it.
 		h := newSetupHarness(t, SetupOptions{TokenHash: sha256Of(setupToken)})
 		stranger := h.client()
-		for _, path := range []string{"/", "/setup"} {
-			if resp, _ := h.get(stranger, path); resp.StatusCode != http.StatusNotFound {
-				t.Errorf("GET %s: status %d, want 404", path, resp.StatusCode)
-			}
+		if resp, _ := h.get(stranger, "/setup"); resp.StatusCode != http.StatusNotFound {
+			t.Errorf("GET /setup: status %d, want 404", resp.StatusCode)
 		}
 		if resp := h.start(stranger); resp.StatusCode != http.StatusNotFound {
 			t.Errorf("POST /setup/start: status %d, want 404", resp.StatusCode)
@@ -1386,10 +1403,15 @@ func TestSetupGuideDerivesTheRedirectURI(t *testing.T) {
 		// The loader lowercases the scheme, so a phone that capitalised the
 		// first letter must not be handed a URI Entra will never match.
 		{name: "shouted scheme", base: "HTTPS://scan2graph.example.com", want: true},
-		// A path is one of the values Load refuses outright. A plain GET does
-		// not run Load, so if the guide answered from the box alone this is
-		// where it would print a confident URI with nothing to contradict it.
-		{name: "a value Load refuses", base: "https://scan2graph.example.com/scans"},
+		// A subpath prefix is served by the appliance, so it belongs in the
+		// URI the operator registers - getting this wrong is an AADSTS50011
+		// at the first sign-in and nothing that points back here.
+		{name: "subpath prefix", base: "https://nas.acme.office/scanner/", want: true},
+		// A scheme nothing browses is one of the values Load refuses
+		// outright. A plain GET does not run Load, so if the guide answered
+		// from the box alone this is where it would print a confident URI
+		// with nothing to contradict it.
+		{name: "a value Load refuses", base: "ftp://scan2graph.example.com"},
 		// The documented compose deployment puts every setting in the
 		// process environment, where no box can show it.
 		{name: "from the environment", env: "https://scan2graph.example.com", want: true},
@@ -1420,7 +1442,7 @@ func TestSetupGuideDerivesTheRedirectURI(t *testing.T) {
 				t.Fatalf("the appliance would register %q, so this case does not test what it says", want)
 			}
 			h := newSetupHarness(t, SetupOptions{FileValues: values, Getenv: getenv})
-			_, body := h.get(h.claimed(), "/setup")
+			_, body := h.get(h.claimed(), h.prefix+"/setup")
 			if want == "" {
 				if strings.Contains(body, "/auth/callback") {
 					t.Errorf("the page offers a redirect URI with no public URL set:\n%s", body)
@@ -1792,5 +1814,104 @@ func TestSetupConcurrentClaimsHaveOneWinner(t *testing.T) {
 		if len(tokens) != 1 {
 			t.Fatalf("%d browsers were handed a setup cookie, want exactly 1", len(tokens))
 		}
+	}
+}
+
+// TestWizardFollowsThePrefix is the wizard where the appliance it configures
+// will be: on a NAS the package is installed behind a reverse proxy, and the
+// wizard is the first thing anybody meets through it - before there is any
+// configuration to derive a prefix from, which is why it comes from the
+// values the install seeded rather than from the request. Run twice, so the
+// unprefixed half is the proof that a plain deployment is what it always was.
+func TestWizardFollowsThePrefix(t *testing.T) {
+	for _, prefix := range []string{"", "/scanner"} {
+		t.Run("prefix "+prefix, func(t *testing.T) {
+			h := newSetupHarness(t, SetupOptions{FileValues: map[string]string{
+				"S2G_PUBLIC_BASE_URL": "https://nas.acme.office" + prefix + "/",
+			}})
+			if h.prefix != prefix {
+				t.Fatalf("the wizard mounted itself under %q, want %q", h.prefix, prefix)
+			}
+			c := h.client()
+
+			// The bare address is a human who can be sent along, whether they
+			// typed the host on the LAN or opened the proxy's own path.
+			for _, from := range []string{"/", prefix + "/"} {
+				resp, _ := h.get(c, from)
+				if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != prefix+"/setup" {
+					t.Errorf("GET %s: status %d location %q, want 303 to %s/setup",
+						from, resp.StatusCode, resp.Header.Get("Location"), prefix)
+				}
+			}
+			if prefix != "" {
+				// ServeMux's own redirect, for the path without its slash.
+				if resp, _ := h.get(c, prefix); resp.Header.Get("Location") != prefix+"/" {
+					t.Errorf("GET %s: location %q, want %s/", prefix, resp.Header.Get("Location"), prefix)
+				}
+				// And nothing of the wizard is left at the root, where the
+				// proxy forwards nothing.
+				if resp, _ := h.get(c, "/setup"); resp.StatusCode != http.StatusNotFound {
+					t.Errorf("GET /setup under a prefix: status %d, want 404", resp.StatusCode)
+				}
+			}
+
+			// The claim page, and then the form: both link to where they are.
+			_, body := h.get(c, prefix+"/setup")
+			for _, want := range []string{
+				`action="` + prefix + `/setup/start"`,
+				`href="` + prefix + `/static/style.css"`,
+			} {
+				if !strings.Contains(body, want) {
+					t.Errorf("the claim page does not contain %s:\n%s", want, body)
+				}
+			}
+			if resp, _ := h.get(c, prefix+"/static/style.css"); resp.StatusCode != http.StatusOK {
+				t.Errorf("stylesheet: status %d, want 200", resp.StatusCode)
+			}
+			// Claiming it hands over the key, which reaches the wizard and
+			// nothing else on the host: a NAS serves a dozen other paths.
+			claim := h.claim(c)
+			if want := cmp.Or(prefix, "/"); claim.Path != want {
+				t.Errorf("the setup cookie is scoped to %q, want %q", claim.Path, want)
+			}
+			_, body = h.get(c, prefix+"/setup")
+			if want := `action="` + prefix + `/setup"`; !strings.Contains(body, want) {
+				t.Errorf("the form does not post to %s:\n%s", want, body)
+			}
+		})
+	}
+}
+
+// TestWizardSurvivesAnUnservableBaseURL is the wizard's own reason for
+// refusing a base URL whose path is not a plain subpath: a value that would
+// panic ServeMux at registration would panic it here too, in the one tool the
+// operator has to take that value back out of the file.
+func TestWizardSurvivesAnUnservableBaseURL(t *testing.T) {
+	h := newSetupHarness(t, SetupOptions{FileValues: map[string]string{
+		"S2G_PUBLIC_BASE_URL": "https://nas.acme.office//scanner",
+	}})
+	if h.prefix != "" {
+		t.Fatalf("the wizard mounted itself under %q, want the root", h.prefix)
+	}
+	if resp, body := h.get(h.claimed(), "/setup"); resp.StatusCode != http.StatusOK ||
+		!strings.Contains(body, "S2G_PUBLIC_BASE_URL") {
+		t.Errorf("the form: status %d, body:\n%s", resp.StatusCode, body)
+	}
+}
+
+// TestWizardTokenRedirectFollowsThePrefix covers the other way in: the URL
+// the marker prints carries the one-shot token in the query, and the wizard
+// takes it out of the address bar again by redirecting - to itself, not to a
+// root that only serves a redirect back.
+func TestWizardTokenRedirectFollowsThePrefix(t *testing.T) {
+	const prefix = "/scanner"
+	h := newSetupHarness(t, SetupOptions{
+		FileValues: map[string]string{"S2G_PUBLIC_BASE_URL": "https://nas.acme.office" + prefix},
+		TokenHash:  sha256Of(setupToken),
+	})
+	resp, _ := h.get(h.client(), prefix+"/setup?t="+setupToken)
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != prefix+"/setup" {
+		t.Fatalf("the token URL: status %d location %q, want 303 to %s/setup",
+			resp.StatusCode, resp.Header.Get("Location"), prefix)
 	}
 }

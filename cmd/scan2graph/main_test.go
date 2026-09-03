@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/cookiejar"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
@@ -16,6 +18,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/georg-jung/scan2graph/internal/config"
 )
 
 // testClientSecret is as fake as it looks: the only credential this file
@@ -160,12 +164,20 @@ func TestSetupURL(t *testing.T) {
 		t.Errorf("setupURL = %q, want %q", got, want)
 	}
 
+	// A subpath prefix comes along: the wizard is mounted under it, so that
+	// is where the operator has to be sent - and getting this wrong on a NAS
+	// package means the one instruction a first boot gives is a 404.
+	env["S2G_PUBLIC_BASE_URL"] = "https://nas.acme.office/scanner/"
+	if got, want := setupURL(getenv, ":8080", ""), "https://nas.acme.office/scanner/setup"; got != want {
+		t.Errorf("setupURL = %q, want %q", got, want)
+	}
+
 	// But only a value the appliance would actually accept is a link. A
 	// misconfigured public base URL is exactly what someone runs setup to
 	// repair, and printing it back - as the only copy of the one-shot token -
 	// would send the operator somewhere nothing serves, while the wizard
 	// itself binds and looks healthy on localhost.
-	for _, bad := range []string{"/just/a/path", "https://scan2graph.example.com/scans", "ftp://scan2graph.example.com", "not a url"} {
+	for _, bad := range []string{"/just/a/path", "ftp://scan2graph.example.com", "not a url"} {
 		env["S2G_PUBLIC_BASE_URL"] = bad
 		if got, want := setupURL(getenv, ":8080", "tok123"), "http://localhost:8080/setup?t=tok123"; got != want {
 			t.Errorf("setupURL with S2G_PUBLIC_BASE_URL=%q = %q, want the localhost fallback %q", bad, got, want)
@@ -629,4 +641,71 @@ func TestSetupFollowsFileIndirection(t *testing.T) {
 	if out := p.output(); !strings.Contains(out, base+"/setup") {
 		t.Errorf("the wizard did not print the configured public base URL:\n%s", out)
 	}
+}
+
+// TestHealthEndpointsFollowThePrefix covers the two callers the health
+// endpoints have and the trap between them. The container runtime asks the
+// port directly at the root; an outside monitor asks the public URL, of which
+// the proxy forwards only the prefix - so both paths have to answer, both
+// unauthenticated. With no prefix the two are the same pattern, and
+// registering it twice panics a ServeMux instead of starting an appliance,
+// which is why the root case is here at all.
+func TestHealthEndpointsFollowThePrefix(t *testing.T) {
+	authority := fakeDiscovery(t)
+	for _, prefix := range []string{"", "/scanner"} {
+		t.Run("prefix "+prefix, func(t *testing.T) {
+			handler, err := newHTTPHandler(context.Background(), &config.Config{
+				PublicBaseURL: "https://nas.acme.office" + prefix,
+				PathPrefix:    prefix,
+				AuthorityURL:  authority,
+				ClientID:      "00000000-0000-0000-0000-000000000001",
+			}, nil)
+			if err != nil {
+				t.Fatalf("newHTTPHandler: %v", err)
+			}
+			ts := httptest.NewServer(handler)
+			defer ts.Close()
+
+			for _, path := range []string{"/healthz", "/readyz", prefix + "/healthz", prefix + "/readyz"} {
+				resp, err := ts.Client().Get(ts.URL + path)
+				if err != nil {
+					t.Fatalf("GET %s: %v", path, err)
+				}
+				body, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusOK || string(body) != "ok\n" {
+					t.Errorf("GET %s: status %d body %q, want 200 and ok", path, resp.StatusCode, body)
+				}
+			}
+
+			// And nowhere else: a health endpoint under a prefix this
+			// appliance does not have is the web UI's 404, not an answer.
+			if prefix == "" {
+				resp, err := ts.Client().Get(ts.URL + "/scanner/healthz")
+				if err != nil {
+					t.Fatalf("GET /scanner/healthz: %v", err)
+				}
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusNotFound {
+					t.Errorf("GET /scanner/healthz without a prefix: status %d, want 404", resp.StatusCode)
+				}
+			}
+		})
+	}
+}
+
+// fakeDiscovery is just enough OpenID Connect for the web UI to be built:
+// the discovery document go-oidc reads at startup, and nothing else. A real
+// sign-in is the web package's and the e2e suite's business.
+func fakeDiscovery(t *testing.T) string {
+	t.Helper()
+	mux := http.NewServeMux()
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	mux.HandleFunc("GET /.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"issuer":%[1]q,"authorization_endpoint":"%[1]s/authorize",`+
+			`"token_endpoint":"%[1]s/token","jwks_uri":"%[1]s/jwks"}`, ts.URL)
+	})
+	return ts.URL
 }

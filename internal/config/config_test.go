@@ -174,17 +174,54 @@ func TestLoadPublicBaseURLValidation(t *testing.T) {
 		env["S2G_PUBLIC_BASE_URL"] = "https://scan2graph.example.com/#frag"
 		wantLoadErr(t, env, "S2G_PUBLIC_BASE_URL", "fragment")
 	})
-	t.Run("path", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_PUBLIC_BASE_URL"] = "https://scan2graph.example.com/scans"
-		wantLoadErr(t, env, "S2G_PUBLIC_BASE_URL", "root of a host")
+	// A path is the subpath prefix the appliance serves itself under, and
+	// PathPrefix is where the rest of the appliance reads it rather than
+	// parsing the URL again. Trailing slashes all go: one left behind would
+	// make every link on the page start "//", which a browser reads as a host.
+	t.Run("path becomes the prefix", func(t *testing.T) {
+		for raw, want := range map[string]string{
+			"https://scan2graph.example.com":          "",
+			"https://scan2graph.example.com/":         "",
+			"https://scan2graph.example.com//":        "",
+			"https://nas.acme.office/scanner":         "/scanner",
+			"https://nas.acme.office/scanner/":        "/scanner",
+			"https://nas.acme.office/apps/scanner///": "/apps/scanner",
+		} {
+			env := clone(baseEnv())
+			env["S2G_PUBLIC_BASE_URL"] = raw
+			c := mustLoad(t, env)
+			if c.PathPrefix != want {
+				t.Errorf("PathPrefix for %q = %q, want %q", raw, c.PathPrefix, want)
+			}
+			if c.PublicBaseURL != strings.TrimRight(raw, "/") {
+				t.Errorf("PublicBaseURL for %q = %q, want the trailing slashes gone", raw, c.PublicBaseURL)
+			}
+		}
 	})
-	t.Run("trailing slash stripped", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_PUBLIC_BASE_URL"] = "https://scan2graph.example.com/"
-		c := mustLoad(t, env)
-		if c.PublicBaseURL != "https://scan2graph.example.com" {
-			t.Errorf("PublicBaseURL = %q, want no trailing slash", c.PublicBaseURL)
+	// A path that is not a plain subpath is refused rather than served. Each
+	// of these once reached a route pattern or a cookie Path, where the
+	// failure is a panic at the next start or a sign-in that can never
+	// complete - and the wizard that repairs it would have panicked too.
+	t.Run("only a plain subpath", func(t *testing.T) {
+		for _, raw := range []string{
+			"https://nas.acme.office//scanner",        // unclean: ServeMux panics on the pattern
+			"https://nas.acme.office/apps/../scanner", // likewise
+			"https://nas.acme.office/scanner/..",      // likewise
+			"https://nas.acme.office/sca{nner",        // a pattern ServeMux reads as a bad wildcard
+			"https://nas.acme.office/{x}",             // one it reads as a wildcard that matches anything
+			"https://nas.acme.office/\\evil.example",  // "//evil.example" to a browser's URL parser
+			"https://nas.acme.office/sc\u00e4nner",    // SetCookie drops the non-ASCII byte from a Path
+			"https://nas.acme.office/sca%2Fnner",      // the route would be /sca/nner, which %2F never matches
+		} {
+			env := clone(baseEnv())
+			env["S2G_PUBLIC_BASE_URL"] = raw
+			wantLoadErr(t, env, "S2G_PUBLIC_BASE_URL", "plain subpath")
+			// And the resolver the wizard mounts itself from says nothing
+			// rather than something unusable: it serves the root and stays
+			// available to fix the value that got here.
+			if got := ResolveBaseURL(fakeGetenv(env), "S2G_PUBLIC_BASE_URL"); got != "" {
+				t.Errorf("ResolveBaseURL for %q = %q, want it refused", raw, got)
+			}
 		}
 	})
 	t.Run("not required without web profile", func(t *testing.T) {
@@ -597,19 +634,34 @@ func TestLoadFileIndirection(t *testing.T) {
 		}
 	})
 
-	// ResolveRootBaseURL is the same lookup plus the rules Load applies to a
-	// public base URL, for the one caller that turns the value into a link
-	// the operator is told to open. The URL rules themselves are
-	// TestLoadPublicBaseURLValidation's and TestSetupURL's job; what is new
-	// here is that the file indirection still applies to a URL-shaped value.
-	t.Run("ResolveRootBaseURL follows the file indirection", func(t *testing.T) {
+	// ResolveBaseURL is the same lookup plus the rules Load applies to a
+	// public base URL, for the callers that turn the value into a link. The
+	// URL rules themselves are TestLoadPublicBaseURLValidation's and
+	// TestSetupURL's job; what is new here is that the file indirection still
+	// applies to a URL-shaped value.
+	// BasePath is exported and answers for values its callers resolved rather
+	// than loaded, so it strips what parseBaseURL would have stripped rather
+	// than trusting that it did: a prefix ending in "/" becomes a route
+	// pattern and a cookie Path, where the trailing slash is not cosmetic.
+	t.Run("BasePath strips trailing slashes", func(t *testing.T) {
+		for raw, want := range map[string]string{
+			"https://nas.acme.office/scanner//": "/scanner",
+			"https://nas.acme.office/":          "",
+			"https://scan2graph.example.com":    "",
+		} {
+			if got := BasePath(raw); got != want {
+				t.Errorf("BasePath(%q) = %q, want %q", raw, got, want)
+			}
+		}
+	})
+	t.Run("ResolveBaseURL follows the file indirection", func(t *testing.T) {
 		p := filepath.Join(t.TempDir(), "base-url")
-		if err := os.WriteFile(p, []byte("https://scan2graph.example.com/\n"), 0o600); err != nil {
+		if err := os.WriteFile(p, []byte("https://nas.acme.office/scanner/\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		env := map[string]string{"S2G_PUBLIC_BASE_URL_FILE": p}
-		if got := ResolveRootBaseURL(fakeGetenv(env), "S2G_PUBLIC_BASE_URL"); got != "https://scan2graph.example.com" {
-			t.Errorf("ResolveRootBaseURL = %q, want the file's URL without its trailing slash", got)
+		if got := ResolveBaseURL(fakeGetenv(env), "S2G_PUBLIC_BASE_URL"); got != "https://nas.acme.office/scanner" {
+			t.Errorf("ResolveBaseURL = %q, want the file's URL without its trailing slash", got)
 		}
 	})
 }

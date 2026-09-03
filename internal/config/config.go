@@ -43,10 +43,15 @@ type Limits struct {
 type Config struct {
 	HTTPAddr, SMTPAddr string
 	PublicBaseURL      string // normalized: no trailing slash; "" if unset
-	TempDir            string
-	LogLevel           slog.Level
-	LogFormat          string
-	UITitle            string // what the web UI calls itself: page titles and header
+	// PathPrefix is PublicBaseURL's path, e.g. "/scanner" when the appliance
+	// shares a host with other applications, and "" when it has a host of its
+	// own. The appliance both routes and emits it, so the reverse proxy must
+	// forward the path unchanged rather than stripping the prefix.
+	PathPrefix string
+	TempDir    string
+	LogLevel   slog.Level
+	LogFormat  string
+	UITitle    string // what the web UI calls itself: page titles and header
 
 	// SMTPUsername/SMTPPassword are the SMTP AUTH PLAIN/LOGIN credentials
 	// the scanner must present. SMTPPassword is never logged. When
@@ -129,8 +134,9 @@ func Load(getenv func(string) string) (*Config, error) {
 	c.DIScope = l.stringDefault("S2G_DI_SCOPE", "https://cognitiveservices.azure.com/.default")
 
 	c.AllowedRecipientDomains = l.domains(anyEmail, `at least one sender profile has "email" enabled`)
-	c.PublicBaseURL = l.rootBaseURL("S2G_PUBLIC_BASE_URL", anyWeb,
-		`at least one sender profile has "web" enabled`, "http", "https")
+	c.PublicBaseURL = l.publicBaseURL("S2G_PUBLIC_BASE_URL", anyWeb,
+		`at least one sender profile has "web" enabled`)
+	c.PathPrefix = BasePath(c.PublicBaseURL)
 	c.GraphSender = l.graphSender(anyEmail, `at least one sender profile has "email" enabled`)
 
 	if len(c.Profiles) == 0 {

@@ -5,7 +5,7 @@
 alone: from then on nothing else on the network can open it, see what you type
 or save over it. Restarting scan2graph opens it again, which is the way back if
 you lose this window.</p>
-<form method="post" action="/setup/start">
+<form method="post" action="{{.Base}}setup/start">
 <div class="actions"><button type="submit" class="primary">Start configuration</button></div>
 </form>
 {{else if .Saved}}
@@ -41,7 +41,7 @@ tenant; it cannot prove that the Graph permissions were granted admin
 consent.</p>
 </div>
 {{end}}
-<form method="post" action="/setup">
+<form method="post" action="{{.Base}}setup">
 <input type="hidden" name="form" value="{{.Form}}">
 {{range .Groups}}
 {{if .Fields}}

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"net/http"
@@ -31,7 +32,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	setCookie(w, &http.Cookie{
 		Name:   authCookie,
 		Value:  state + "|" + nonce + "|" + verifier,
-		Path:   authPath,
+		Path:   s.cfg.PathPrefix + authPath,
 		MaxAge: authCookieMaxAge,
 	})
 	url := s.oauth.AuthCodeURL(state, oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier))
@@ -43,7 +44,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 // whose nonce must match the one this browser started with.
 func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	c, err := r.Cookie(authCookie)
-	clearCookie(w, authCookie, authPath) // one cookie, one attempt
+	clearCookie(w, authCookie, s.cfg.PathPrefix+authPath) // one cookie, one attempt
 	if err != nil {
 		s.signInFailed(w, "no sign-in is in progress", nil)
 		return
@@ -104,15 +105,17 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	identities := s.identities(claims.Email, claims.PreferredUsername)
 	setCookie(w, &http.Cookie{
-		Name:   sessionCookie,
-		Value:  s.sessions.create(&session{identities: identities, name: claims.Name}),
-		Path:   "/",
+		Name:  sessionCookie,
+		Value: s.sessions.create(&session{identities: identities, name: claims.Name}),
+		// As far as this appliance reaches and no further: on a host shared
+		// with other applications, "/" would be sent to every one of them.
+		Path:   cmp.Or(s.cfg.PathPrefix, "/"),
 		MaxAge: int(sessionTTL.Seconds()),
 	})
 	// Counts only: the addresses themselves stay out of the log, as they do
 	// on the SMTP side.
 	s.log.Info("web: user signed in", "identities", len(identities))
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, s.cfg.PathPrefix+"/", http.StatusSeeOther)
 }
 
 // handleLogout drops the session server-side as well as clearing the cookie,
@@ -121,8 +124,8 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		s.sessions.drop(c.Value)
 	}
-	clearCookie(w, sessionCookie, "/")
-	render(s.log, w, signedOutTmpl, page{Title: "Signed out", Brand: s.cfg.UITitle})
+	clearCookie(w, sessionCookie, cmp.Or(s.cfg.PathPrefix, "/")) // the path it was set with, or the browser keeps it
+	render(s.log, w, signedOutTmpl, page{Title: "Signed out", Brand: s.cfg.UITitle, Base: s.cfg.PathPrefix + "/"})
 }
 
 // identities are the addresses the signed-in user is known by, taken from the

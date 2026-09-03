@@ -115,14 +115,19 @@ func (s *Server) routes() http.Handler {
 	if err != nil {
 		panic(err) // embedded at build time, cannot fail
 	}
+	// The appliance serves its own subpath prefix rather than having a proxy
+	// strip it: what it routes and what it emits are then the same strings,
+	// and with no prefix every pattern below is byte-identical to a root
+	// mount. A bare /scanner is ServeMux's own 301 to /scanner/.
+	p := s.cfg.PathPrefix
 	mux := http.NewServeMux()
-	mux.Handle("GET /{$}", s.guard(s.handleList))
-	mux.Handle("GET /scan/{jobID}", s.guard(s.handleDetail))
-	mux.Handle("GET /scan/{jobID}/{docID}", s.guard(s.handleDownload))
-	mux.HandleFunc("GET /auth/login", s.handleLogin)
-	mux.HandleFunc("GET /auth/callback", s.handleCallback)
-	mux.HandleFunc("POST /auth/logout", s.handleLogout)
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)))
+	mux.Handle("GET "+p+"/{$}", s.guard(s.handleList))
+	mux.Handle("GET "+p+"/scan/{jobID}", s.guard(s.handleDetail))
+	mux.Handle("GET "+p+"/scan/{jobID}/{docID}", s.guard(s.handleDownload))
+	mux.HandleFunc("GET "+p+"/auth/login", s.handleLogin)
+	mux.HandleFunc("GET "+p+"/auth/callback", s.handleCallback)
+	mux.HandleFunc("POST "+p+"/auth/logout", s.handleLogout)
+	mux.Handle("GET "+p+"/static/", http.StripPrefix(p+"/static/", http.FileServerFS(static)))
 	return mux
 }
 
@@ -146,7 +151,7 @@ func (s *Server) guard(h func(http.ResponseWriter, *http.Request, *session)) htt
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sess, ok := s.session(r)
 		if !ok {
-			http.Redirect(w, r, "/auth/login", http.StatusSeeOther)
+			http.Redirect(w, r, s.cfg.PathPrefix+"/auth/login", http.StatusSeeOther)
 			return
 		}
 		h(w, r, sess)
@@ -205,7 +210,7 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, sess *sess
 		v.Documents = append(v.Documents, docRow{
 			Name: d.DisplayName,
 			Size: humanBytes(d.Size),
-			URL:  "/scan/" + j.ID + "/" + d.ID,
+			URL:  s.cfg.PathPrefix + "/scan/" + j.ID + "/" + d.ID,
 		})
 	}
 	render(s.log, w, detailTmpl, v)
@@ -261,6 +266,11 @@ type page struct {
 	User     string
 	SignedIn bool
 	Refresh  bool // set while a scan on the page is still being worked on
+	// Base is what every link in the templates hangs off: the subpath prefix
+	// the appliance is published under, with its trailing slash, so it is
+	// plain "/" on a host of its own and the pages are then exactly what they
+	// were before prefixes existed.
+	Base string
 }
 
 type listView struct {
@@ -295,7 +305,7 @@ type docRow struct {
 
 // pageFor builds the layout's data for a signed-in page.
 func (s *Server) pageFor(title string, sess *session) page {
-	return page{Title: title, Brand: s.cfg.UITitle, User: sess.name, SignedIn: true}
+	return page{Title: title, Brand: s.cfg.UITitle, User: sess.name, SignedIn: true, Base: s.cfg.PathPrefix + "/"}
 }
 
 func (s *Server) row(j jobs.Job) scanRow {
