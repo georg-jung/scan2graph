@@ -1,10 +1,12 @@
 package web
 
 import (
+	"bytes"
 	"cmp"
 	"crypto/sha256"
 	"html"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/cookiejar"
@@ -166,6 +168,149 @@ func loads(t *testing.T, path string) map[string]string {
 		t.Fatalf("the written file does not load: %v", err)
 	}
 	return values
+}
+
+func TestSetupGenerateSMTPPasswordGate(t *testing.T) {
+	h := newSetupHarness(t, SetupOptions{})
+	outsider := h.client()
+	form := url.Values{"action": {"generate-smtp-password"}}
+	for _, claimed := range []bool{false, true} {
+		if claimed {
+			h.claimed()
+		}
+		resp, body := h.post(outsider, form)
+		if resp.StatusCode != http.StatusNotFound || strings.Contains(body, `id="generated-smtp-password"`) {
+			t.Fatalf("generation admitted non-holder (claimed=%t)", claimed)
+		}
+	}
+}
+
+func TestSetupGenerateSMTPPasswordRetained(t *testing.T) {
+	for _, action := range []string{"save", "download"} {
+		t.Run(action, func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			defer slog.SetDefault(previous)
+			stub := newMSStub(t)
+			form, file := testForm(stub)
+			file["S2G_SMTP_PASSWORD"] = testClientSecret
+			if action == "download" {
+				delete(file, "S2G_SMTP_PASSWORD")
+				file["S2G_SMTP_PASSWORD_FILE"] = "/missing/secret"
+			}
+			path := filepath.Join(t.TempDir(), setupFileName)
+			if action == "download" {
+				path = ""
+			}
+			h := newSetupHarness(t, SetupOptions{FileValues: file, Path: path})
+			c := h.claimed()
+			// Generation works before Entra is configured and preserves other input.
+			_, body := h.post(c, url.Values{"action": {"generate-smtp-password"}, "S2G_UI_TITLE": {"Office scanner"}})
+			match := regexp.MustCompile(`<code[^>]*>([A-Z2-7]+)</code>`).FindStringSubmatch(body)
+			if len(match) != 2 || len(match[1]) < 26 {
+				t.Fatal("generation did not reveal a random password before validation")
+			}
+			password := match[1]
+			if logs.Len() != 0 {
+				t.Fatal("generation unexpectedly logged output")
+			}
+			if strings.Count(body, password) != 1 || strings.Contains(body, testClientSecret) || !strings.Contains(body, "Office scanner") || strings.Contains(body, "Not usable yet") || strings.Contains(body, "App-only token") {
+				t.Fatal("generation leaked another secret, lost input, or validated/tested configuration")
+			}
+			if path != "" {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatal("generation wrote a configuration file")
+				}
+			}
+			_, fresh := h.get(c, "/setup")
+			if strings.Contains(fresh, password) || strings.Contains(fresh, testClientSecret) || strings.Contains(fresh, `id="generated-smtp-password"`) {
+				t.Fatal("fresh GET revealed a secret")
+			}
+			// An invalid save, then a failed connection test, both retain blank secrets.
+			_, body = h.post(c, url.Values{"action": {"save"}, "form": {h.formID(body)}})
+			if !strings.Contains(body, `class="error small"`) || strings.Contains(body, password) {
+				t.Fatal("invalid save did not report validation errors with secrets masked")
+			}
+			form.Set("form", h.formID(body))
+			stub.secret = "rotated-" + testClientSecret
+			_, body = h.post(c, form)
+			if !strings.Contains(body, `class="fail"`) || strings.Contains(body, password) || strings.Contains(body, testClientSecret) {
+				t.Fatal("connection failure did not render with secrets masked")
+			}
+			form.Set("form", h.formID(body))
+			form.Set("S2G_ENTRA_CLIENT_SECRET", "")
+			form.Set("action", action)
+			resp, body := h.post(c, form)
+			if action == "download" {
+				if resp.Header.Get("Content-Disposition") == "" {
+					t.Fatal("download did not return a file")
+				}
+				path = filepath.Join(t.TempDir(), setupFileName)
+				if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+					t.Fatal(err)
+				}
+			} else if !strings.Contains(body, "<h1>Saved</h1>") {
+				t.Fatal("save failed")
+			}
+			got := loads(t, path)
+			if got["S2G_SMTP_PASSWORD"] != password || got["S2G_SMTP_PASSWORD_FILE"] != "" || got["S2G_ENTRA_CLIENT_SECRET"] != testClientSecret {
+				t.Fatal("saved/downloaded credentials differ from pending form or retain _FILE")
+			}
+			_, body = h.get(c, "/setup")
+			if strings.Contains(body, password) || strings.Contains(body, testClientSecret) {
+				t.Fatal("later GET revealed a secret")
+			}
+			if strings.Contains(logs.String(), password) || strings.Contains(logs.String(), testClientSecret) {
+				t.Fatal("credential appeared in logs")
+			}
+		})
+	}
+}
+
+func TestSetupGenerateSMTPPasswordConflicts(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+	anonFile := filepath.Join(t.TempDir(), "anonymous")
+	if err := os.WriteFile(anonFile, []byte("true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name      string
+		env, file map[string]string
+		form      url.Values
+		want      string
+	}{
+		{name: "environment password", env: map[string]string{"S2G_SMTP_PASSWORD": testClientSecret}, want: "remove the override first"},
+		{name: "environment password file", env: map[string]string{"S2G_SMTP_PASSWORD_FILE": "/missing/secret"}, want: "remove the override first"},
+		{name: "environment both", env: map[string]string{"S2G_SMTP_PASSWORD": testClientSecret, "S2G_SMTP_PASSWORD_FILE": "/missing/secret"}, want: "remove the override first"},
+		{name: "form anonymous", form: url.Values{"S2G_SMTP_ALLOW_ANONYMOUS": {"true"}}, want: "turn off anonymous SMTP"},
+		{name: "environment anonymous", env: map[string]string{"S2G_SMTP_ALLOW_ANONYMOUS": "true"}, form: url.Values{"S2G_SMTP_ALLOW_ANONYMOUS": {"false"}}, want: "turn off anonymous SMTP"},
+		{name: "environment anonymous file", env: map[string]string{"S2G_SMTP_ALLOW_ANONYMOUS_FILE": anonFile}, want: "turn off anonymous SMTP"},
+		{name: "configuration anonymous file", file: map[string]string{"S2G_SMTP_ALLOW_ANONYMOUS_FILE": anonFile}, want: "turn off anonymous SMTP"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), setupFileName)
+			h := newSetupHarness(t, SetupOptions{Path: path, FileValues: tc.file, Getenv: func(k string) string { return tc.env[k] }})
+			form := tc.form
+			if form == nil {
+				form = url.Values{}
+			}
+			form.Set("action", "generate-smtp-password")
+			resp, body := h.post(h.claimed(), form)
+			if !strings.Contains(body, tc.want) || strings.Contains(body, `id="generated-smtp-password"`) || strings.Contains(body, testClientSecret) || strings.Contains(resp.Header.Get("Location"), testClientSecret) {
+				t.Fatal("generation did not reject the conflict with secrets masked")
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatal("rejected generation wrote a file")
+			}
+		})
+	}
+	if logs.Len() != 0 {
+		t.Fatal("rejected generation unexpectedly logged output")
+	}
 }
 
 // TestSetupFieldsCoverConfig is the whole defence against the field table and

@@ -91,7 +91,7 @@ var setupFields = []setupField{
 		Placeholder: "scanner",
 	}, {
 		Name: "S2G_SMTP_PASSWORD", Label: "SMTP password", Kind: fieldSecret, Group: "Scanner",
-		Help: "Password the printer signs in with; leave it unset and scan2graph makes up a new one on every start, which means reconfiguring the printer after every restart.",
+		Help: "Password the printer signs in with. Use Generate SMTP password below to create or replace it, then Save or Download to keep it across restarts. If left unset, a new one is made on every start.",
 	}, {
 		Name: "S2G_SMTP_ALLOW_ANONYMOUS", Label: "Accept scans without SMTP AUTH", Kind: fieldBool, Group: "Scanner",
 		Help: "For a printer that cannot authenticate at all: only on a trusted, isolated network segment, and not together with a username or password.",

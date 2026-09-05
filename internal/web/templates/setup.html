@@ -24,6 +24,13 @@ one is required unless you configure printer profiles in Advanced options.
 Text recognition is optional. With no profiles, every printer sender gets all
 the capabilities you configure. Leave other boxes empty to use their built-in
 defaults.</p>
+{{if .GeneratedSMTPPassword}}
+<div class="checks">
+<p>New SMTP password: <code id="generated-smtp-password">{{.GeneratedSMTPPassword}}</code></p>
+<p>Copy this password for the printer, then Save or Download the configuration file.
+Nothing has been saved yet. This password will not be shown again.</p>
+</div>
+{{end}}
 {{if .Errors}}
 <div class="problems">
 <p>Not usable yet:</p>
@@ -84,6 +91,7 @@ mailbox it is meant for.</p>
 {{if .Path}}<button type="submit" name="action" value="save" class="primary">Save the configuration file</button>{{end}}
 <button type="submit" name="action" value="test">Test the connection</button>
 <button type="submit" name="action" value="download">Download the file</button>
+<button type="submit" name="action" value="generate-smtp-password">Generate SMTP password</button>
 </div>
 {{if .Path}}<p class="dest muted small">Save writes <code>{{.Path}}</code>.</p>{{end}}
 </form>
