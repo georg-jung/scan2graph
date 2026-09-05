@@ -1,28 +1,18 @@
 # Example Compose file for scan2graph.
 #
-# Copy this next to a real .env (start from .env.example) and run:
+# Run this file, then open http://127.0.0.1:8080/setup (or your reverse proxy):
 #   docker compose -f docker-compose.example.yml up -d
 #
-# scan2graph speaks plain HTTP and plain SMTP; see README.md for the reverse
-# proxy that terminates TLS in front of it and for the full environment
-# variable reference.
+# The first-boot wizard saves /config/scan2graph.env. See README.md for the
+# reverse proxy and the advanced/manual environment variable reference.
 services:
   scan2graph:
     image: ghcr.io/georg-jung/scan2graph:latest
     restart: unless-stopped
-    env_file: .env
-
-    # Alternative to env_file: delete that line above, mount a KEY=value
-    # configuration file (start it from .env.example) and point scan2graph at
-    # it instead. Precedence is environment > file > built-in default per
-    # setting, so an env_file or environment: entry left in place does not
-    # merge with the file - it shadows that key outright. With read_only: true
-    # the wizard cannot write here at all, so Download is the button that
-    # works; see "Deployment" in README.md.
-    # environment:
-    #   S2G_CONFIG_FILE: /etc/scan2graph/scan2graph.env
-    # volumes:
-    #   - ./scan2graph.env:/etc/scan2graph/scan2graph.env:ro
+    environment:
+      S2G_CONFIG_FILE: /config/scan2graph.env
+    volumes:
+      - scan2graph-config:/config
 
     ports:
       # HTTP is only for the reverse proxy running on this same host, so it
@@ -33,12 +23,15 @@ services:
       # more than one interface and you want to restrict it further.
       - "2525:2525"
 
-    # No database, no queue, no volume: nothing here needs to survive a restart.
+    # Configuration is the only persistent state; jobs remain ephemeral.
     read_only: true
     tmpfs:
       # The one directory scan2graph writes to (S2G_TEMP_DIR defaults to /tmp).
-      - /tmp
+      - /tmp:mode=1777
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
+
+volumes:
+  scan2graph-config:

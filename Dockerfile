@@ -7,10 +7,14 @@ ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath \
       -ldflags="-s -w -X main.version=${VERSION}" \
       -o /out/scan2graph ./cmd/scan2graph
+RUN mkdir /config && chown 65532:65532 /config
 
 FROM scratch
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/scan2graph /scan2graph
+# A named volume mounted here starts with this directory's ownership, so the
+# first-boot wizard can save its configuration despite the read-only root.
+COPY --from=build --chown=65532:65532 /config /config
 # Non-root, no shell, no package manager. Works with a read-only root filesystem
 # as long as a writable temporary directory (e.g. a tmpfs on /tmp) is provided.
 USER 65532:65532
