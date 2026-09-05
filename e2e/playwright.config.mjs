@@ -19,7 +19,7 @@ const tmp = path.join(e2e, '.tmp');
 const wizardDir = path.join(tmp, 'wizard');
 const wizardConfig = path.join(wizardDir, 'scan2graph.env');
 const wizardSeed = [
-  'S2G_HTTP_ADDR=127.0.0.1:18081',
+  'S2G_HTTP_ADDR=127.0.0.1:18082',
   `S2G_TEMP_DIR=${wizardDir}`,
   'S2G_ENTRA_AUTHORITY_URL=http://127.0.0.1:19000/idp',
   'S2G_ENTRA_TOKEN_URL=http://127.0.0.1:19000/idp/token',
@@ -94,10 +94,10 @@ export default defineConfig({
       },
     },
     {
-      // The same binary as above in a different mode: the servers are started
-      // one after another, so building it twice is a cache hit and not a race.
-      command: `cd .. && go build -o e2e/.bin/scan2graph ./cmd/scan2graph && mkdir -p "${wizardDir}" && printf '%s\\n' ${wizardSeed.map((line) => `'${line}'`).join(' ')} > "${wizardConfig}" && exec e2e/.bin/scan2graph setup --config "${wizardConfig}"`,
-      url: 'http://127.0.0.1:18081/healthz',
+      // Default mode starts the wizard, then the same process and HTTP port
+      // serve the appliance after Save and start.
+      command: `cd .. && go build -o e2e/.bin/scan2graph ./cmd/scan2graph && mkdir -p "${wizardDir}" && printf '%s\\n' ${wizardSeed.map((line) => `'${line}'`).join(' ')} > "${wizardConfig}" && exec e2e/.bin/scan2graph --config "${wizardConfig}"`,
+      url: 'http://127.0.0.1:18082/healthz',
       reuseExistingServer: false,
       timeout: 120_000,
       // Everything else this appliance reads is in the file above; the

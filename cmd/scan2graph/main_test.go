@@ -60,7 +60,7 @@ func TestWizardValidatesSubmittedValue(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	go wizard(path, nil)
+	go wizard(path, nil, false)
 
 	base := "http://" + addr + "/setup"
 	var resp *http.Response
@@ -433,6 +433,127 @@ func TestDefaultModeDispatch(t *testing.T) {
 			t.Errorf("GET /setup with the token: status %d, want 303", resp.StatusCode)
 		}
 	})
+}
+
+// The existing subprocess harness exercises both doors into default setup,
+// config-source precedence, and the explicit setup utility's save-only mode.
+func TestSetupSaveHandover(t *testing.T) {
+	for _, mode := range []string{"default env", "default flag", "marker repair", "explicit setup", "startup failure"} {
+		t.Run(mode, func(t *testing.T) {
+			addr, smtpAddr := freePort(t), freePort(t)
+			base := "http://" + addr
+			path := filepath.Join(t.TempDir(), "scan2graph.env")
+			env := map[string]string{
+				"S2G_CONFIG_FILE": path, "S2G_HTTP_ADDR": addr,
+				"S2G_ENTRA_AUTHORITY_URL": fakeDiscovery(t),
+				"S2G_UI_TITLE":            "Environment title", "S2G_TEMP_DIR": t.TempDir(),
+			}
+			args, token := "", ""
+			switch mode {
+			case "default flag":
+				args = "--config " + path
+				env["S2G_CONFIG_FILE"] = filepath.Join(t.TempDir(), "not-the-config.env")
+			case "marker repair":
+				if err := os.WriteFile(path, []byte("broken configuration line\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				token, err = createMarker(markerPath(path))
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "explicit setup":
+				args = "setup"
+			case "startup failure":
+				env["S2G_ENTRA_AUTHORITY_URL"] = "http://127.0.0.1:1"
+			}
+			p := startMain(t, args, env)
+			p.waitListening(addr)
+			jar, _ := cookiejar.New(nil)
+			client := &http.Client{Jar: jar, Timeout: 5 * time.Second}
+			var resp *http.Response
+			var err error
+			if token != "" {
+				resp, err = client.Get(base + "/setup?t=" + token)
+			} else {
+				resp, err = client.PostForm(base+"/setup/start", nil)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			form := validForm()
+			form.Set("action", "save")
+			form.Set("S2G_PUBLIC_BASE_URL", base)
+			form.Set("S2G_HTTP_ADDR", "127.0.0.1:0") // environment must still win
+			form.Set("S2G_SMTP_ADDR", smtpAddr)
+			form.Set("S2G_SMTP_ALLOW_ANONYMOUS", "true")
+			form.Set("S2G_UI_TITLE", "File title")
+			resp, err = client.PostForm(base+"/setup", form)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil || resp.StatusCode != http.StatusOK {
+				t.Fatalf("save response: status %d, read error %v", resp.StatusCode, err)
+			}
+			values, err := config.ParseFile(path)
+			if err != nil || values["S2G_UI_TITLE"] != "File title" {
+				t.Fatalf("save did not replace the selected config: %v", err)
+			}
+			if mode == "explicit setup" {
+				if !strings.Contains(string(body), "Restart scan2graph to apply") || strings.Contains(string(body), "Starting scan2graph") {
+					t.Fatal("explicit setup offered handover")
+				}
+				resp, err := client.Get(base + "/setup")
+				if err != nil {
+					t.Fatal(err)
+				}
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					t.Fatal("explicit setup stopped serving its form after Save")
+				}
+				if conn, err := net.DialTimeout("tcp", smtpAddr, 100*time.Millisecond); err == nil {
+					conn.Close()
+					t.Fatal("explicit setup opened SMTP")
+				}
+				return
+			}
+			if !strings.Contains(string(body), "<h1>Starting scan2graph</h1>") {
+				t.Fatal("save did not finish rendering the starting page")
+			}
+			if mode == "startup failure" {
+				code, output := p.wait()
+				if code != 1 || strings.Count(output, "Setup wizard") != 1 || !strings.Contains(output, "fatal") {
+					t.Fatalf("startup failure did not exit normally: code %d, output %s", code, output)
+				}
+				return
+			}
+			p.waitListening(smtpAddr)
+			p.waitListening(addr)
+			for _, route := range []string{"/setup", "/setup/start"} {
+				resp, err := client.PostForm(base+route, form)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusNotFound {
+					t.Errorf("wizard route %s survived handover: %d", route, resp.StatusCode)
+				}
+			}
+			resp, err = client.Get(base + "/healthz")
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK || string(body) != "ok\n" || !strings.Contains(p.output(), `"ui_title":"Environment title"`) {
+				t.Fatal("same HTTP port is not serving the reloaded configuration with environment precedence")
+			}
+		})
+	}
 }
 
 // TestSubcommandAfterAFlagIsNotDropped pins that a flag written before the

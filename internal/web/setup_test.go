@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"crypto/sha256"
+	"encoding/base64"
 	"html"
 	"io"
 	"log/slog"
@@ -555,6 +556,98 @@ func TestSetupRejectsAndAttributes(t *testing.T) {
 	}
 }
 
+func TestSetupOnSaved(t *testing.T) {
+	for _, scenario := range []string{"save", "email only", "download", "test", "generate-smtp-password", "invalid", "failed write", "pathless", "unclaimed", "wrong holder"} {
+		t.Run(scenario, func(t *testing.T) {
+			s := &setupServer{SetupOptions: SetupOptions{
+				Getenv: noEnv, Path: filepath.Join(t.TempDir(), "scan2graph.env"),
+				TokenHash: sha256Of(setupToken),
+				FileValues: map[string]string{
+					"S2G_ENTRA_AUTHORITY_URL": "http://127.0.0.1:1",
+					"S2G_ENTRA_TOKEN_URL":     "http://127.0.0.1:1/token",
+				},
+			}}
+			form := validForm()
+			form.Set("action", "save")
+			wantSaved := scenario == "save" || scenario == "email only"
+			switch scenario {
+			case "email only":
+				form.Del("S2G_PUBLIC_BASE_URL")
+				form.Set("S2G_GRAPH_SENDER", "scanner@example.com")
+				form.Set("S2G_ALLOWED_RECIPIENT_DOMAINS", "example.com")
+			case "download", "test", "generate-smtp-password":
+				form.Set("action", scenario)
+			case "invalid":
+				form.Set("S2G_PUBLIC_BASE_URL", "javascript:invalid")
+			case "failed write":
+				s.Path = filepath.Join(s.Path, "missing", "scan2graph.env")
+			case "pathless":
+				s.Path = ""
+			case "unclaimed":
+				s.TokenHash = nil
+			}
+			w := httptest.NewRecorder()
+			calls := 0
+			s.OnSaved = func() {
+				calls++
+				if !s.mu.TryLock() {
+					t.Error("OnSaved called under the save lock")
+				} else {
+					s.mu.Unlock()
+				}
+				if !strings.Contains(w.Body.String(), "<h1>Starting scan2graph</h1>") {
+					t.Error("OnSaved called before rendering the starting page")
+				}
+				loads(t, s.Path)
+			}
+			// Every re-render retains the mode's label; pathless stays download-only.
+			current, _, _ := s.values(nil)
+			render(slog.Default(), w, setupTmpl, s.view(current, nil, nil, nil))
+			if strings.Contains(w.Body.String(), ">Save and start</button>") != (s.Path != "") {
+				t.Error("save label does not match the mode and path")
+			}
+			w = httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			if scenario != "wrong holder" {
+				r.AddCookie(&http.Cookie{Name: setupCookie, Value: setupToken})
+			}
+			secureHeaders(s.authenticate(http.HandlerFunc(s.submit))).ServeHTTP(w, r)
+			if (calls == 1) != wantSaved || calls > 1 {
+				t.Fatalf("OnSaved calls = %d, want save = %v", calls, wantSaved)
+			}
+			body := w.Body.String()
+			if strings.Contains(body, "<h1>Starting scan2graph</h1>") != wantSaved {
+				t.Error("starting page does not match the save outcome")
+			}
+			if wantSaved {
+				style := regexp.MustCompile(`(?s)<style>(.*?)</style>`).FindStringSubmatch(body)
+				css, err := assets.ReadFile("static/style.css")
+				if err != nil || len(style) != 2 || style[1] != string(css) || strings.Contains(body, `rel="stylesheet"`) {
+					t.Fatal("starting page must contain only the bundled stylesheet, with no external CSS request")
+				}
+				hash := sha256.Sum256([]byte(style[1]))
+				hashSource := " 'sha256-" + base64.StdEncoding.EncodeToString(hash[:]) + "'"
+				csp := w.Header().Get("Content-Security-Policy")
+				if !strings.Contains(csp, "style-src 'self'"+hashSource+";") || strings.Replace(csp, hashSource, "", 1) != contentSecurityPolicy {
+					t.Fatal("starting CSP must authorize exactly the emitted style bytes and preserve every other directive")
+				}
+				if strings.Contains(body, testClientSecret) || strings.Contains(body, "Restart scan2graph to apply") {
+					t.Error("starting page exposes a secret or requests a restart")
+				}
+				if strings.Contains(body, ">Open scan2graph</a>") != (scenario == "save") {
+					t.Error("Open scan2graph link does not match the validated public URL")
+				}
+				if scenario == "save" && !strings.Contains(body, "https://scan2graph.example.com/auth/callback") {
+					t.Error("starting page lost app-registration guidance")
+				}
+			} else if strings.Contains(body, "<style>") || w.Header().Get("Content-Security-Policy") != contentSecurityPolicy {
+				t.Error("a response that does not start the appliance changed its CSS or CSP")
+			}
+		})
+	}
+}
+
 func TestSetupSaves(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "scan2graph.env")
@@ -574,6 +667,9 @@ func TestSetupSaves(t *testing.T) {
 	}
 	if !strings.Contains(body, path) || !strings.Contains(body, "Restart scan2graph") {
 		t.Errorf("the success page does not say where it went and what to do next:\n%s", body)
+	}
+	if strings.Contains(body, "<style>") || !strings.Contains(body, `rel="stylesheet" href="/static/style.css"`) || resp.Header.Get("Content-Security-Policy") != contentSecurityPolicy {
+		t.Error("standalone setup must retain its external stylesheet and original CSP")
 	}
 
 	info, err := os.Stat(path)

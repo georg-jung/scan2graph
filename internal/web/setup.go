@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"io/fs"
 	"log/slog"
 	"maps"
@@ -52,6 +54,7 @@ type SetupOptions struct {
 	FileValues map[string]string   // the configuration file as it is now; nil when there is none
 	Path       string              // where Save writes; "" means download-only
 	TokenHash  []byte              // SHA-256 of the one-shot token; nil offers the wizard to whoever claims it first
+	OnSaved    func()              // optional nonblocking signal after a successful save response is rendered, outside the save lock
 }
 
 type setupServer struct {
@@ -300,10 +303,18 @@ func (s *setupServer) submit(w http.ResponseWriter, r *http.Request) {
 			return
 		default:
 			if err := s.save(values); err == nil {
+				p := page{Title: "Saved", Brand: setupBrand, Base: s.prefix + "/"}
+				if s.OnSaved != nil {
+					p.Title = "Starting scan2graph"
+					p.InlineCSS = setupStartingStyle(w)
+				}
 				render(slog.Default(), w, setupTmpl, setupView{
-					page: page{Title: "Saved", Brand: setupBrand, Base: s.prefix + "/"}, Saved: s.Path,
-					Steps: s.entraSteps(values),
+					page: p, Saved: s.Path,
+					Steps: s.entraSteps(values), StartAfterSave: s.OnSaved != nil, PublicBaseURL: cfg.PublicBaseURL,
 				})
+				if s.OnSaved != nil {
+					s.OnSaved()
+				}
 				return
 			} else {
 				slog.Default().Error("setup: writing the configuration file failed", "path", s.Path, "err", err)
@@ -329,6 +340,19 @@ func (s *setupServer) submit(w http.ResponseWriter, r *http.Request) {
 	// otherwise have cost the operator too.
 	s.remember(v.Form, values, file)
 	render(slog.Default(), w, setupTmpl, v)
+}
+
+// The wizard's listener may be gone before the browser asks for CSS. Include
+// only our embedded stylesheet, authorizing its exact bytes on this response.
+func setupStartingStyle(w http.ResponseWriter) template.CSS {
+	css, err := assets.ReadFile("static/style.css")
+	if err != nil {
+		panic(err) // embedded at build time, like the templates
+	}
+	hash := sha256.Sum256(css)
+	w.Header().Set("Content-Security-Policy", strings.Replace(contentSecurityPolicy,
+		"style-src 'self'", "style-src 'self' 'sha256-"+base64.StdEncoding.EncodeToString(hash[:])+"'", 1))
+	return template.CSS(css) // trusted build asset, never configuration or user input
 }
 
 // values folds a submission into what the page it came from is showing. An
@@ -695,9 +719,11 @@ type setupView struct {
 	Errors []string // not attributable to one field, shown above the form
 	// Checks is what "Test the connection" found, shown above the form and
 	// only for the submission that asked for it.
-	Checks []checkResult
-	Path   string // where Save would write; "" offers only the download
-	Saved  string // where it went, on the success page
+	Checks         []checkResult
+	Path           string // where Save would write; "" offers only the download
+	Saved          string // where it went, on the success page
+	StartAfterSave bool
+	PublicBaseURL  string // the validated URL, only on the saved page
 	// Steps is the walkthrough again, on that same page. The card shows it
 	// only to somebody who submits the form and comes back to it: fill
 	// everything in, press Save, and this is the last place any of it can
@@ -804,6 +830,7 @@ type setupProfile struct {
 // rows come from the folded value like every other field's box does.
 func (s *setupServer) view(values map[string]string, general []string, byField map[string]string, posted []setupProfile) setupView {
 	v := setupView{page: page{Title: "Setup", Brand: setupBrand, Base: s.prefix + "/"}, Path: s.Path, Errors: general, Form: rand.Text()}
+	v.StartAfterSave = s.OnSaved != nil && s.Path != ""
 	for _, f := range setupFields {
 		in := setupInput{setupField: f, Value: values[f.Name]}
 		// The loader names the setting; the operator reads a label. Swapping
