@@ -19,9 +19,11 @@ fail at the first thing it tries:</p>
 <div class="guide">{{template "steps" .Steps}}</div>{{end}}
 {{else}}
 <h1>Set up scan2graph</h1>
-<p class="empty">Everything here ends up in one KEY=value file. Leave a box
-empty to keep the built-in default, and open a folded-away section only when
-something asks you to.</p>
+<p class="empty">Choose email delivery, browser downloads, or both. At least
+one is required unless you configure printer profiles in Advanced options.
+Text recognition is optional. With no profiles, every printer sender gets all
+the capabilities you configure. Leave other boxes empty to use their built-in
+defaults.</p>
 {{if .Errors}}
 <div class="problems">
 <p>Not usable yet:</p>
@@ -62,14 +64,14 @@ mailbox it is meant for.</p>
 {{range .Fields}}{{template "field" .}}{{end}}
 {{if .Rare}}
 <details{{if .OpenRare}} open{{end}}>
-<summary>Rarely needed</summary>
+<summary>Advanced options</summary>
 {{range .Rare}}{{template "field" .}}{{end}}
 </details>
 {{end}}
 </fieldset>
 {{else}}
 {{/* A group that is entirely Rare has nothing ordinary to put in a
-     fieldset, so a fieldset built only to hold its "Rarely needed"
+     fieldset, so a fieldset built only to hold its "Advanced options"
      disclosure would be a box around a box: collapse straight to the
      disclosure instead, named for the group it replaces. */}}
 <details class="group"{{if .OpenRare}} open{{end}}>
@@ -93,12 +95,10 @@ mailbox it is meant for.</p>
 {{if eq .Kind "bool"}}
 <span class="field-head">
 <label class="check"><input type="checkbox" id="{{.Name}}" name="{{.Name}}" value="true"{{if .Checked}} checked{{end}}> {{.Label}}</label>
-<code>{{.Name}}</code>
 </span>
 {{else}}
 <span class="field-head">
 <label for="{{.Name}}">{{.Label}}</label>
-<code>{{.Name}}</code>
 </span>
 {{if eq .Kind "choice"}}
 <select id="{{.Name}}" name="{{.Name}}">

@@ -114,9 +114,10 @@ not a filter you have configured.
 Point the printer's "scan to email" feature at scan2graph:
 
 * **SMTP server**: scan2graph's host, on the LAN.
-* **Port**: whatever `S2G_SMTP_ADDR` listens on (`2525` by default — scan2graph
-  runs unprivileged and cannot bind port 25 itself; forward it at the network
-  layer if the printer insists on 25).
+* **Port**: the port from `S2G_SMTP_ADDR`, or the LAN host port mapped to it
+  when scan2graph runs in a container (`2525` by default — scan2graph runs
+  unprivileged and cannot bind port 25 itself; forward it at the network layer
+  if the printer insists on 25).
 * **Encryption**: none. The listener never advertises STARTTLS; see "Security
   assumptions" for why that is an accepted trade-off on a LAN segment.
 * **Authentication**: PLAIN or LOGIN, with `S2G_SMTP_USERNAME` /

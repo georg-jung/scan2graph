@@ -47,6 +47,34 @@ const groupIdentity = "Identity"
 // the wizard.
 var setupFields = []setupField{
 	{
+		Name: "S2G_GRAPH_SENDER", Label: "Sending mailbox", Group: "Email delivery",
+		Help:        "The mailbox scans are mailed from; setting it together with the allowlist below is what turns email delivery on.",
+		Placeholder: "scanner@example.com",
+	}, {
+		Name: "S2G_ALLOWED_RECIPIENT_DOMAINS", Label: "Allowed recipient domains", Group: "Email delivery",
+		Help:        "Comma-separated domains a scan may be mailed to, without a leading @ and matched exactly; email delivery requires it, or the appliance would be an open relay.",
+		Placeholder: "example.com, example.org",
+	}, {
+		Name: "S2G_PUBLIC_BASE_URL", Label: "Public URL", Group: "Browser downloads",
+		Help:        "Where this appliance is reached through the reverse proxy that terminates TLS; setting it is what turns the web UI on. A host of its own, or a subpath under a shared one (https://nas.acme.office/scanner/) that the proxy forwards unchanged.",
+		Placeholder: "https://scan2graph.example.com",
+	}, {
+		Name: "S2G_UI_TITLE", Label: "Name shown in the UI", Group: "Browser downloads", Rare: true,
+		Help:        "What the web UI calls itself in its title and header, so it can say the household's or the office's name.",
+		Placeholder: "scan2graph",
+	}, {
+		Name: "S2G_JOB_TTL", Label: "How long a scan stays available", Group: "Browser downloads", Rare: true,
+		Help:        "How long a scan can be downloaded before it and its files are deleted; must be at least 1m.",
+		Placeholder: "8h",
+	}, {
+		Name: "S2G_HTTP_ADDR", Label: "HTTP listen address", Group: "Browser downloads", Rare: true,
+		Help:        "Address this process listens on for HTTP. In a container, this is internal; publish it through the host or reverse proxy rather than using it as the public URL.",
+		Placeholder: ":8080",
+	}, {
+		Name: "S2G_DI_ENDPOINT", Label: "Document Intelligence endpoint", Group: "Text recognition",
+		Help:        "The https URL of the Azure Document Intelligence resource that makes scans searchable; setting it is what turns text recognition on.",
+		Placeholder: "https://example.cognitiveservices.azure.com",
+	}, {
 		Name: "S2G_ENTRA_TENANT_ID", Label: "Directory (tenant) ID", Group: groupIdentity,
 		Help:        "The Directory (tenant) ID on the app registration's Overview page in the Azure portal.",
 		Placeholder: "00000000-0000-0000-0000-000000000000",
@@ -58,34 +86,6 @@ var setupFields = []setupField{
 		Name: "S2G_ENTRA_CLIENT_SECRET", Label: "Client secret", Kind: fieldSecret, Group: groupIdentity,
 		Help: "The secret's Value (not its Secret ID) under Certificates & secrets in that app registration, which the portal shows only once, right after you create it.",
 	}, {
-		Name: "S2G_GRAPH_SENDER", Label: "Sending mailbox", Group: "Delivery",
-		Help:        "The mailbox scans are mailed from; setting it together with the allowlist below is what turns email delivery on.",
-		Placeholder: "scanner@example.com",
-	}, {
-		Name: "S2G_ALLOWED_RECIPIENT_DOMAINS", Label: "Allowed recipient domains", Group: "Delivery",
-		Help:        "Comma-separated domains a scan may be mailed to, without a leading @ and matched exactly; email delivery requires it, or the appliance would be an open relay.",
-		Placeholder: "example.com, example.org",
-	}, {
-		Name: "S2G_PUBLIC_BASE_URL", Label: "Public URL", Group: "Web UI",
-		Help:        "Where this appliance is reached through the reverse proxy that terminates TLS; setting it is what turns the web UI on. A host of its own, or a subpath under a shared one (https://nas.acme.office/scanner/) that the proxy forwards unchanged.",
-		Placeholder: "https://scan2graph.example.com",
-	}, {
-		Name: "S2G_UI_TITLE", Label: "Name shown in the UI", Group: "Web UI",
-		Help:        "What the web UI calls itself in its title and header, so it can say the household's or the office's name.",
-		Placeholder: "scan2graph",
-	}, {
-		Name: "S2G_JOB_TTL", Label: "How long a scan stays available", Group: "Web UI", Rare: true,
-		Help:        "How long a scan can be downloaded before it and its files are deleted; must be at least 1m.",
-		Placeholder: "8h",
-	}, {
-		Name: "S2G_HTTP_ADDR", Label: "HTTP listen address", Group: "Web UI", Rare: true,
-		Help:        "Address the web UI listens on inside the container.",
-		Placeholder: ":8080",
-	}, {
-		Name: "S2G_SMTP_ADDR", Label: "SMTP listen address", Group: "Scanner",
-		Help:        "Address the printer sends its scans to.",
-		Placeholder: ":2525",
-	}, {
 		Name: "S2G_SMTP_USERNAME", Label: "SMTP username", Group: "Scanner",
 		Help:        "Username the printer signs in with; only means anything once a password is set.",
 		Placeholder: "scanner",
@@ -96,16 +96,16 @@ var setupFields = []setupField{
 		Name: "S2G_SMTP_ALLOW_ANONYMOUS", Label: "Accept scans without SMTP AUTH", Kind: fieldBool, Group: "Scanner",
 		Help: "For a printer that cannot authenticate at all: only on a trusted, isolated network segment, and not together with a username or password.",
 	}, {
-		Name: "S2G_PROFILES", Label: "Printer profiles", Kind: fieldProfiles, Group: "Scanner",
+		Name: "S2G_SMTP_ADDR", Label: "SMTP listen address", Group: "Scanner", Rare: true,
+		Help:        "Address this process listens on for SMTP. In a container, the printer connects to the appliance host on the LAN and the port published to this address.",
+		Placeholder: ":2525",
+	}, {
+		Name: "S2G_PROFILES", Label: "Printer profiles", Kind: fieldProfiles, Group: "Scanner", Rare: true,
 		Help: "One row per address the printer sends from, ticking what a scan from that address may do; with no rows filled in there are no profiles at all, and then every sender is accepted and gets whatever the rest of this configuration enables. Type into the blank rows to add profiles; two fresh ones come back with every submission the appliance accepts.",
 	}, {
 		Name: "S2G_MAX_MESSAGE_BYTES", Label: "Largest accepted message", Group: "Scanner", Rare: true,
 		Help:        "Biggest message the SMTP listener accepts, in bytes; the default is 32 MiB.",
 		Placeholder: "33554432",
-	}, {
-		Name: "S2G_DI_ENDPOINT", Label: "Document Intelligence endpoint", Group: "Text recognition",
-		Help:        "The https URL of the Azure Document Intelligence resource that makes scans searchable; setting it is what turns text recognition on.",
-		Placeholder: "https://example.cognitiveservices.azure.com",
 	}, {
 		Name: "S2G_LOG_LEVEL", Label: "Log level", Kind: fieldChoice,
 		Choice: []string{"debug", "info", "warn", "error"}, Group: "Advanced", Rare: true,
@@ -138,10 +138,11 @@ var setupFields = []setupField{
 // does Advanced: it stays folded away, and whoever opens it knows what
 // they came for.
 var groupIntro = map[string]string{
-	groupIdentity:      "One Entra app registration covers everything: signing people in to the web UI, and the tokens scan2graph calls Microsoft Graph and Document Intelligence with.",
-	"Web UI":           "Set the public URL and a scan can be picked up in a browser instead of being mailed; leave it empty and this stays an email-only appliance.",
-	"Scanner":          "How the printer talks to scan2graph: where it sends, how it signs in, and what a scan from each of its buttons may do.",
-	"Text recognition": "Optional: with a Document Intelligence resource, scans come out as PDFs you can search rather than pictures of paper.",
+	"Email delivery":    "Set both fields to mail scans.",
+	"Browser downloads": "Set the public URL to let people pick scans up in a browser.",
+	"Text recognition":  "Optional: with a Document Intelligence resource, scans come out as PDFs you can search rather than pictures of paper.",
+	groupIdentity:       "Required for every setup. One Entra app registration signs people in to browser downloads and supplies the tokens used for email and text recognition.",
+	"Scanner":           "Set how the printer authenticates. In a container, it connects to the appliance's published host and port on the LAN.",
 }
 
 // handEdited are S2G_* settings that exist only for the end-to-end test

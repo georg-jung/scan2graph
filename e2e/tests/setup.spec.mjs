@@ -91,6 +91,30 @@ test('the browser that claims the wizard is the only one that gets it', async ({
   await other.close();
 });
 
+test('advanced scanner settings stay folded but reopen around bad input', async () => {
+  const profiles = page.locator('#S2G_PROFILES');
+  const smtpBind = page.locator('#S2G_SMTP_ADDR');
+  const httpBind = page.locator('#S2G_HTTP_ADDR');
+  await expect(profiles).toBeHidden();
+  await expect(smtpBind).toBeHidden();
+  await expect(httpBind).toBeHidden();
+
+  await revealField('S2G_PROFILES');
+  await expect(profiles).toBeVisible();
+  await expect(smtpBind).toBeVisible();
+  await revealField('S2G_HTTP_ADDR');
+  await expect(httpBind).toBeVisible();
+
+  const webWithoutSender = page.getByLabel('Row 1: web');
+  await webWithoutSender.check();
+  await page.locator('details:has(#S2G_PROFILES) > summary').click();
+  await testConnection().click();
+  await expect(webWithoutSender).toBeVisible();
+  await expect(webWithoutSender).toBeChecked();
+  await expect(page.locator('.field.bad:has(#S2G_PROFILES)')).toContainText('needs the address');
+  await webWithoutSender.uncheck();
+});
+
 test('Test connection passes against the fakes, and singles out a broken secret', async () => {
   await fillForm(FIXTURE_SECRET);
   await testConnection().click();
@@ -173,11 +197,20 @@ const result = (name) => page.locator('li').filter({ hasText: name });
 // password boxes, so each step here fills it in from scratch rather than
 // depending on what the last one left behind.
 async function fillForm(entraSecret) {
-  // The listen address is behind its group's "Rarely needed" disclosure, and
-  // a collapsed <details> is not something Playwright will type into.
-  await page.locator('details:has(#S2G_HTTP_ADDR) summary').click();
   const boxes = { ...FORM, ...SECRETS, S2G_ENTRA_CLIENT_SECRET: entraSecret };
-  for (const [name, value] of Object.entries(boxes)) await page.locator(`#${name}`).fill(value);
+  for (const [name, value] of Object.entries(boxes)) {
+    await revealField(name);
+    await page.locator(`#${name}`).fill(value);
+  }
+}
+
+// A group can put several fields in one disclosure. Once the first field has
+// opened it, the next one is already visible and must not click it closed.
+async function revealField(name) {
+  const field = page.locator(`#${name}`);
+  if (await field.isVisible()) return;
+  await page.locator(`details:has(#${name})`).last().locator(':scope > summary').click();
+  await expect(field).toBeVisible();
 }
 
 // serving waits for both listeners: /healthz says the process came up and got
