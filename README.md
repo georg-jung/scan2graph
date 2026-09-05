@@ -421,20 +421,34 @@ appliance:
   gone, used or not, the instant that start reads it: nothing usable is ever
   left on disk in between.
 
-Either way the form offers both **Save** and **Download**, and a container
-running with a read-only root filesystem has to use Download: Save writes the
-configuration file in place, which such a container cannot do.
+**Save** is offered only when a configuration path is set and atomically
+replaces that file; **Download** is always offered and is useful for
+pathless/manual deployment or backup.
 
 ## Deployment
 
+The supplied [`docker-compose.example.yml`](docker-compose.example.yml) is a
+turnkey first-boot deployment. It creates a small persistent configuration
+volume, keeps the root filesystem read-only, and provides `/tmp` as the only
+job-data directory:
+
 ```bash
-cp .env.example .env   # then edit it — see the reference above, or use the setup wizard
 docker compose -f docker-compose.example.yml up -d
 ```
 
-Copy [`docker-compose.example.yml`](docker-compose.example.yml) and edit it —
-every setting in it is commented, including the config-file alternative to
-`env_file`. Building the image yourself is `docker build -t scan2graph .`.
+With an empty volume, open `http://127.0.0.1:8080/setup` locally, or use a
+dedicated host/root reverse proxy, complete the wizard, press **Save**, then
+restart the service. A subpath proxy such as `/scanner` needs
+`S2G_PUBLIC_BASE_URL` seeded before first boot; see [Reverse proxy](#reverse-proxy).
+
+```bash
+docker compose -f docker-compose.example.yml restart scan2graph
+```
+
+The wizard writes `/config/scan2graph.env` in the named volume. To configure
+the service without the wizard, use the advanced `.env.example` reference and
+set `S2G_CONFIG_FILE` yourself. Building the image yourself is
+`docker build -t scan2graph .`.
 
 **Running under systemd instead.** scan2graph is a single static binary, so
 a container is not required — a unit works just as well on a host that
