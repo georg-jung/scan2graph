@@ -258,6 +258,25 @@ func (s *setupServer) submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	values, file, foldErr := s.values(r.PostForm)
+	action := r.PostForm.Get("action")
+	var generated string
+	var cfg *config.Config
+	var err error
+	if action == "generate-smtp-password" {
+		anonymous, _ := strconv.ParseBool(config.Resolve(config.Layer(values, s.Getenv), "S2G_SMTP_ALLOW_ANONYMOUS"))
+		switch {
+		case s.Getenv("S2G_SMTP_PASSWORD") != "" || s.Getenv("S2G_SMTP_PASSWORD_FILE") != "":
+			err = errors.New("S2G_SMTP_PASSWORD: cannot generate while S2G_SMTP_PASSWORD or S2G_SMTP_PASSWORD_FILE is set in the environment; remove the override first")
+		case anonymous:
+			err = errors.New("S2G_SMTP_ALLOW_ANONYMOUS: turn off anonymous SMTP before generating a password")
+		default:
+			generated = rand.Text()
+			values["S2G_SMTP_PASSWORD"] = generated
+			delete(values, "S2G_SMTP_PASSWORD_FILE")
+		}
+	} else {
+		cfg, err = config.Load(config.Layer(values, s.Getenv))
+	}
 
 	// The real loader through the real precedence, so the wizard cannot
 	// disagree with the next start about what is valid. The profile editor's
@@ -265,11 +284,9 @@ func (s *setupServer) submit(w http.ResponseWriter, r *http.Request) {
 	// them, so it lands under its box through the same path - and, being
 	// first, is the one shown there when the loader has something to say
 	// about the same setting too.
-	cfg, err := config.Load(config.Layer(values, s.Getenv))
 	general, byField := attribute(errors.Join(foldErr, err))
 	var checks []checkResult
-	if len(general) == 0 && len(byField) == 0 {
-		action := r.PostForm.Get("action")
+	if action != "generate-smtp-password" && len(general) == 0 && len(byField) == 0 {
 		switch {
 		case action == "test":
 			// Advice, not validation: this renders the form straight back,
@@ -305,6 +322,7 @@ func (s *setupServer) submit(w http.ResponseWriter, r *http.Request) {
 	}
 	v := s.view(values, general, byField, posted)
 	v.Checks = checks
+	v.GeneratedSMTPPassword = generated
 	// Everything that reaches this render was handed back rather than saved,
 	// so the next press from the page it renders folds into it: the secret a
 	// check was just run against, and the one a validation failure would
@@ -670,6 +688,8 @@ func writeFile(path string, data []byte) error {
 // setupView is the page: the fields grouped as the form shows them, plus
 // whatever the loader had to say about them.
 type setupView struct {
+	// Only the response to an explicit generation reveals this value.
+	GeneratedSMTPPassword string
 	page
 	Groups []setupGroup
 	Errors []string // not attributable to one field, shown above the form

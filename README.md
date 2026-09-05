@@ -31,11 +31,12 @@ ssh -N -L 8080:127.0.0.1:8080 operator@scan-host.example
 The wizard needs [Entra identity](#entra-id-app-registration) and at least one
 delivery method: email, [web downloads](#reverse-proxy), or both.
 [OCR](#azure-document-intelligence) is optional. Leave printer profiles empty
-for one default behavior. Set a stable SMTP password so the printer keeps
-working after restarts. A proxy subpath needs `S2G_PUBLIC_BASE_URL` seeded
-before first boot; see [Reverse proxy](#reverse-proxy).
+for one default behavior. Use **Generate SMTP password**, copy the displayed
+value for the printer, then press **Save** to persist it across restarts. A
+proxy subpath needs `S2G_PUBLIC_BASE_URL` seeded before first boot; see [Reverse
+proxy](#reverse-proxy).
 
-Press **Save**, then restart from another terminal on the Docker host:
+Then restart from another terminal on the Docker host:
 
 ```bash
 docker compose -f docker-compose.example.yml restart scan2graph
@@ -314,7 +315,7 @@ real environment variables.
 | variable | default | required when |
 | --- | --- | --- |
 | `S2G_SMTP_USERNAME` | `scanner` | only meaningful once a password is set |
-| `S2G_SMTP_PASSWORD` | none — an ephemeral password is generated and printed on every start | set it for a deployment that must keep working across restarts |
+| `S2G_SMTP_PASSWORD` | none — service mode still generates and prints an ephemeral password on every start | set it for a deployment that must keep working across restarts |
 | `S2G_SMTP_ALLOW_ANONYMOUS` | `false` | mutually exclusive with the two above |
 
 **Sender profiles & recipients**
@@ -391,9 +392,9 @@ boxes that caused them.
 
 ![A submission the loader refused, with each complaint under the box that caused it](docs/screenshots/setup-errors.png)
 
-**Test the connection** is the third button, and the only thing in the wizard
-that talks to Microsoft. Three lines come back, each bounded and none of them
-sending, uploading or saving anything:
+**Test the connection** is the only thing in the wizard that talks to
+Microsoft. Three lines come back, each bounded and none of them sending,
+uploading or saving anything:
 
 * **Entra sign-in** — the OIDC discovery the web UI's login needs, against the
   authority in the form.
