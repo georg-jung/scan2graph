@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{if .Title}}{{.Title}} – {{end}}{{.Brand}}</title>
-<link rel="stylesheet" href="{{.Base}}static/style.css">
+{{if .InlineCSS}}<style>{{.InlineCSS}}</style>{{else}}<link rel="stylesheet" href="{{.Base}}static/style.css">{{end}}
 </head>
 <body>
 <header>

@@ -271,6 +271,8 @@ type page struct {
 	// plain "/" on a host of its own and the pages are then exactly what they
 	// were before prefixes existed.
 	Base string
+	// InlineCSS is trusted bundled CSS for the setup handover response only.
+	InlineCSS template.CSS
 }
 
 type listView struct {

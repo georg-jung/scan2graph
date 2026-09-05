@@ -16,20 +16,18 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 
-import { serving as pollSmtp, startAppliance } from '../lib/appliance.mjs';
+import { serving as pollSmtp } from '../lib/appliance.mjs';
 import { FIXTURE_SECRET, resetFakes } from '../lib/fakes.mjs';
 import { signIn } from '../lib/sign-in.mjs';
 import { makePdf, sendScan } from '../lib/smtp.mjs';
 
 const e2e = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-const WIZARD = 'http://127.0.0.1:18081'; // playwright.config.mjs starts it there
+const WIZARD = 'http://127.0.0.1:18082'; // playwright.config.mjs starts it there
 const CONFIG = path.join(e2e, '.tmp', 'wizard', 'scan2graph.env');
-const CA = path.join(e2e, '.tmp', 'fake-ca.pem');
 
-// Where the appliance configured here ends up: ports of its own, clear of the
-// harness's, and the callback URL the fake app registration has registered
-// (e2e/fakes/main.go). Changing either means changing that too.
-const APPLIANCE = 'http://127.0.0.1:18082';
+// The wizard releases this port before the same process starts the appliance.
+// Its callback URL is registered in e2e/fakes/main.go.
+const APPLIANCE = WIZARD;
 const SMTP_PORT = 12526;
 
 // The form as an operator fills it in, pointed at the fakes. The two password
@@ -59,7 +57,6 @@ const CHECKS = ['Entra sign-in', 'App-only token', 'Document Intelligence'];
 test.describe.configure({ mode: 'serial' });
 
 let page; // the browser that claims the wizard
-let appliance; // the serve process the last test starts on the saved file
 let generatedSmtpPassword; // held only in memory; never written to test output
 
 test.beforeAll(async ({ browser }) => {
@@ -70,7 +67,6 @@ test.beforeAll(async ({ browser }) => {
 });
 
 test.afterAll(async () => {
-  appliance?.child.kill('SIGTERM');
   await page?.close();
 });
 
@@ -85,7 +81,7 @@ test('the browser that claims the wizard is the only one that gets it', async ({
   await expect(bystander.getByRole('button', { name: 'Start configuration' })).toBeVisible();
 
   await page.getByRole('button', { name: 'Start configuration' }).click();
-  await expect(page.getByRole('button', { name: 'Save the configuration file' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Save and start' })).toBeVisible();
 
   expect((await bystander.goto(`${WIZARD}/setup`)).status()).toBe(404);
 
@@ -146,23 +142,28 @@ test('Test connection passes against the fakes, and singles out a broken secret'
   }
 });
 
-test('the appliance runs on the file the wizard writes', async () => {
+test('Save and start serves a scan in the same process on the same HTTP port', async () => {
   await fillForm(FIXTURE_SECRET);
   await expect(page.locator('#S2G_SMTP_PASSWORD')).toHaveValue('');
-  await page.getByRole('button', { name: 'Save the configuration file' }).click();
-  await expect(page.getByRole('heading', { name: 'Saved' })).toBeVisible();
+  await page.getByRole('button', { name: 'Save and start' }).click();
+  await expect(page.getByRole('heading', { name: 'Starting scan2graph' })).toBeVisible();
+  await expect(page.locator('head style')).toHaveCount(1);
+  await expect(page.locator('link[rel="stylesheet"]')).toHaveCount(0);
+  await expect(page.locator('body')).toHaveCSS('margin-top', '0px');
   // The path it wrote, and - because this run configured a public URL - the
   // redirect URI the app registration needs, which is the last chance to say
-  // so before the restart below.
+  // so before the wizard disappears.
   await expect(page.locator('p code')).toHaveText(CONFIG);
   await expect(page.locator('.guide code')).toHaveText(`${APPLIANCE}/auth/callback`);
 
-  appliance = startAppliance({
-    args: ['serve', '--config', CONFIG],
-    env: { PATH: process.env.PATH, SSL_CERT_FILE: CA },
-    smtpPort: SMTP_PORT,
-  });
+  await expect(page.getByRole('link', { name: 'Open scan2graph' })).toHaveAttribute('href', APPLIANCE);
+  await expect(page.locator('body')).toContainText('does not confirm that startup succeeded');
+  await expect(page.locator('code#generated-smtp-password')).toHaveCount(0);
   await serving();
+  // The holder's old cookie grants no setup routes after handover.
+  expect((await page.request.get(`${APPLIANCE}/setup`)).status()).toBe(404);
+  expect((await page.request.post(`${APPLIANCE}/setup`)).status()).toBe(404);
+  expect((await page.request.post(`${APPLIANCE}/setup/start`)).status()).toBe(404);
 
   const subject = `e2e setup ${randomUUID().slice(0, 8)}`;
   const pdf = makePdf(subject);
@@ -232,8 +233,8 @@ async function revealField(name) {
 // which is bound on a goroutine of its own.
 async function serving() {
   await expect(async () => {
-    expect(appliance.exited, appliance.log).toBe(false);
     expect((await fetch(`${APPLIANCE}/healthz`)).ok).toBe(true);
+    expect((await fetch(`${APPLIANCE}/setup`)).status).toBe(404);
   }).toPass({ intervals: [50], timeout: 30_000 });
-  await pollSmtp(appliance);
+  await pollSmtp({ smtpPort: SMTP_PORT, exited: false, log: 'Save and start did not open SMTP' });
 }

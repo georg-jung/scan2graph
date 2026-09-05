@@ -140,7 +140,8 @@ func runDefaultMode(args []string) {
 		check(markerErr)
 	}
 	if markerHash != nil {
-		wizard(path, markerHash)
+		wizard(path, markerHash, true)
+		runServeMode(args)
 		return
 	}
 	check(err)
@@ -154,7 +155,8 @@ func runDefaultMode(args []string) {
 		}
 		serve(cfg, loggedPath, overridden)
 	case !worthProtecting(readConfigFile(path)):
-		wizard(path, nil)
+		wizard(path, nil, true)
+		runServeMode(args)
 	default:
 		fatal("invalid configuration:\n%v", loadErr)
 	}
@@ -201,7 +203,7 @@ func readConfigFile(path string) (values map[string]string, parsed bool) {
 // needs one.
 func runSetupMode(args []string) {
 	_, path, _, _, _ := configSource(args, true) // only the path: see readConfigFile
-	wizard(path, nil)
+	wizard(path, nil, false)
 }
 
 // runSetupNextStartMode is "setup-next-start": mint a one-shot token, leave
@@ -228,12 +230,10 @@ func runSetupNextStartMode(args []string) {
 // listener, no job store and no pipeline - nothing is configured yet for any
 // of those to run against. There is never a validated *config.Config to build
 // a logger from here - the wizard's entire point is that one is not
-// available yet - so it logs at the package's own fixed defaults. Unlike
-// run(), no scan is ever in flight here, so there is nothing worth a graceful
-// shutdown for; a bare SIGINT/SIGTERM ending the process is enough, and
-// ListenAndServe's error is always fatal - nothing here ever calls Close or
-// Shutdown for it to report instead.
-func wizard(path string, tokenHash []byte) {
+// available yet - so it logs at the package's own fixed defaults. In default
+// mode a successful save drains the wizard before returning to start serve;
+// explicit setup and pathless setup keep serving until the process ends.
+func wizard(path string, tokenHash []byte, startAfterSave bool) {
 	slog.SetDefault(newLogger("json", slog.LevelInfo))
 	fileValues, parsed := readConfigFile(path)
 	getenv := config.Layer(fileValues, os.Getenv)
@@ -265,18 +265,40 @@ func wizard(path string, tokenHash []byte) {
 		mux.HandleFunc("GET "+p+"/healthz", plainOK)
 		mux.HandleFunc("GET "+p+"/readyz", plainOK)
 	}
-	mux.Handle("/", web.NewSetup(web.SetupOptions{
+	opts := web.SetupOptions{
 		Getenv:     os.Getenv,
 		FileValues: fileValues,
 		Path:       path,
 		TokenHash:  tokenHash,
-	}))
+	}
+	var saved chan struct{}
+	if startAfterSave && path != "" {
+		saved = make(chan struct{}, 1)
+		opts.OnSaved = func() {
+			select {
+			case saved <- struct{}{}:
+			default:
+			}
+		}
+	}
+	mux.Handle("/", web.NewSetup(opts))
 
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	slog.Info("http listening", "addr", addr)
-	if err := srv.Serve(ln); err != nil {
-		slog.Error("fatal", "err", fmt.Errorf("http server: %w", err))
-		os.Exit(1)
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Serve(ln) }()
+	select {
+	case err := <-errCh:
+		check(fmt.Errorf("http server: %w", err))
+	case <-saved:
+		// Shutdown releases the listener first, then waits for every admitted
+		// handler (including the save response) before the file is reloaded.
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		check(srv.Shutdown(ctx))
+		if err := <-errCh; !errors.Is(err, http.ErrServerClosed) {
+			check(err)
+		}
 	}
 }
 

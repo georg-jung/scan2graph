@@ -32,15 +32,10 @@ The wizard needs [Entra identity](#entra-id-app-registration) and at least one
 delivery method: email, [web downloads](#reverse-proxy), or both.
 [OCR](#azure-document-intelligence) is optional. Leave printer profiles empty
 for one default behavior. Use **Generate SMTP password**, copy the displayed
-value for the printer, then press **Save** to persist it across restarts. A
-proxy subpath needs `S2G_PUBLIC_BASE_URL` seeded before first boot; see [Reverse
-proxy](#reverse-proxy).
-
-Then restart from another terminal on the Docker host:
-
-```bash
-docker compose -f docker-compose.example.yml restart scan2graph
-```
+value for the printer, then press **Save and start**. The wizard saves the
+configuration and starts the appliance in the same process; no Docker restart
+or supervisor command is needed. A proxy subpath needs
+`S2G_PUBLIC_BASE_URL` seeded before first boot; see [Reverse proxy](#reverse-proxy).
 
 Finish by [configuring the printer](#setting-up-the-printer). Advanced settings
 are in the [configuration reference](#configuration-reference).
@@ -380,8 +375,17 @@ configuration that loads, it serves the appliance, exactly like
 boot, before the appliance has an Entra app registration or a password of
 its own, where it instead serves a small web form at `S2G_HTTP_ADDR`
 (`:8080` by default) that writes the same `KEY=value` file the configuration
-reference above describes: fill it in, save, and restart `scan2graph` for
-real — the wizard never restarts anything itself.
+reference above describes. A valid **Save and start** atomically writes the
+file, shows **Starting scan2graph**, releases the wizard listener, reloads the
+configuration from the original command line and environment, and starts the
+appliance in the same process. Marker-armed repair with `setup-next-start`
+does the same. No Docker, DSM, or other supervisor command is involved in
+this transition.
+
+The Starting page links to scan2graph when a public base URL is configured,
+but it is not a readiness guarantee. If appliance startup fails, the reason is
+written to the service logs as an ordinary fatal startup error; the
+unauthenticated wizard does not reopen.
 
 ![The setup wizard, one form grouped by what each setting is for](docs/screenshots/setup.png)
 
@@ -444,8 +448,10 @@ appliance:
   nobody can say what it holds — it mints a one-shot token of its own and
   prints the URL to open, token included, on **stderr**: the form's Download
   button hands back that whole file, client secret and all, and its Save
-  button writes a replacement over it. A first boot, where there is nothing
-  to give away, needs no token.
+  button writes a replacement over it. This explicit setup mode offers
+  **Save**, not **Save and start**, and never starts the appliance. Stop it
+  when finished and restart the managed service to apply the file. A first
+  boot, where there is nothing to give away, needs no token.
 * `scan2graph setup-next-start --config /etc/scan2graph/scan2graph.env`
   mints a one-shot token, prints the URL to open — token included — to
   **stderr**, where a redirected stdout cannot swallow the only copy of it,
@@ -455,9 +461,12 @@ appliance:
   gone, used or not, the instant that start reads it: nothing usable is ever
   left on disk in between.
 
-**Save** is offered only when a configuration path is set and atomically
-replaces that file; **Download** is always offered and is useful for
-pathless/manual deployment or backup.
+Saving is offered only when a configuration path is set and atomically
+replaces that file. **Download** is always offered and is useful for
+pathless/manual deployment or backup. Downloading, testing the connection,
+generating a password, an invalid submission, or a failed write never starts
+the appliance. Configuration files changed outside the normal first-boot or
+marker-repair handoff take effect after the managed service is restarted.
 
 ## Deployment
 
@@ -471,13 +480,10 @@ docker compose -f docker-compose.example.yml up -d
 ```
 
 With an empty volume, open `http://127.0.0.1:8080/setup` locally, or use a
-dedicated host/root reverse proxy, complete the wizard, press **Save**, then
-restart the service. A subpath proxy such as `/scanner` needs
+dedicated host/root reverse proxy, complete the wizard, and press **Save and
+start**. The appliance replaces the wizard in the same container process. A
+subpath proxy such as `/scanner` needs
 `S2G_PUBLIC_BASE_URL` seeded before first boot; see [Reverse proxy](#reverse-proxy).
-
-```bash
-docker compose -f docker-compose.example.yml restart scan2graph
-```
 
 The wizard writes `/config/scan2graph.env` in the named volume. To configure
 the service without the wizard, use the advanced `.env.example` reference and
