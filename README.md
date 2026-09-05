@@ -10,7 +10,39 @@ web UI, or both.
 Many multifunction printers can only speak unauthenticated SMTP to a server on
 the local network. Microsoft 365 no longer accepts that. scan2graph is the
 missing piece in between — one container, no database, no queue, no persistent
-state.
+jobs.
+
+## Quick start
+
+Download [`docker-compose.example.yml`](docker-compose.example.yml), then run
+these commands from the directory containing it:
+
+```bash
+docker compose -f docker-compose.example.yml up -d
+```
+
+For Docker on this machine, open <http://127.0.0.1:8080/setup>. For a remote
+Docker host, tunnel the port and open the same URL locally:
+
+```bash
+ssh -N -L 8080:127.0.0.1:8080 operator@scan-host.example
+```
+
+The wizard needs [Entra identity](#entra-id-app-registration) and at least one
+delivery method: email, [web downloads](#reverse-proxy), or both.
+[OCR](#azure-document-intelligence) is optional. Leave printer profiles empty
+for one default behavior. Set a stable SMTP password so the printer keeps
+working after restarts. A proxy subpath needs `S2G_PUBLIC_BASE_URL` seeded
+before first boot; see [Reverse proxy](#reverse-proxy).
+
+Press **Save**, then restart from another terminal on the Docker host:
+
+```bash
+docker compose -f docker-compose.example.yml restart scan2graph
+```
+
+Finish by [configuring the printer](#setting-up-the-printer). Advanced settings
+are in the [configuration reference](#configuration-reference).
 
 ## How it works
 
@@ -563,6 +595,9 @@ SMTP relaying, and no HTTPS/ACME handling of its own — container or systemd,
 that is always the reverse proxy's job.
 
 ## Development & tests
+
+The planned native DSM adapter is defined by the
+[deployment contract](docs/deployment-contract.md).
 
 ```bash
 go build ./...
