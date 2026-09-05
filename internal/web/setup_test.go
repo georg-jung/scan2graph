@@ -343,6 +343,26 @@ func TestSetupToken(t *testing.T) {
 	})
 }
 
+func TestSetupFormPresentsTheWorkflowBeforeAdvancedSettings(t *testing.T) {
+	h := newSetupHarness(t, SetupOptions{})
+	_, body := h.get(h.claimed(), "/setup")
+
+	from := 0
+	for _, heading := range []string{
+		"Email delivery", "Browser downloads", "Text recognition",
+		"Identity", "Scanner", "Advanced",
+	} {
+		i := strings.Index(body[from:], ">"+heading+"</")
+		if i < 0 {
+			t.Fatalf("group %q is missing or out of order", heading)
+		}
+		from += i + len(heading) + 3
+	}
+	if strings.Contains(body, "<code>S2G_") {
+		t.Error("a normal field label still exposes a raw setting name")
+	}
+}
+
 func TestSetupRejectsAndAttributes(t *testing.T) {
 	h := newSetupHarness(t, SetupOptions{Path: filepath.Join(t.TempDir(), "scan2graph.env")})
 	form := validForm()
@@ -1444,6 +1464,9 @@ func TestSetupGuideDerivesTheRedirectURI(t *testing.T) {
 			h := newSetupHarness(t, SetupOptions{FileValues: values, Getenv: getenv})
 			_, body := h.get(h.claimed(), h.prefix+"/setup")
 			if want == "" {
+				if !strings.Contains(body, "Public URL field on this page") {
+					t.Errorf("the guide does not point to the Public URL field without relying on its position:\n%s", body)
+				}
 				if strings.Contains(body, "/auth/callback") {
 					t.Errorf("the page offers a redirect URI with no public URL set:\n%s", body)
 				}

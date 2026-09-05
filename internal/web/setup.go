@@ -749,7 +749,7 @@ func (s *setupServer) entraSteps(values map[string]string) []setupStep {
 			Code: uri,
 		})
 	} else {
-		steps = append(steps, setupStep{Text: "Nothing to add under Authentication yet: the redirect URI is worked out from the Public URL further down this page, so fill that in and come back here for it. An appliance that only mails scans out signs nobody in and needs none at all."})
+		steps = append(steps, setupStep{Text: "Nothing to add under Authentication yet: the redirect URI is worked out from the Public URL field on this page, so fill that in and come back here for it. An appliance that only mails scans out signs nobody in and needs none at all."})
 	}
 	steps = append(steps, setupStep{Text: "Certificates & secrets → New client secret. The portal shows its Value once, right after you create it; that is what goes in the Client secret box below."})
 	if config.Resolve(getenv, "S2G_GRAPH_SENDER") != "" {
