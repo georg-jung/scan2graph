@@ -1429,3 +1429,35 @@ func TestFinishingOverTheBudgetMakesRoom(t *testing.T) {
 		t.Errorf("the finished scan: ok=%v status=%q docs=%d, want it intact", ok, got.Status, len(got.Documents))
 	}
 }
+
+// The charge can also grow when a finished job's document is replaced by a
+// bigger one. Every path that raises what the store holds makes room; this
+// one is no exception.
+func TestReplacingOverTheBudgetMakesRoom(t *testing.T) {
+	s, clk := newTestStore(t, Options{MaxBytes: 2 * reserveBytes})
+	older, olderPath := commitReady(t, s, "older", int(reserveBytes)/2)
+	clk.advance(time.Minute)
+	target, _ := commitReady(t, s, "target", 64)
+
+	f, err := s.CreateFile(target.ID, "ocr")
+	if err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	if _, err := f.WriteString(strings.Repeat("y", int(reserveBytes)*18/10)); err != nil {
+		t.Fatalf("WriteString: %v", err)
+	}
+	f.Close()
+	if err := s.ReplaceDocument(target.ID, target.Documents[0].ID, f.Name(), true); err != nil {
+		t.Fatalf("ReplaceDocument: %v", err)
+	}
+
+	if got := s.usedBytes(); got > 2*reserveBytes {
+		t.Errorf("usedBytes() = %d, want no more than the budget's %d", got, 2*reserveBytes)
+	}
+	if gone, ok := s.Get(older.ID); !ok || gone.Status != StatusEvicted {
+		t.Errorf("the older scan is %q, want it to have given way", gone.Status)
+	}
+	if _, err := os.Stat(olderPath); !os.IsNotExist(err) {
+		t.Errorf("the older scan's file is still on disk: err=%v", err)
+	}
+}

@@ -529,12 +529,17 @@ func (s *Store) ReplaceDocument(jobID, docID, newPath string, ocrApplied bool) e
 	rec.job.Documents[idx].OCRApplied = ocrApplied
 	// Normally the pipeline still owns the job here and the charge is its
 	// reservation's worst case, which SetStatus settles. Re-charging a job
-	// that is already finished keeps the two from drifting apart if that
-	// ever stops being true.
+	// that is already finished keeps the two from drifting apart if that ever
+	// stops being true -- and a bigger replacement is one more way the charge
+	// can grow, so it makes room like every other.
+	var evicted []*jobRecord
 	if finished(rec.job.Status) {
 		s.charge(rec, docBytes(rec.job.Documents))
+		evicted = s.makeRoomLocked()
 	}
 	s.mu.Unlock()
+
+	s.dropEvicted(evicted)
 
 	if oldPath != cleanPath {
 		if err := os.Remove(oldPath); err != nil && !os.IsNotExist(err) {
