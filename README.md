@@ -495,7 +495,8 @@ a container is not required — a unit works just as well on a host that
 already runs one:
 
 ```bash
-CGO_ENABLED=0 go build -o /usr/local/bin/scan2graph ./cmd/scan2graph
+go install github.com/georg-jung/scan2graph/cmd/scan2graph@v0.1.0
+install -m 0755 "$(go env GOPATH)/bin/scan2graph" /usr/local/bin/scan2graph
 useradd --system --no-create-home --shell /usr/sbin/nologin scan2graph
 
 mkdir -p /etc/scan2graph
@@ -507,6 +508,12 @@ cp scan2graph.example.service /etc/systemd/system/scan2graph.service
 systemctl daemon-reload
 systemctl enable --now scan2graph
 ```
+
+Building from a checkout works too — `CGO_ENABLED=0 go build -o
+/usr/local/bin/scan2graph ./cmd/scan2graph` — but a build from an unpacked
+source archive has no repository to read a version from and reports
+`unknown`. Check either way with `scan2graph --version`; see
+[versioning](docs/versioning.md).
 
 The unit runs `serve`, which never opens the wizard, so `setup-next-start`
 — which only arms the *next* start with no subcommand — would do nothing
@@ -605,7 +612,8 @@ that is always the reverse proxy's job.
 ## Development & tests
 
 The planned native DSM adapter is defined by the
-[deployment contract](docs/deployment-contract.md).
+[deployment contract](docs/deployment-contract.md); releases are tags, as
+described in [versioning](docs/versioning.md).
 
 ```bash
 go build ./...

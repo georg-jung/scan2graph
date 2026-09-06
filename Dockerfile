@@ -3,9 +3,11 @@
 FROM golang:1.27-alpine AS build
 WORKDIR /src
 COPY . .
+# .git is not in the build context (see .dockerignore), so the toolchain has
+# no tags to derive a version from and the release workflow passes the tag in.
 ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath \
-      -ldflags="-s -w -X main.version=${VERSION}" \
+      -ldflags="-s -w -X github.com/georg-jung/scan2graph/internal/version.Stamp=${VERSION}" \
       -o /out/scan2graph ./cmd/scan2graph
 RUN mkdir /config && chown 65532:65532 /config
 

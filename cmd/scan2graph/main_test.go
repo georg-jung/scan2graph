@@ -830,3 +830,27 @@ func fakeDiscovery(t *testing.T) string {
 	})
 	return ts.URL
 }
+
+// TestVersionPrints pins the three ways an operator asks what is running.
+// The value itself is the version package's business; what matters here is
+// that the argument is recognised at all rather than falling through to the
+// config machinery, that it lands on stdout, and that it exits cleanly.
+func TestVersionPrints(t *testing.T) {
+	for _, arg := range []string{"--version", "-version", "version"} {
+		t.Run(arg, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0])
+			cmd.Env = []string{runMainEnv + "=" + arg}
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("scan2graph %s: %v", arg, err)
+			}
+			got := strings.TrimSpace(string(out))
+			if got == "" || strings.ContainsAny(got, " \n") {
+				t.Errorf("scan2graph %s printed %q, want a single bare version", arg, got)
+			}
+			if got == "dev" {
+				t.Errorf("scan2graph %s printed the old hardcoded placeholder", arg)
+			}
+		})
+	}
+}
