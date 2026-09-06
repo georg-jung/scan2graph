@@ -495,8 +495,7 @@ a container is not required — a unit works just as well on a host that
 already runs one:
 
 ```bash
-go install github.com/georg-jung/scan2graph/cmd/scan2graph@v0.1.0
-install -m 0755 "$(go env GOPATH)/bin/scan2graph" /usr/local/bin/scan2graph
+CGO_ENABLED=0 go build -o /usr/local/bin/scan2graph ./cmd/scan2graph
 useradd --system --no-create-home --shell /usr/sbin/nologin scan2graph
 
 mkdir -p /etc/scan2graph
@@ -509,10 +508,12 @@ systemctl daemon-reload
 systemctl enable --now scan2graph
 ```
 
-Building from a checkout works too — `CGO_ENABLED=0 go build -o
-/usr/local/bin/scan2graph ./cmd/scan2graph` — but a build from an unpacked
-source archive has no repository to read a version from and reports
-`unknown`. Check either way with `scan2graph --version`; see
+Run that from a git clone: the two `cp` lines need the files anyway, and a
+build from an unpacked source archive has no repository to read a version
+from, so it reports `unknown`. For just the binary,
+`go install github.com/georg-jung/scan2graph/cmd/scan2graph@v0.1.0` needs no
+checkout at all and reports that exact version. Either way,
+`scan2graph --version` says what you got; see
 [versioning](docs/versioning.md).
 
 The unit runs `serve`, which never opens the wizard, so `setup-next-start`
