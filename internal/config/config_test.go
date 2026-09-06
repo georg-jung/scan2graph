@@ -396,11 +396,12 @@ func TestLoadRejectsBudgetSmallerThanTwoMessages(t *testing.T) {
 	env["S2G_MAX_STORED_BYTES"] = "3999"
 	wantLoadErr(t, env, "S2G_MAX_STORED_BYTES", "at least")
 
-	// Doubling the message cap to compare it would overflow here, and let
-	// through a DATA cap no store could ever admit.
+	// Doubling the message cap, to compare it or to report it, would
+	// overflow here: it would let through a DATA cap no store could ever
+	// admit, and quote a negative number at whoever has to fix it.
 	env["S2G_MAX_MESSAGE_BYTES"] = "9223372036854775807"
 	env["S2G_MAX_STORED_BYTES"] = "536870912"
-	wantLoadErr(t, env, "S2G_MAX_STORED_BYTES", "at least")
+	wantLoadErr(t, env, "S2G_MAX_STORED_BYTES", "at least", "9223372036854775807")
 }
 
 func TestLoadProfilesValidation(t *testing.T) {
