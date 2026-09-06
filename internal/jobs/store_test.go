@@ -1295,10 +1295,14 @@ func TestAbortedTransactionCostsNobodyAScan(t *testing.T) {
 // map it no longer has, and finishing it again would push it past the
 // deadline it must not outlive.
 func TestEvictedJobIsGoneToItsWriters(t *testing.T) {
-	s, _ := newTestStore(t, Options{MaxBytes: 2 * reserveBytes})
+	s, clk := newTestStore(t, Options{MaxBytes: 2 * reserveBytes})
 	size := int(reserveBytes) / 2
+	// Distinct arrival times, or which one is the oldest -- and so which one
+	// this test expects to find evicted -- is not decided.
 	oldest, _ := commitReady(t, s, "oldest", size)
+	clk.advance(time.Minute)
 	commitReady(t, s, "middle", size)
+	clk.advance(time.Minute)
 	commitReady(t, s, "newest", size)
 
 	st, err := s.Reserve(reserveBytes)
