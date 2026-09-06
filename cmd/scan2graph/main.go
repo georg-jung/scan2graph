@@ -30,6 +30,7 @@ import (
 	"github.com/georg-jung/scan2graph/internal/msapi"
 	"github.com/georg-jung/scan2graph/internal/pipeline"
 	"github.com/georg-jung/scan2graph/internal/smtpin"
+	"github.com/georg-jung/scan2graph/internal/version"
 	"github.com/georg-jung/scan2graph/internal/web"
 )
 
@@ -38,11 +39,12 @@ import (
 // somewhere other than where the appliance will be.
 const defaultHTTPAddr = ":8080"
 
-// version is set at build time (-ldflags "-X main.version=...").
-var version = "dev"
-
 func main() {
 	args := os.Args[1:]
+	if len(args) == 1 && (args[0] == "-version" || args[0] == "--version") {
+		fmt.Println(version.String())
+		return
+	}
 	mode, rest := "", args
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		mode, rest = args[0], args[1:]
@@ -54,10 +56,15 @@ func main() {
 		runSetupMode(rest)
 	case "setup-next-start":
 		runSetupNextStartMode(rest)
+	case "version":
+		if len(rest) > 0 {
+			fatal("version takes no arguments, got %q", rest[0])
+		}
+		fmt.Println(version.String())
 	case "":
 		runDefaultMode(rest)
 	default:
-		fatal("unknown subcommand %q (want serve, setup, setup-next-start, or none)", mode)
+		fatal("unknown subcommand %q (want serve, setup, setup-next-start, version, or none)", mode)
 	}
 }
 
@@ -432,7 +439,7 @@ func run(cfg *config.Config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	slog.Info("starting scan2graph", "version", version, "config", cfg)
+	slog.Info("starting scan2graph", "version", version.String(), "config", cfg)
 	announceDefaultProfile(cfg)
 	announceSMTPCredentials(cfg)
 

@@ -28,6 +28,7 @@ import (
 
 	"github.com/georg-jung/scan2graph/internal/config"
 	"github.com/georg-jung/scan2graph/internal/jobs"
+	"github.com/georg-jung/scan2graph/internal/version"
 )
 
 // providerTimeout bounds every call to the identity provider (discovery, JWKS
@@ -304,6 +305,11 @@ type docRow struct {
 	Size string
 	URL  string
 }
+
+// Version is what the templates render in the wizard's footer. It is a method
+// rather than a field so that every page has it without four constructors
+// having to remember to fill it in.
+func (page) Version() string { return version.String() }
 
 // pageFor builds the layout's data for a signed-in page.
 func (s *Server) pageFor(title string, sess *session) page {

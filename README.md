@@ -508,6 +508,14 @@ systemctl daemon-reload
 systemctl enable --now scan2graph
 ```
 
+Run that from a git clone: the two `cp` lines need the files anyway, and a
+build from an unpacked source archive has no repository to read a version
+from, so it reports `unknown`. For just the binary,
+`go install github.com/georg-jung/scan2graph/cmd/scan2graph@v0.1.0` needs no
+checkout at all and reports that exact version. Either way,
+`scan2graph --version` says what you got; see
+[versioning](docs/versioning.md).
+
 The unit runs `serve`, which never opens the wizard, so `setup-next-start`
 — which only arms the *next* start with no subcommand — would do nothing
 here. Under systemd the wizard is a run of its own instead: stop the unit to
@@ -605,7 +613,8 @@ that is always the reverse proxy's job.
 ## Development & tests
 
 The planned native DSM adapter is defined by the
-[deployment contract](docs/deployment-contract.md).
+[deployment contract](docs/deployment-contract.md); releases are tags, as
+described in [versioning](docs/versioning.md).
 
 ```bash
 go build ./...
