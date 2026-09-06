@@ -390,10 +390,10 @@ func TestLoadLimitValidation(t *testing.T) {
 // A message the store could never make room for would be rejected on
 // arrival, every time, so the pair is validated together rather than each
 // value on its own.
-func TestLoadRejectsBudgetSmallerThanOneMessage(t *testing.T) {
+func TestLoadRejectsBudgetSmallerThanTwoMessages(t *testing.T) {
 	env := clone(baseEnv())
 	env["S2G_MAX_MESSAGE_BYTES"] = "2000"
-	env["S2G_MAX_STORED_BYTES"] = "1999"
+	env["S2G_MAX_STORED_BYTES"] = "3999"
 	wantLoadErr(t, env, "S2G_MAX_STORED_BYTES", "at least")
 }
 

@@ -883,13 +883,24 @@ func TestEvictedScanStaysListedAsRemoved(t *testing.T) {
 	h := newHarness(t)
 	job := h.addJob("Rechnung", []string{ann}, webCaps, "%PDF-1.7 one")
 
-	// Ask for the whole budget, which the store can only grant by removing
-	// the finished scan above.
+	// A scan that takes the whole budget, which the store can only fit by
+	// removing the finished one above.
 	st, err := h.store.Reserve(16 << 20)
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
-	defer st.Abort()
+	f, err := st.CreateFile("doc")
+	if err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	f.Close()
+	if _, err := st.Commit(jobs.NewJob{
+		Caps:       webCaps,
+		Recipients: []string{bob},
+		Documents:  []jobs.NewDocument{{DisplayName: "big.pdf", Path: f.Name()}},
+	}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
 
 	c := h.signedIn()
 	_, list := h.get(c, h.ts.URL+"/")

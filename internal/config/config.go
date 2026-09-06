@@ -362,11 +362,14 @@ func (l *loader) limits() Limits {
 		MaxStoredBytes:    l.int64Positive("S2G_MAX_STORED_BYTES", 536870912),
 		MaxConcurrentJobs: l.intPositive("S2G_MAX_CONCURRENT_JOBS", 2),
 	}
-	// One message must fit, or every scan is rejected on arrival: the store
-	// charges the DATA cap for a message it has not read yet.
-	if lim.MaxStoredBytes > 0 && lim.MaxMessageBytes > lim.MaxStoredBytes {
-		l.errorf("S2G_MAX_STORED_BYTES: must be at least S2G_MAX_MESSAGE_BYTES (%d), got %d",
-			lim.MaxMessageBytes, lim.MaxStoredBytes)
+	// Two messages must fit. One, because the store charges the DATA cap for
+	// a message it has not read yet and would otherwise reject every scan on
+	// arrival; two, because OCR writes the searchable PDF before the original
+	// it replaces is removed, so one scan being worked on can hold twice its
+	// own size.
+	if lim.MaxStoredBytes > 0 && 2*lim.MaxMessageBytes > lim.MaxStoredBytes {
+		l.errorf("S2G_MAX_STORED_BYTES: must be at least twice S2G_MAX_MESSAGE_BYTES (%d), got %d",
+			2*lim.MaxMessageBytes, lim.MaxStoredBytes)
 	}
 	return lim
 }

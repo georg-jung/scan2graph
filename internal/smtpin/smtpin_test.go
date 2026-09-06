@@ -274,15 +274,17 @@ func TestTooManyParts(t *testing.T) {
 
 func TestCapacityExhausted(t *testing.T) {
 	h := &fakeHandler{}
-	addr, store, cfg := newHarness(t, map[string]string{"S2G_MAX_STORED_BYTES": "1048576"}, nil, h)
+	addr, store, cfg := newHarness(t, map[string]string{"S2G_MAX_STORED_BYTES": "2097152"}, nil, h)
 
-	// Occupy the whole budget with a reservation, which is work in flight and
+	// Occupy the whole budget with reservations, which are work in flight and
 	// so cannot be evicted to make room -- the one case that still rejects.
-	held, err := store.Reserve(cfg.Limits.MaxMessageBytes)
-	if err != nil {
-		t.Fatalf("Reserve: %v", err)
+	for i := 0; i < 2; i++ {
+		held, err := store.Reserve(cfg.Limits.MaxMessageBytes)
+		if err != nil {
+			t.Fatalf("Reserve %d: %v", i, err)
+		}
+		defer held.Abort()
 	}
-	defer held.Abort()
 
 	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")
@@ -299,7 +301,7 @@ func TestCapacityExhausted(t *testing.T) {
 // to turn the printer away: the oldest finished one gives way instead.
 func TestFullBudgetOfFinishedScansStillAcceptsAMessage(t *testing.T) {
 	h := &fakeHandler{}
-	addr, store, cfg := newHarness(t, map[string]string{"S2G_MAX_STORED_BYTES": "1048576"}, nil, h)
+	addr, store, cfg := newHarness(t, map[string]string{"S2G_MAX_STORED_BYTES": "2097152"}, nil, h)
 
 	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")
@@ -311,6 +313,14 @@ func TestFullBudgetOfFinishedScansStillAcceptsAMessage(t *testing.T) {
 	if err := store.SetStatus(first.ID, jobs.StatusReady, ""); err != nil {
 		t.Fatalf("SetStatus: %v", err)
 	}
+
+	// A second transaction already under way, so the finished scan above is
+	// the only thing that can give way for the one below.
+	held, err := store.Reserve(cfg.Limits.MaxMessageBytes)
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	defer held.Abort()
 
 	c = mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")

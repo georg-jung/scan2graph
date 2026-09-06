@@ -803,7 +803,7 @@ func TestConcurrencyRace(t *testing.T) {
 	if n := s.Len(); n != 0 {
 		t.Fatalf("Len() = %d after the TTL passed, want 0", n)
 	}
-	if n := s.Bytes(); n != 0 {
+	if n := s.usedBytes(); n != 0 {
 		t.Errorf("Bytes() = %d with an empty store, want 0", n)
 	}
 }
@@ -1097,14 +1097,14 @@ func TestChargeFallsToTheRealSizeWhenAJobIsFinished(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	if got := s.Bytes(); got != reserveBytes {
+	if got := s.usedBytes(); got != reserveBytes {
 		t.Errorf("Bytes() while the pipeline owns the job = %d, want the reserved %d", got, reserveBytes)
 	}
 
 	if err := s.SetStatus(job.ID, StatusReady, ""); err != nil {
 		t.Fatalf("SetStatus: %v", err)
 	}
-	if got := s.Bytes(); got != size {
+	if got := s.usedBytes(); got != size {
 		t.Errorf("Bytes() once finished = %d, want the document's %d", got, size)
 	}
 }
@@ -1123,9 +1123,15 @@ func TestReserveEvictsTheOldestFinishedJob(t *testing.T) {
 
 	st, err := s.Reserve(reserveBytes)
 	if err != nil {
-		t.Fatalf("Reserve with a full budget: %v, want it to make room", err)
+		t.Fatalf("Reserve with a full budget: %v, want it to be admitted", err)
 	}
-	defer st.Abort()
+	if got, ok := s.Get(oldest.ID); !ok || got.Status != StatusReady {
+		t.Errorf("a scan was destroyed before the new one was accepted: ok=%v status=%q", ok, got.Status)
+	}
+	incoming := writeStagedFile(t, st, "doc", "x")
+	if _, err := st.Commit(NewJob{Documents: []NewDocument{{DisplayName: "new.pdf", Path: incoming}}}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
 
 	gone, ok := s.Get(oldest.ID)
 	if !ok {
@@ -1242,7 +1248,7 @@ func TestFinishingRemovesWhatNoDocumentPointsAt(t *testing.T) {
 	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
 		t.Errorf("the unreferenced file is still on disk: err=%v", err)
 	}
-	if got := s.Bytes(); got != kept {
+	if got := s.usedBytes(); got != kept {
 		t.Errorf("Bytes() = %d, want the document's %d", got, kept)
 	}
 	// The document itself is untouched: a failed OCR keeps the original
@@ -1252,5 +1258,35 @@ func TestFinishingRemovesWhatNoDocumentPointsAt(t *testing.T) {
 	}
 	if j, ok := s.Get(job.ID); !ok || len(j.Documents) != 1 {
 		t.Errorf("job after failing: ok=%v documents=%d, want 1", ok, len(j.Documents))
+	}
+}
+
+// Reserve happens before a single body byte is read, and the message may
+// still turn out to be a printer's "test connection" with nothing attached,
+// a reset, or too large. None of those may cost somebody a scan.
+func TestAbortedTransactionCostsNobodyAScan(t *testing.T) {
+	s, _ := newTestStore(t, Options{MaxBytes: 2 * reserveBytes})
+	size := int(reserveBytes) / 2
+
+	var kept []Job
+	for i := 0; i < 3; i++ {
+		job, _ := commitReady(t, s, fmt.Sprintf("scan%d", i), size)
+		kept = append(kept, job)
+	}
+
+	st, err := s.Reserve(reserveBytes)
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	st.Abort()
+
+	for _, want := range kept {
+		got, ok := s.Get(want.ID)
+		if !ok || got.Status != StatusReady || len(got.Documents) != 1 {
+			t.Errorf("scan %q: ok=%v status=%q docs=%d, want it untouched", want.Subject, ok, got.Status, len(got.Documents))
+		}
+	}
+	if got := s.usedBytes(); got != int64(3*size) {
+		t.Errorf("usedBytes() = %d, want the three scans' %d back", got, 3*size)
 	}
 }
