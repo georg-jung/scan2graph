@@ -590,8 +590,8 @@ scans are deleted immediately after successful delivery.
 
 A scan can also go earlier than that. `S2G_MAX_STORED_BYTES` (512 MiB by
 default) is the temporary space every queued, in-flight and web-visible scan
-shares, and when a message is accepted and it is full, the oldest *finished*
-scans are removed to make room. Nothing is removed before that point: a
+shares, and when a message is accepted and it is full, *finished* scans are
+removed, oldest first, until it fits. Nothing is removed before that point: a
 transaction that turns out to carry no attachment — a printer's "test
 connection" button — or one that is reset or refused costs nobody a scan.
 The entries of the ones that do go stay in the web UI as

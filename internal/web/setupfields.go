@@ -121,7 +121,7 @@ var setupFields = []setupField{
 	}, {
 		Name: "S2G_MAX_STORED_BYTES", Label: "Space for kept scans", Group: "Advanced", Rare: true,
 		Help: "How much temporary space queued, in-flight and waiting-to-be-picked-up scans may " +
-			"take together, in bytes; when it is full the oldest finished scan is removed to make room.",
+			"take together, in bytes; when it is full, finished scans are removed oldest first to make room.",
 		Placeholder: "536870912",
 	}, {
 		Name: "S2G_MAX_CONCURRENT_JOBS", Label: "Scans processed at once", Group: "Advanced", Rare: true,
