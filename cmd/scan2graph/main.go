@@ -57,6 +57,9 @@ func main() {
 	case "setup-next-start":
 		runSetupNextStartMode(rest)
 	case "version":
+		if len(rest) > 0 {
+			fatal("version takes no arguments, got %q", rest[0])
+		}
 		fmt.Println(version.String())
 	case "":
 		runDefaultMode(rest)

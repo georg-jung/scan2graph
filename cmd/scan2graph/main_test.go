@@ -854,3 +854,19 @@ func TestVersionPrints(t *testing.T) {
 		})
 	}
 }
+
+// TestVersionRejectsArguments pins that a typo is reported rather than
+// swallowed. Every other subcommand rejects what it does not understand, and
+// a "version" that answers cheerfully whatever follows it would hide a
+// mistake in a script that meant to ask something else.
+func TestVersionRejectsArguments(t *testing.T) {
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = []string{runMainEnv + "=version --bad"}
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("scan2graph version --bad succeeded, printing %q", out)
+	}
+	if !strings.Contains(string(out), "version takes no arguments") {
+		t.Errorf("scan2graph version --bad said %q, want the unexpected-argument failure", out)
+	}
+}
