@@ -92,6 +92,7 @@ tbody a:hover { text-decoration: underline; }
 .status.ready { --chip: var(--ok); }
 .status.pending, .status.processing { --chip: var(--work); }
 .status.failed { --chip: var(--warn); }
+.status.removed { --chip: var(--muted); }
 
 /* The download control: filled, and the obvious thing to do on a page whose
    whole purpose is that one click. A multi-document scan lists several of

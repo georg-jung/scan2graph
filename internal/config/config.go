@@ -32,9 +32,14 @@ type Capabilities struct {
 // so MaxMessageBytes already bounds PDF sizes without a separate cap. MIME
 // part/depth/count caps are constants in the MIME package instead (work
 // package 2), and OCR concurrency follows the worker count.
+//
+// How many scans are kept is deliberately not a setting: the resource that
+// actually runs out is the space they occupy, and a count would have to be
+// guessed against a scan size nobody knows in advance. MaxStoredBytes is
+// that space; the number of scans falls out of it.
 type Limits struct {
 	MaxMessageBytes   int64 // SMTP DATA cap
-	MaxJobs           int   // queued + in-flight + web-visible jobs
+	MaxStoredBytes    int64 // disk budget for queued, in-flight and web-visible scans
 	MaxConcurrentJobs int   // pipeline workers
 }
 
@@ -352,11 +357,19 @@ func (l *loader) tenantURL(name, tenantID, defaultPathSuffix string) string {
 }
 
 func (l *loader) limits() Limits {
-	return Limits{
+	lim := Limits{
 		MaxMessageBytes:   l.int64Positive("S2G_MAX_MESSAGE_BYTES", 33554432),
-		MaxJobs:           l.intPositive("S2G_MAX_JOBS", 32),
+		MaxStoredBytes:    l.int64Positive("S2G_MAX_STORED_BYTES", 536870912),
 		MaxConcurrentJobs: l.intPositive("S2G_MAX_CONCURRENT_JOBS", 2),
 	}
+	// One message must fit, or every scan is rejected the moment it arrives:
+	// the store takes the DATA cap as the budget for a message it has not
+	// read yet.
+	if lim.MaxStoredBytes > 0 && lim.MaxMessageBytes > lim.MaxStoredBytes {
+		l.errorf("S2G_MAX_STORED_BYTES: must be at least S2G_MAX_MESSAGE_BYTES (%d), got %d",
+			lim.MaxMessageBytes, lim.MaxStoredBytes)
+	}
+	return lim
 }
 
 func (l *loader) logLevel() slog.Level {

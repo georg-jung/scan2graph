@@ -179,8 +179,14 @@ func (s *Server) job(sess *session, jobID string) (jobs.Job, bool) {
 }
 
 // notFound is the single answer for an unknown, expired, non-web or
-// somebody-else's job or document.
-func notFound(w http.ResponseWriter) { http.Error(w, "not found", http.StatusNotFound) }
+// somebody-else's job or document. The wording says nothing about which of
+// those it was -- "not yours" has to stay indistinguishable from "never
+// existed" -- but a link from a notice email is far more often an expired
+// scan than a mistake, and gets told what to do about it.
+func notFound(w http.ResponseWriter) {
+	http.Error(w, "This scan is not available. Scans are kept for a limited time, "+
+		"and are removed earlier when the space is needed for newer ones.", http.StatusNotFound)
+}
 
 func (s *Server) handleList(w http.ResponseWriter, _ *http.Request, sess *session) {
 	found := s.store.ListForUser(sess.identities)
@@ -362,6 +368,9 @@ func scanSize(docs []jobs.Document) string {
 	var total int64
 	for _, d := range docs {
 		total += d.Size
+	}
+	if len(docs) == 0 {
+		return "—" // an evicted scan: the metadata is all that is left
 	}
 	if len(docs) == 1 {
 		return humanBytes(total)

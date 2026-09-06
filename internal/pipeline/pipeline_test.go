@@ -26,7 +26,7 @@ func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard,
 
 func newStore(t *testing.T) *jobs.Store {
 	t.Helper()
-	st, err := jobs.New(jobs.Options{Root: t.TempDir(), TTL: time.Hour, MaxJobs: 64, Logger: testLogger()})
+	st, err := jobs.New(jobs.Options{Root: t.TempDir(), TTL: time.Hour, MaxBytes: 64 << 20, Logger: testLogger()})
 	if err != nil {
 		t.Fatalf("jobs.New: %v", err)
 	}
@@ -37,7 +37,7 @@ func newStore(t *testing.T) *jobs.Store {
 // commit stages one job with a document per content string and commits it.
 func commit(t *testing.T, st *jobs.Store, caps jobs.Capabilities, subject string, contents ...string) jobs.Job {
 	t.Helper()
-	staging, err := st.Reserve()
+	staging, err := st.Reserve(1 << 20)
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}

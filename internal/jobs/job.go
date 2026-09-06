@@ -24,11 +24,18 @@ type Capabilities struct {
 // Status is a job's lifecycle state.
 type Status string
 
+// The values double as the word the web UI puts on a scan, which is why
+// StatusEvicted reads the way it does: the operator's word for what happened
+// is "removed", the code's reason for it is eviction.
 const (
 	StatusPending    Status = "pending"
 	StatusProcessing Status = "processing"
 	StatusReady      Status = "ready"
 	StatusFailed     Status = "failed"
+	// StatusEvicted is a finished job whose files were removed early to
+	// make room for a new scan. It keeps its metadata, and nothing else,
+	// until the moment it would have expired anyway.
+	StatusEvicted Status = "removed"
 )
 
 // Document is one PDF belonging to a job.

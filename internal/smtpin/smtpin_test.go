@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/georg-jung/scan2graph/internal/jobs"
 )
 
 func TestFullTransaction(t *testing.T) {
@@ -272,10 +274,11 @@ func TestTooManyParts(t *testing.T) {
 
 func TestCapacityExhausted(t *testing.T) {
 	h := &fakeHandler{}
-	addr, store, cfg := newHarness(t, map[string]string{"S2G_MAX_JOBS": "1"}, nil, h)
+	addr, store, cfg := newHarness(t, map[string]string{"S2G_MAX_STORED_BYTES": "1048576"}, nil, h)
 
-	// Occupy the only slot directly, without going through a transaction.
-	held, err := store.Reserve()
+	// Occupy the whole budget with a reservation, which is work in flight and
+	// so cannot be evicted to make room -- the one case that still rejects.
+	held, err := store.Reserve(cfg.Limits.MaxMessageBytes)
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
@@ -289,6 +292,39 @@ func TestCapacityExhausted(t *testing.T) {
 	}
 	if len(h.enqueued()) != 0 {
 		t.Errorf("enqueued %d jobs, want 0", len(h.enqueued()))
+	}
+}
+
+// The budget being full of scans somebody could still fetch is not a reason
+// to turn the printer away: the oldest finished one gives way instead.
+func TestFullBudgetOfFinishedScansStillAcceptsAMessage(t *testing.T) {
+	h := &fakeHandler{}
+	addr, store, cfg := newHarness(t, map[string]string{"S2G_MAX_STORED_BYTES": "1048576"}, nil, h)
+
+	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+	c.cmd(250, "MAIL FROM:<printer@corp.example>")
+	c.cmd(250, "RCPT TO:<alice@corp.example>")
+	if code, msg := c.data(singlePDFMessage("First")); code != 250 {
+		t.Fatalf("first DATA: got %d %q, want 250", code, msg)
+	}
+	first := h.enqueued()[0]
+	if err := store.SetStatus(first.ID, jobs.StatusReady, ""); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+
+	c = mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+	c.cmd(250, "MAIL FROM:<printer@corp.example>")
+	c.cmd(250, "RCPT TO:<alice@corp.example>")
+	if code, msg := c.data(singlePDFMessage("Second")); code != 250 {
+		t.Fatalf("second DATA with a full budget: got %d %q, want 250", code, msg)
+	}
+	if n := len(h.enqueued()); n != 2 {
+		t.Fatalf("enqueued %d jobs, want 2", n)
+	}
+	evicted, ok := store.Get(first.ID)
+	if !ok || evicted.Status != jobs.StatusEvicted || len(evicted.Documents) != 0 {
+		t.Errorf("the first scan: ok=%v status=%q docs=%d, want a removed tombstone",
+			ok, evicted.Status, len(evicted.Documents))
 	}
 }
 

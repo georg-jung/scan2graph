@@ -37,7 +37,7 @@ const jobTimeout = 30 * time.Minute
 const noticeTimeout = 5 * time.Second
 
 // queuePerWorker is how many accepted jobs may wait per worker before
-// Enqueue starts refusing. The store's own MaxJobs is the real ceiling on
+// Enqueue starts refusing. The store's own byte budget is the real ceiling on
 // outstanding scans; this only keeps a burst from being dropped.
 const queuePerWorker = 8
 

@@ -134,7 +134,7 @@ func TestLoadMinimalValidConfigAndDefaults(t *testing.T) {
 	}
 	wantLimits := Limits{
 		MaxMessageBytes:   33554432,
-		MaxJobs:           32,
+		MaxStoredBytes:    536870912,
 		MaxConcurrentJobs: 2,
 	}
 	if c.Limits != wantLimits {
@@ -367,7 +367,7 @@ func TestLoadDurationValidation(t *testing.T) {
 }
 
 func TestLoadLimitValidation(t *testing.T) {
-	limitVars := []string{"S2G_MAX_MESSAGE_BYTES", "S2G_MAX_JOBS", "S2G_MAX_CONCURRENT_JOBS"}
+	limitVars := []string{"S2G_MAX_MESSAGE_BYTES", "S2G_MAX_STORED_BYTES", "S2G_MAX_CONCURRENT_JOBS"}
 	for _, name := range limitVars {
 		t.Run(name+"=0", func(t *testing.T) {
 			env := clone(baseEnv())
@@ -384,6 +384,21 @@ func TestLoadLimitValidation(t *testing.T) {
 			env[name] = "abc"
 			wantLoadErr(t, env, name, "invalid integer")
 		})
+	}
+}
+
+// A message the store could never make room for would be rejected on
+// arrival, every time, so the pair is validated together rather than each
+// value on its own.
+func TestLoadRejectsBudgetSmallerThanOneMessage(t *testing.T) {
+	env := clone(baseEnv())
+	env["S2G_MAX_MESSAGE_BYTES"] = "2000"
+	env["S2G_MAX_STORED_BYTES"] = "1999"
+	wantLoadErr(t, env, "S2G_MAX_STORED_BYTES", "at least")
+
+	env["S2G_MAX_STORED_BYTES"] = "2000"
+	if c := mustLoad(t, env); c.Limits.MaxStoredBytes != 2000 {
+		t.Errorf("MaxStoredBytes = %d, want 2000 (exactly one message must be accepted)", c.Limits.MaxStoredBytes)
 	}
 }
 

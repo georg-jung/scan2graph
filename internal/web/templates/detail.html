@@ -8,6 +8,9 @@
 <meta http-equiv="refresh" content="5">
 <p class="muted small">Still being processed – the documents appear here when it
   is done, and this page updates itself.</p>
+{{else if not .Documents}}
+<p class="empty">This scan was removed early to make room for newer ones. Its
+  files are gone; scan the document again if you still need it.</p>
 {{else if eq (len .Documents) 1}}{{with index .Documents 0}}
 <a class="download" href="{{.URL}}" download>Download {{.Name}}<span class="size">{{.Size}}</span></a>
 {{end}}

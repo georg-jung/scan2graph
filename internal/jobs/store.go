@@ -40,8 +40,11 @@ type Options struct {
 	// (see SetStatus).
 	TTL time.Duration
 
-	// MaxJobs bounds outstanding reservations plus committed jobs.
-	MaxJobs int
+	// MaxBytes is the disk budget for everything the store holds: the
+	// worst-case size promised by each outstanding reservation plus what
+	// every committed job occupies (see Reserve). It must be at least as
+	// large as the biggest single Reserve, or nothing can ever be accepted.
+	MaxBytes int64
 
 	// Now, if set, replaces time.Now for testing.
 	Now func() time.Time
@@ -59,15 +62,16 @@ type Options struct {
 // require it to be atomic with a disk operation, so a slow filesystem never
 // blocks unrelated Get/List/SetStatus calls.
 type Store struct {
-	dir     string
-	ttl     time.Duration
-	maxJobs int
-	now     func() time.Time
-	log     *slog.Logger
+	dir      string
+	ttl      time.Duration
+	maxBytes int64
+	now      func() time.Time
+	log      *slog.Logger
 
 	mu           sync.Mutex
 	jobs         map[string]*jobRecord
 	reservations map[string]*reservation
+	used         int64 // sum of every record's and reservation's charge
 	closed       bool
 }
 
@@ -77,6 +81,11 @@ type Store struct {
 type jobRecord struct {
 	job Job
 	dir string
+	// bytes is what this job currently costs against the budget: the
+	// worst case its reservation promised while the pipeline still owns it,
+	// its documents' real size once it is finished, zero once it has been
+	// evicted (see makeRoomLocked).
+	bytes int64
 	// files are the paths this store created for the job (staged documents
 	// plus anything CreateFile produced later). Only these may ever be
 	// referenced by a Document, which is what keeps a symlink or a stray
@@ -89,6 +98,7 @@ type jobRecord struct {
 type reservation struct {
 	dir        string
 	reservedAt time.Time
+	bytes      int64
 }
 
 // New creates a Store with its own private subdirectory inside opts.Root.
@@ -99,8 +109,8 @@ func New(opts Options) (*Store, error) {
 	if opts.TTL <= 0 {
 		return nil, errors.New("jobs: Options.TTL must be positive")
 	}
-	if opts.MaxJobs <= 0 {
-		return nil, errors.New("jobs: Options.MaxJobs must be positive")
+	if opts.MaxBytes <= 0 {
+		return nil, errors.New("jobs: Options.MaxBytes must be positive")
 	}
 
 	root, err := filepath.Abs(opts.Root)
@@ -135,7 +145,7 @@ func New(opts Options) (*Store, error) {
 	return &Store{
 		dir:          dir,
 		ttl:          opts.TTL,
-		maxJobs:      opts.MaxJobs,
+		maxBytes:     opts.MaxBytes,
 		now:          now,
 		log:          logger,
 		jobs:         make(map[string]*jobRecord),
@@ -143,29 +153,49 @@ func New(opts Options) (*Store, error) {
 	}, nil
 }
 
-// Reserve takes one capacity slot and creates a private staging directory
-// for a new job. The caller must eventually call Commit or Abort on the
-// returned Staging so the slot is freed. Returns ErrCapacity when the store
-// is full (len(jobs)+outstanding reservations >= MaxJobs) and ErrClosed
-// after Close.
-func (s *Store) Reserve() (*Staging, error) {
+// Reserve charges maxBytes against the store's budget and creates a private
+// staging directory for a new job. maxBytes is the most the caller may write
+// into it -- the SMTP message cap, since a decoded attachment is always
+// smaller than the message that carried it -- and the charge stays at that
+// worst case until the pipeline finishes with the job, because an OCR result
+// is written before the original it replaces is removed. SetStatus then
+// charges the job what it actually occupies.
+//
+// When the budget is exhausted, the oldest finished scans are removed early
+// to make room (see makeRoomLocked): someone is standing at the printer, and
+// a scan from hours ago has most likely been picked up already. ErrCapacity
+// is returned only when even that does not free enough -- the store is full
+// of work in flight, which is real backpressure -- and ErrClosed after Close.
+//
+// The caller must eventually call Commit or Abort on the returned Staging so
+// the charge is settled or released.
+func (s *Store) Reserve(maxBytes int64) (*Staging, error) {
+	if maxBytes <= 0 {
+		return nil, errors.New("jobs: reserve requires a positive maxBytes")
+	}
+
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		return nil, ErrClosed
 	}
-	if len(s.jobs)+len(s.reservations) >= s.maxJobs {
+	evicted, ok := s.makeRoomLocked(maxBytes)
+	if !ok {
 		s.mu.Unlock()
 		return nil, ErrCapacity
 	}
 	id, err := newID()
 	if err != nil {
 		s.mu.Unlock()
+		s.removeDirs(evicted)
 		return nil, err
 	}
 	dir := filepath.Join(s.dir, id)
-	s.reservations[id] = &reservation{dir: dir, reservedAt: s.now()}
+	s.reservations[id] = &reservation{dir: dir, reservedAt: s.now(), bytes: maxBytes}
+	s.used += maxBytes
 	s.mu.Unlock()
+
+	s.removeDirs(evicted)
 
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		s.releaseReservation(id)
@@ -187,29 +217,105 @@ func (s *Store) Reserve() (*Staging, error) {
 	return &Staging{store: s, id: id, dir: dir, files: make(map[string]bool)}, nil
 }
 
-// releaseReservation drops reservation id, freeing its capacity slot. It
-// does not touch the filesystem.
+// makeRoomLocked frees the budget for want more bytes by evicting the oldest
+// finished jobs, and returns the directories the caller must remove after
+// unlocking. It reports false, having evicted nothing, when even every
+// finished job together would not be enough: destroying scans that still
+// would not make room helps nobody, and the caller rejects instead.
+//
+// A job the pipeline has not finished with is never a candidate -- it is
+// work in flight, and its recipients have not been told anything yet.
+// Evicting leaves the job itself in place as a tombstone until the moment it
+// would have expired anyway, so the web UI can say the scan was removed
+// early rather than making it vanish silently.
+func (s *Store) makeRoomLocked(want int64) ([]string, bool) {
+	if s.used+want <= s.maxBytes {
+		return nil, true
+	}
+
+	candidates := make([]*jobRecord, 0, len(s.jobs))
+	var freeable int64
+	for _, rec := range s.jobs {
+		if rec.bytes == 0 || !finished(rec.job.Status) {
+			continue
+		}
+		candidates = append(candidates, rec)
+		freeable += rec.bytes
+	}
+	if s.used-freeable+want > s.maxBytes {
+		return nil, false
+	}
+
+	sort.Slice(candidates, func(i, k int) bool {
+		return candidates[i].job.ReceivedAt.Before(candidates[k].job.ReceivedAt)
+	})
+
+	dirs := make([]string, 0, len(candidates))
+	for _, rec := range candidates {
+		if s.used+want <= s.maxBytes {
+			break
+		}
+		s.log.Info("jobs: removing a scan early to make room for a new one",
+			"job_id", rec.job.ID, "bytes", rec.bytes)
+		dirs = append(dirs, rec.dir)
+		rec.job.Status = StatusEvicted
+		rec.job.Error = ""
+		rec.job.Documents = nil
+		rec.files = nil
+		s.charge(rec, 0)
+	}
+	return dirs, true
+}
+
+// removeDirs deletes evicted job directories. Failures are logged (with the
+// path's owner id, never a subject) rather than surfaced: the metadata is
+// already gone from the budget either way.
+func (s *Store) removeDirs(dirs []string) {
+	for _, dir := range dirs {
+		if err := os.RemoveAll(dir); err != nil {
+			s.log.Warn("jobs: failed to remove evicted job directory", "dir", filepath.Base(dir), "err", err)
+		}
+	}
+}
+
+// charge sets a record's budget cost to n, keeping s.used in step. The
+// caller must hold s.mu.
+func (s *Store) charge(rec *jobRecord, n int64) {
+	s.used += n - rec.bytes
+	rec.bytes = n
+}
+
+// finished reports whether the pipeline is done with a job, which is what
+// makes it evictable and what freezes its size.
+func finished(st Status) bool { return st == StatusReady || st == StatusFailed }
+
+// releaseReservation drops reservation id, releasing its charge. It does not
+// touch the filesystem.
 func (s *Store) releaseReservation(id string) {
 	s.mu.Lock()
-	delete(s.reservations, id)
+	if r, ok := s.reservations[id]; ok {
+		s.used -= r.bytes
+		delete(s.reservations, id)
+	}
 	s.mu.Unlock()
 }
 
-// commitReservation atomically turns reservation id into job, keeping the
-// same capacity slot (one reservation becomes exactly one job, never two
-// slots). It fails if the store is closed or the reservation is already
-// gone (double commit/abort).
+// commitReservation atomically turns reservation id into job, carrying over
+// the reservation's charge unchanged (one reservation becomes exactly one
+// job, never two charges). It fails if the store is closed or the
+// reservation is already gone (double commit/abort).
 func (s *Store) commitReservation(id string, job Job, dir string, files map[string]bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return ErrClosed
 	}
-	if _, ok := s.reservations[id]; !ok {
+	r, ok := s.reservations[id]
+	if !ok {
 		return fmt.Errorf("jobs: reservation %s is gone", id)
 	}
 	delete(s.reservations, id)
-	s.jobs[job.ID] = &jobRecord{job: job, dir: dir, files: files}
+	s.jobs[job.ID] = &jobRecord{job: job, dir: dir, bytes: r.bytes, files: files}
 	return nil
 }
 
@@ -313,8 +419,18 @@ func (s *Store) SetStatus(id string, st Status, errMsg string) error {
 	// expired in the same instant, invisible to the person it was scanned
 	// for - and a failed job needs the window as much as a ready one,
 	// because its notice mail links to the scan it could not deliver.
-	if st == StatusReady || st == StatusFailed {
+	if finished(st) {
 		rec.job.ExpiresAt = s.now().Add(s.ttl)
+		// Nothing will be written for this job any more, so the worst case
+		// its reservation promised can give way to what it really occupies.
+		// Until here the job keeps that worst case: OCR writes the
+		// searchable PDF before the original it replaces is removed, so a
+		// job in flight can legitimately need more room than it shows.
+		var n int64
+		for _, d := range rec.job.Documents {
+			n += d.Size
+		}
+		s.charge(rec, n)
 	}
 	return nil
 }
@@ -369,7 +485,9 @@ func (s *Store) ReplaceDocument(jobID, docID, newPath string, ocrApplied bool) e
 
 // CreateFile creates a new, empty 0600 file inside a committed job's
 // directory and registers it, so it can later be passed to ReplaceDocument.
-// This is how processed documents (e.g. a searchable PDF) get on disk.
+// This is how processed documents (e.g. a searchable PDF) get on disk. It
+// needs no budget of its own: an unfinished job is still charged the worst
+// case its reservation promised (see Reserve).
 func (s *Store) CreateFile(jobID, prefix string) (*os.File, error) {
 	s.mu.Lock()
 	rec, ok := s.jobs[jobID]
@@ -409,6 +527,7 @@ func (s *Store) Delete(id string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("jobs: delete: job %s: %w", id, ErrNotFound)
 	}
+	s.charge(rec, 0)
 	delete(s.jobs, id)
 	s.mu.Unlock()
 
@@ -432,12 +551,14 @@ func (s *Store) CleanExpired() int {
 	for id, rec := range s.jobs {
 		if !live(rec.job, now) {
 			expiredJobs = append(expiredJobs, removal{id, rec.dir})
+			s.charge(rec, 0)
 			delete(s.jobs, id)
 		}
 	}
 	for id, r := range s.reservations {
 		if now.Sub(r.reservedAt) > staleReservationAfter {
 			leaked = append(leaked, removal{id, r.dir})
+			s.used -= r.bytes
 			delete(s.reservations, id)
 		}
 	}
@@ -477,12 +598,20 @@ func (s *Store) Run(ctx context.Context) {
 	}
 }
 
-// Len reports how many capacity slots are currently occupied: committed
-// jobs plus outstanding reservations (see Options.MaxJobs).
+// Len reports how many jobs the store is holding, including outstanding
+// reservations and tombstones for evicted jobs.
 func (s *Store) Len() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.jobs) + len(s.reservations)
+}
+
+// Bytes reports how much of the budget (Options.MaxBytes) is currently
+// charged: see Reserve for what an unfinished job costs.
+func (s *Store) Bytes() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.used
 }
 
 // Close stops the store from accepting new reservations and removes its
@@ -498,6 +627,7 @@ func (s *Store) Close() error {
 	dir := s.dir
 	s.jobs = make(map[string]*jobRecord)
 	s.reservations = make(map[string]*reservation)
+	s.used = 0
 	s.mu.Unlock()
 
 	if err := os.RemoveAll(dir); err != nil {
