@@ -353,7 +353,7 @@ real environment variables.
 | --- | --- | --- |
 | `S2G_JOB_TTL` | `8h` (minimum `1m`) | — |
 | `S2G_MAX_MESSAGE_BYTES` | `33554432` (32 MiB) — the SMTP DATA cap, which also bounds PDF size | — |
-| `S2G_MAX_JOBS` | `32` — queued + in-flight + web-visible jobs | — |
+| `S2G_MAX_STORED_BYTES` | `536870912` (512 MiB) — temporary space for queued, in-flight and web-visible scans together; must be at least twice `S2G_MAX_MESSAGE_BYTES`, because OCR holds the searchable PDF and the original at once | — |
 | `S2G_MAX_CONCURRENT_JOBS` | `2` — pipeline workers, also the OCR concurrency cap | — |
 
 A message's MIME structure has its own, non-configurable ceiling (at most 100
@@ -587,6 +587,28 @@ printer sent them. OCR can take a while, and failing takes longer still
 because every retry has to be spent first; measured from arrival, a scan
 could otherwise be finished and expired in the same instant. Email-only
 scans are deleted immediately after successful delivery.
+
+A scan can also go earlier than that. `S2G_MAX_STORED_BYTES` (512 MiB by
+default) is the temporary space every queued, in-flight and web-visible scan
+shares, and when a message is accepted and it is full, *finished* scans are
+removed, oldest first, until it fits. Nothing is removed before that point: a
+transaction that turns out to carry no attachment — a printer's "test
+connection" button — or one that is reset or refused costs nobody a scan.
+The entries of the ones that do go stay in the web UI as
+**removed** — with no files to download — until the moment they would have
+expired anyway, so a scan never silently vanishes from a list somebody is
+looking at.
+
+![A scan removed early to make room, still listed as removed for the rest of its time](docs/screenshots/list-removed.png)
+
+Only work still in flight can make the appliance turn a message away: with
+nothing finished left to remove, it is rejected with SMTP `451`, a temporary
+failure the printer may retry. A scan being *received* is charged
+`S2G_MAX_MESSAGE_BYTES` until it has been read, because its real size is not
+known before that, and it keeps that worst case until the pipeline is done
+with it. The budget is what scan2graph *keeps*, not a hard ceiling on the
+directory: scans being received or worked on can stand above it briefly, so
+give the temporary directory some room above the number you set.
 
 A failed job is not silent. Its status and a short, user-safe reason show in
 the web UI whenever the profile has `web`, and its recipients get a notice

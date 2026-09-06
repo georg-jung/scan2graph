@@ -44,7 +44,8 @@ func testConfig(t *testing.T, set map[string]string, unset ...string) *config.Co
 		"S2G_ALLOWED_RECIPIENT_DOMAINS": "corp.example",
 		"S2G_PUBLIC_BASE_URL":           "https://scan2graph.example",
 		"S2G_PROFILES":                  `{"printer@corp.example":{"email":true,"web":true},"webonly@corp.example":{"web":true}}`,
-		"S2G_MAX_JOBS":                  "8",
+		"S2G_MAX_STORED_BYTES":          "8388608", // 8 messages at the 1 MiB cap below
+		"S2G_MAX_MESSAGE_BYTES":         "1048576",
 	}
 	for _, k := range unset {
 		delete(env, k)
@@ -62,10 +63,10 @@ func testConfig(t *testing.T, set map[string]string, unset ...string) *config.Co
 func newStore(t *testing.T, cfg *config.Config) *jobs.Store {
 	t.Helper()
 	st, err := jobs.New(jobs.Options{
-		Root:    t.TempDir(),
-		TTL:     cfg.JobTTL,
-		MaxJobs: cfg.Limits.MaxJobs,
-		Logger:  testLogger(),
+		Root:     t.TempDir(),
+		TTL:      cfg.JobTTL,
+		MaxBytes: cfg.Limits.MaxStoredBytes,
+		Logger:   testLogger(),
 	})
 	if err != nil {
 		t.Fatalf("jobs.New: %v", err)

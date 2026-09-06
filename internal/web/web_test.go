@@ -75,7 +75,7 @@ func newHarnessAt(t *testing.T, prefix string, uiTitle ...string) *harness {
 	t.Helper()
 	idp := newFakeIDP(t)
 	clock := newTestClock()
-	store, err := jobs.New(jobs.Options{Root: t.TempDir(), TTL: jobTTL, MaxJobs: 16, Now: clock.now, Logger: quiet()})
+	store, err := jobs.New(jobs.Options{Root: t.TempDir(), TTL: jobTTL, MaxBytes: 16 << 20, Now: clock.now, Logger: quiet()})
 	if err != nil {
 		t.Fatalf("jobs.New: %v", err)
 	}
@@ -187,7 +187,7 @@ func (h *harness) signedIn() *http.Client {
 // addJob puts one scan into the store, with one document per content given.
 func (h *harness) addJob(subject string, recipients []string, caps jobs.Capabilities, contents ...string) jobs.Job {
 	h.t.Helper()
-	st, err := h.store.Reserve()
+	st, err := h.store.Reserve(1 << 20)
 	if err != nil {
 		h.t.Fatalf("Reserve: %v", err)
 	}
@@ -874,4 +874,57 @@ func cookie(t *testing.T, resp *http.Response, name string) *http.Cookie {
 	}
 	t.Fatalf("no %s cookie on the %d response", name, resp.StatusCode)
 	return nil
+}
+
+// A scan removed early to make room does not vanish from under the person it
+// was scanned for: the row stays until it would have expired anyway, saying
+// what happened, and its download is gone.
+func TestEvictedScanStaysListedAsRemoved(t *testing.T) {
+	h := newHarness(t)
+	job := h.addJob("Rechnung", []string{ann}, webCaps, "%PDF-1.7 one")
+
+	// A scan that takes the whole budget, which the store can only fit by
+	// removing the finished one above.
+	st, err := h.store.Reserve(16 << 20)
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	f, err := st.CreateFile("doc")
+	if err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	f.Close()
+	if _, err := st.Commit(jobs.NewJob{
+		Caps:       webCaps,
+		Recipients: []string{bob},
+		Documents:  []jobs.NewDocument{{DisplayName: "big.pdf", Path: f.Name()}},
+	}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	c := h.signedIn()
+	_, list := h.get(c, h.ts.URL+"/")
+	if !strings.Contains(list, `<span class="status removed">removed</span>`) {
+		t.Errorf("the list does not show the scan as removed:\n%s", list)
+	}
+
+	_, page := h.get(c, h.ts.URL+"/scan/"+job.ID)
+	if strings.Contains(page, `class="download"`) {
+		t.Errorf("a removed scan still offers a download:\n%s", page)
+	}
+	if !strings.Contains(page, "removed early to make room") {
+		t.Errorf("the detail page does not say why the scan is gone:\n%s", page)
+	}
+
+	resp, _ := h.get(c, h.ts.URL+"/scan/"+job.ID+"/"+job.Documents[0].ID)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("download of a removed scan: status %d, want 404", resp.StatusCode)
+	}
+
+	// And it is not a second retention window: the tombstone goes when the
+	// scan it stands for would have expired.
+	h.clock.add(jobTTL + time.Minute)
+	if _, list := h.get(c, h.ts.URL+"/"); strings.Contains(list, "Rechnung") {
+		t.Errorf("the removed scan outlived its own expiry:\n%s", list)
+	}
 }

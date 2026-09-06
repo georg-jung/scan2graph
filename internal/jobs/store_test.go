@@ -39,6 +39,11 @@ func (c *clock) advance(d time.Duration) {
 	c.mu.Unlock()
 }
 
+// reserveBytes is the worst case every test reservation promises, so a
+// budget can be written as a number of scans: MaxBytes: 4 * reserveBytes is
+// "room for four".
+const reserveBytes int64 = 1 << 20
+
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
@@ -51,8 +56,8 @@ func newTestStore(t *testing.T, opts Options) (*Store, *clock) {
 	if opts.TTL == 0 {
 		opts.TTL = time.Hour
 	}
-	if opts.MaxJobs == 0 {
-		opts.MaxJobs = 8
+	if opts.MaxBytes == 0 {
+		opts.MaxBytes = 8 * reserveBytes
 	}
 	if opts.Logger == nil {
 		opts.Logger = testLogger()
@@ -88,7 +93,7 @@ func writeStagedFile(t *testing.T, st *Staging, name, content string) string {
 func TestReserveCommitGetRoundtrip(t *testing.T) {
 	s, clk := newTestStore(t, Options{TTL: time.Hour})
 
-	st, err := s.Reserve()
+	st, err := s.Reserve(reserveBytes)
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
@@ -152,7 +157,7 @@ func TestReserveCommitGetRoundtrip(t *testing.T) {
 
 func TestCommitSanitizesDisplayNames(t *testing.T) {
 	s, _ := newTestStore(t, Options{})
-	st, err := s.Reserve()
+	st, err := s.Reserve(reserveBytes)
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
@@ -174,7 +179,7 @@ func TestCommitSanitizesDisplayNames(t *testing.T) {
 
 func TestCommitRejectsPathOutsideStagingDir(t *testing.T) {
 	s, _ := newTestStore(t, Options{})
-	st, err := s.Reserve()
+	st, err := s.Reserve(reserveBytes)
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
@@ -227,18 +232,18 @@ func TestCommitRejectsPathOutsideStagingDir(t *testing.T) {
 }
 
 func TestCapacityExhaustionAndRelease(t *testing.T) {
-	s, _ := newTestStore(t, Options{MaxJobs: 2})
+	s, _ := newTestStore(t, Options{MaxBytes: 2 * reserveBytes})
 
-	st1, err := s.Reserve()
+	st1, err := s.Reserve(reserveBytes)
 	if err != nil {
 		t.Fatalf("Reserve 1: %v", err)
 	}
-	st2, err := s.Reserve()
+	st2, err := s.Reserve(reserveBytes)
 	if err != nil {
 		t.Fatalf("Reserve 2: %v", err)
 	}
 
-	if _, err := s.Reserve(); !errors.Is(err, ErrCapacity) {
+	if _, err := s.Reserve(reserveBytes); !errors.Is(err, ErrCapacity) {
 		t.Fatalf("Reserve 3: got %v, want ErrCapacity", err)
 	}
 
@@ -247,7 +252,7 @@ func TestCapacityExhaustionAndRelease(t *testing.T) {
 	if s.Len() != 1 {
 		t.Fatalf("Len() after abort = %d, want 1", s.Len())
 	}
-	st3, err := s.Reserve()
+	st3, err := s.Reserve(reserveBytes)
 	if err != nil {
 		t.Fatalf("Reserve after abort: %v", err)
 	}
@@ -262,7 +267,7 @@ func TestCapacityExhaustionAndRelease(t *testing.T) {
 		t.Fatalf("Len() after commit = %d, want 2 (commit keeps one slot, does not add a second)", s.Len())
 	}
 
-	if _, err := s.Reserve(); !errors.Is(err, ErrCapacity) {
+	if _, err := s.Reserve(reserveBytes); !errors.Is(err, ErrCapacity) {
 		t.Fatalf("Reserve while full: got %v, want ErrCapacity", err)
 	}
 
@@ -277,8 +282,8 @@ func TestCapacityExhaustionAndRelease(t *testing.T) {
 }
 
 func TestAbortIdempotentAndRemovesFiles(t *testing.T) {
-	s, _ := newTestStore(t, Options{MaxJobs: 4})
-	st, err := s.Reserve()
+	s, _ := newTestStore(t, Options{MaxBytes: 4 * reserveBytes})
+	st, err := s.Reserve(reserveBytes)
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
@@ -310,7 +315,7 @@ func TestAbortIdempotentAndRemovesFiles(t *testing.T) {
 
 func TestAbortAfterCommitIsNoop(t *testing.T) {
 	s, _ := newTestStore(t, Options{})
-	st, err := s.Reserve()
+	st, err := s.Reserve(reserveBytes)
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
@@ -331,7 +336,7 @@ func TestAbortAfterCommitIsNoop(t *testing.T) {
 
 func TestTTLExpiryRemovesFilesFromDisk(t *testing.T) {
 	s, clk := newTestStore(t, Options{TTL: 10 * time.Minute})
-	st, err := s.Reserve()
+	st, err := s.Reserve(reserveBytes)
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
@@ -372,7 +377,7 @@ func TestTTLExpiryRemovesFilesFromDisk(t *testing.T) {
 
 func TestStaleStagingCleanup(t *testing.T) {
 	s, clk := newTestStore(t, Options{TTL: time.Hour})
-	st, err := s.Reserve()
+	st, err := s.Reserve(reserveBytes)
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
@@ -391,10 +396,10 @@ func TestStaleStagingCleanup(t *testing.T) {
 }
 
 func TestListForUserFiltering(t *testing.T) {
-	s, clk := newTestStore(t, Options{TTL: 5 * time.Minute, MaxJobs: 16})
+	s, clk := newTestStore(t, Options{TTL: 5 * time.Minute, MaxBytes: 16 * reserveBytes})
 
 	commit := func(web bool, recipients []string) Job {
-		st, err := s.Reserve()
+		st, err := s.Reserve(reserveBytes)
 		if err != nil {
 			t.Fatalf("Reserve: %v", err)
 		}
@@ -470,7 +475,7 @@ func TestListForUserFiltering(t *testing.T) {
 
 func TestListForUserDeepCopyIsolation(t *testing.T) {
 	s, _ := newTestStore(t, Options{})
-	st, err := s.Reserve()
+	st, err := s.Reserve(reserveBytes)
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
@@ -517,7 +522,7 @@ func TestListForUserDeepCopyIsolation(t *testing.T) {
 
 func TestReplaceDocument(t *testing.T) {
 	s, _ := newTestStore(t, Options{})
-	st, err := s.Reserve()
+	st, err := s.Reserve(reserveBytes)
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
@@ -599,7 +604,7 @@ func TestReplaceDocument(t *testing.T) {
 
 func TestReplaceDocumentSamePathKeepsFile(t *testing.T) {
 	s, _ := newTestStore(t, Options{})
-	st, err := s.Reserve()
+	st, err := s.Reserve(reserveBytes)
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
@@ -622,7 +627,7 @@ func TestReplaceDocumentSamePathKeepsFile(t *testing.T) {
 
 func TestSetStatusAndError(t *testing.T) {
 	s, clk := newTestStore(t, Options{})
-	st, err := s.Reserve()
+	st, err := s.Reserve(reserveBytes)
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
@@ -677,7 +682,7 @@ func TestDeleteUnknownID(t *testing.T) {
 
 func TestCloseRemovesEverythingAndBlocksReserve(t *testing.T) {
 	s, _ := newTestStore(t, Options{})
-	st, err := s.Reserve()
+	st, err := s.Reserve(reserveBytes)
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
@@ -694,7 +699,7 @@ func TestCloseRemovesEverythingAndBlocksReserve(t *testing.T) {
 	if _, err := os.Stat(storeDir); !os.IsNotExist(err) {
 		t.Fatalf("store directory still exists after Close: err=%v", err)
 	}
-	if _, err := s.Reserve(); !errors.Is(err, ErrClosed) {
+	if _, err := s.Reserve(reserveBytes); !errors.Is(err, ErrClosed) {
 		t.Fatalf("Reserve after Close = %v, want ErrClosed", err)
 	}
 
@@ -723,7 +728,7 @@ func TestRunStopsOnContextDone(t *testing.T) {
 }
 
 func TestConcurrencyRace(t *testing.T) {
-	s, _ := newTestStore(t, Options{TTL: 50 * time.Millisecond, MaxJobs: 12})
+	s, clk := newTestStore(t, Options{TTL: 50 * time.Millisecond, MaxBytes: 12 * reserveBytes})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -743,7 +748,7 @@ func TestConcurrencyRace(t *testing.T) {
 			for i := 0; i < opsPerWorker; i++ {
 				switch i % 5 {
 				case 0, 1:
-					st, err := s.Reserve()
+					st, err := s.Reserve(reserveBytes)
 					if err != nil {
 						if errors.Is(err, ErrCapacity) {
 							atomic.AddInt64(&capacityHits, 1)
@@ -791,7 +796,16 @@ func TestConcurrencyRace(t *testing.T) {
 		t.Error("no jobs were ever committed; test is not exercising Commit")
 	}
 	// Clean up whatever is left; failures here would show up under -race.
+	// Once nothing is left, nothing may still be charged either: a leaked
+	// charge would slowly starve a store that looks empty.
+	clk.advance(20 * time.Minute) // past the TTL and the stale-reservation threshold
 	s.CleanExpired()
+	if n := s.Len(); n != 0 {
+		t.Fatalf("Len() = %d after the TTL passed, want 0", n)
+	}
+	if n := s.usedBytes(); n != 0 {
+		t.Errorf("Bytes() = %d with an empty store, want 0", n)
+	}
 }
 
 func TestSanitizeDisplayName(t *testing.T) {
@@ -893,7 +907,7 @@ func TestSanitizeSubject(t *testing.T) {
 // so it holds for every producer and not just the SMTP one.
 func TestCommitSanitizesSubject(t *testing.T) {
 	s, _ := newTestStore(t, Options{})
-	st, err := s.Reserve()
+	st, err := s.Reserve(reserveBytes)
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
@@ -912,14 +926,14 @@ func TestCommitSanitizesSubject(t *testing.T) {
 }
 
 func TestNewValidatesOptions(t *testing.T) {
-	if _, err := New(Options{TTL: time.Hour, MaxJobs: 1}); err == nil {
+	if _, err := New(Options{TTL: time.Hour, MaxBytes: 1 * reserveBytes}); err == nil {
 		t.Error("New with empty Root: expected error")
 	}
-	if _, err := New(Options{Root: t.TempDir(), MaxJobs: 1}); err == nil {
+	if _, err := New(Options{Root: t.TempDir(), MaxBytes: 1 * reserveBytes}); err == nil {
 		t.Error("New with zero TTL: expected error")
 	}
 	if _, err := New(Options{Root: t.TempDir(), TTL: time.Hour}); err == nil {
-		t.Error("New with zero MaxJobs: expected error")
+		t.Error("New with zero MaxBytes: expected error")
 	}
 }
 
@@ -928,7 +942,7 @@ func TestReserveCommitDirPermissions(t *testing.T) {
 		t.Skip("permission bits are not enforced when running as root")
 	}
 	s, _ := newTestStore(t, Options{})
-	st, err := s.Reserve()
+	st, err := s.Reserve(reserveBytes)
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
@@ -958,11 +972,11 @@ func TestReserveCommitDirPermissions(t *testing.T) {
 func TestNewRemovesLeftoversFromAPreviousProcess(t *testing.T) {
 	root := t.TempDir()
 
-	first, err := New(Options{Root: root, TTL: time.Hour, MaxJobs: 4, Logger: testLogger()})
+	first, err := New(Options{Root: root, TTL: time.Hour, MaxBytes: 4 * reserveBytes, Logger: testLogger()})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	st, err := first.Reserve()
+	st, err := first.Reserve(reserveBytes)
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
@@ -970,7 +984,7 @@ func TestNewRemovesLeftoversFromAPreviousProcess(t *testing.T) {
 
 	// Simulate a crash: the process goes away without Close, so the files
 	// are still on disk when the next process starts.
-	second, err := New(Options{Root: root, TTL: time.Hour, MaxJobs: 4, Logger: testLogger()})
+	second, err := New(Options{Root: root, TTL: time.Hour, MaxBytes: 4 * reserveBytes, Logger: testLogger()})
 	if err != nil {
 		t.Fatalf("New (restart): %v", err)
 	}
@@ -987,7 +1001,7 @@ func TestNewRemovesLeftoversFromAPreviousProcess(t *testing.T) {
 func TestCleanExpiredKeepsJobsBeingProcessed(t *testing.T) {
 	s, clk := newTestStore(t, Options{TTL: time.Hour})
 
-	st, err := s.Reserve()
+	st, err := s.Reserve(reserveBytes)
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
@@ -1040,5 +1054,410 @@ func TestCleanExpiredKeepsJobsBeingProcessed(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("file survived expiry: err=%v", err)
+	}
+}
+
+// commitReady stages, commits and finishes one job whose single document is
+// size bytes, so it is charged what it really occupies and is a candidate
+// for eviction. It returns the job and its document's path on disk.
+func commitReady(t *testing.T, s *Store, name string, size int) (Job, string) {
+	t.Helper()
+	st, err := s.Reserve(reserveBytes)
+	if err != nil {
+		t.Fatalf("Reserve for %s: %v", name, err)
+	}
+	path := writeStagedFile(t, st, "doc", strings.Repeat("x", size))
+	job, err := st.Commit(NewJob{
+		Caps:       Capabilities{Web: true},
+		Recipients: []string{"alice@example.com"},
+		Documents:  []NewDocument{{DisplayName: name + ".pdf", Path: path}},
+	})
+	if err != nil {
+		t.Fatalf("Commit %s: %v", name, err)
+	}
+	if err := s.SetStatus(job.ID, StatusReady, ""); err != nil {
+		t.Fatalf("SetStatus %s: %v", name, err)
+	}
+	return job, path
+}
+
+// A job in flight is charged the worst case its reservation promised, so
+// that the searchable PDF OCR writes before removing the original has room;
+// a finished one is charged what it actually occupies.
+func TestChargeFallsToTheRealSizeWhenAJobIsFinished(t *testing.T) {
+	s, _ := newTestStore(t, Options{})
+
+	const size = 4096
+	st, err := s.Reserve(reserveBytes)
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	path := writeStagedFile(t, st, "doc", strings.Repeat("x", size))
+	job, err := st.Commit(NewJob{Documents: []NewDocument{{DisplayName: "a.pdf", Path: path}}})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if got := s.usedBytes(); got != reserveBytes {
+		t.Errorf("Bytes() while the pipeline owns the job = %d, want the reserved %d", got, reserveBytes)
+	}
+
+	if err := s.SetStatus(job.ID, StatusReady, ""); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	if got := s.usedBytes(); got != size {
+		t.Errorf("Bytes() once finished = %d, want the document's %d", got, size)
+	}
+}
+
+// The new scan wins: someone is standing at the printer, while the oldest
+// finished scan has most likely been picked up already.
+func TestReserveEvictsTheOldestFinishedJob(t *testing.T) {
+	s, clk := newTestStore(t, Options{MaxBytes: 2 * reserveBytes})
+	size := int(reserveBytes) / 2
+
+	oldest, oldestPath := commitReady(t, s, "oldest", size)
+	clk.advance(time.Minute)
+	middle, _ := commitReady(t, s, "middle", size)
+	clk.advance(time.Minute)
+	newest, _ := commitReady(t, s, "newest", size)
+
+	st, err := s.Reserve(reserveBytes)
+	if err != nil {
+		t.Fatalf("Reserve with a full budget: %v, want it to be admitted", err)
+	}
+	if got, ok := s.Get(oldest.ID); !ok || got.Status != StatusReady {
+		t.Errorf("a scan was destroyed before the new one was accepted: ok=%v status=%q", ok, got.Status)
+	}
+	incoming := writeStagedFile(t, st, "doc", "x")
+	if _, err := st.Commit(NewJob{Documents: []NewDocument{{DisplayName: "new.pdf", Path: incoming}}}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	gone, ok := s.Get(oldest.ID)
+	if !ok {
+		t.Fatal("the evicted job disappeared; it must stay visible as a tombstone")
+	}
+	if gone.Status != StatusEvicted {
+		t.Errorf("evicted job status = %q, want %q", gone.Status, StatusEvicted)
+	}
+	if len(gone.Documents) != 0 {
+		t.Errorf("evicted job kept %d documents, want none", len(gone.Documents))
+	}
+	if gone.ExpiresAt != oldest.ExpiresAt {
+		t.Errorf("evicted job ExpiresAt = %v, want the deadline it already had (%v)", gone.ExpiresAt, oldest.ExpiresAt)
+	}
+	if _, err := os.Stat(oldestPath); !os.IsNotExist(err) {
+		t.Errorf("evicted job's file is still on disk: err=%v", err)
+	}
+
+	// Exactly as much as was needed, and only from the oldest end.
+	for _, want := range []Job{middle, newest} {
+		got, ok := s.Get(want.ID)
+		if !ok || len(got.Documents) != 1 || got.Status != StatusReady {
+			t.Errorf("job %q was evicted too: ok=%v status=%q docs=%d", want.Documents[0].DisplayName, ok, got.Status, len(got.Documents))
+		}
+	}
+}
+
+// Work in flight is never evicted: nobody has been told anything about it
+// yet, and its files are still being written.
+func TestReserveNeverEvictsUnfinishedJobs(t *testing.T) {
+	s, _ := newTestStore(t, Options{MaxBytes: 2 * reserveBytes})
+
+	st, err := s.Reserve(reserveBytes)
+	if err != nil {
+		t.Fatalf("Reserve 1: %v", err)
+	}
+	path := writeStagedFile(t, st, "doc", "x")
+	job, err := st.Commit(NewJob{Documents: []NewDocument{{DisplayName: "a.pdf", Path: path}}})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	held, err := s.Reserve(reserveBytes)
+	if err != nil {
+		t.Fatalf("Reserve 2: %v", err)
+	}
+	defer held.Abort()
+
+	if _, err := s.Reserve(reserveBytes); !errors.Is(err, ErrCapacity) {
+		t.Fatalf("Reserve with nothing finished: got %v, want ErrCapacity", err)
+	}
+	if got, ok := s.Get(job.ID); !ok || got.Status != StatusPending {
+		t.Errorf("the queued job was touched: ok=%v status=%q", ok, got.Status)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("the queued job's file was removed: %v", err)
+	}
+}
+
+// Evicting scans that still would not make room helps nobody: the store
+// rejects with everything intact instead.
+func TestReserveKeepsEverythingWhenEvictingWouldNotHelp(t *testing.T) {
+	s, _ := newTestStore(t, Options{MaxBytes: reserveBytes + reserveBytes/2})
+
+	job, path := commitReady(t, s, "small", 256*1024)
+	held, err := s.Reserve(reserveBytes)
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	defer held.Abort()
+
+	if _, err := s.Reserve(reserveBytes); !errors.Is(err, ErrCapacity) {
+		t.Fatalf("Reserve: got %v, want ErrCapacity", err)
+	}
+	got, ok := s.Get(job.ID)
+	if !ok || got.Status != StatusReady || len(got.Documents) != 1 {
+		t.Errorf("the finished job was evicted for nothing: ok=%v status=%q docs=%d", ok, got.Status, len(got.Documents))
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("the finished job's file was removed for nothing: %v", err)
+	}
+}
+
+// A failed OCR leaves behind the file it was writing into. Finishing the job
+// is where that goes: it is not referenced, nothing will ever use it, and
+// accounting for it instead would hold disk for a whole TTL.
+func TestFinishingRemovesWhatNoDocumentPointsAt(t *testing.T) {
+	s, _ := newTestStore(t, Options{})
+
+	const kept = 100
+	st, err := s.Reserve(reserveBytes)
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	path := writeStagedFile(t, st, "doc", strings.Repeat("x", kept))
+	job, err := st.Commit(NewJob{Documents: []NewDocument{{DisplayName: "a.pdf", Path: path}}})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// What the pipeline does before OCR fails on it.
+	f, err := s.CreateFile(job.ID, "ocr")
+	if err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	if _, err := f.WriteString(strings.Repeat("y", 4096)); err != nil {
+		t.Fatalf("WriteString: %v", err)
+	}
+	f.Close()
+	orphan := f.Name()
+
+	if err := s.SetStatus(job.ID, StatusFailed, "ocr failed"); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Errorf("the unreferenced file is still on disk: err=%v", err)
+	}
+	if got := s.usedBytes(); got != kept {
+		t.Errorf("Bytes() = %d, want the document's %d", got, kept)
+	}
+	// The document itself is untouched: a failed OCR keeps the original
+	// downloadable for the rest of the TTL.
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("the job's own document was removed: %v", err)
+	}
+	if j, ok := s.Get(job.ID); !ok || len(j.Documents) != 1 {
+		t.Errorf("job after failing: ok=%v documents=%d, want 1", ok, len(j.Documents))
+	}
+}
+
+// Reserve happens before a single body byte is read, and the message may
+// still turn out to be a printer's "test connection" with nothing attached,
+// a reset, or too large. None of those may cost somebody a scan.
+func TestAbortedTransactionCostsNobodyAScan(t *testing.T) {
+	s, _ := newTestStore(t, Options{MaxBytes: 2 * reserveBytes})
+	size := int(reserveBytes) / 2
+
+	var kept []Job
+	for i := 0; i < 3; i++ {
+		job, _ := commitReady(t, s, fmt.Sprintf("scan%d", i), size)
+		kept = append(kept, job)
+	}
+
+	st, err := s.Reserve(reserveBytes)
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	st.Abort()
+
+	for _, want := range kept {
+		got, ok := s.Get(want.ID)
+		if !ok || got.Status != StatusReady || len(got.Documents) != 1 {
+			t.Errorf("scan %q: ok=%v status=%q docs=%d, want it untouched", want.Subject, ok, got.Status, len(got.Documents))
+		}
+	}
+	if got := s.usedBytes(); got != int64(3*size) {
+		t.Errorf("usedBytes() = %d, want the three scans' %d back", got, 3*size)
+	}
+}
+
+// A tombstone is a job that is gone: writing to it would panic on the files
+// map it no longer has, and finishing it again would push it past the
+// deadline it must not outlive.
+func TestEvictedJobIsGoneToItsWriters(t *testing.T) {
+	s, clk := newTestStore(t, Options{MaxBytes: 2 * reserveBytes})
+	size := int(reserveBytes) / 2
+	// Distinct arrival times, or which one is the oldest -- and so which one
+	// this test expects to find evicted -- is not decided.
+	oldest, _ := commitReady(t, s, "oldest", size)
+	clk.advance(time.Minute)
+	commitReady(t, s, "middle", size)
+	clk.advance(time.Minute)
+	commitReady(t, s, "newest", size)
+
+	st, err := s.Reserve(reserveBytes)
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	path := writeStagedFile(t, st, "doc", "x")
+	if _, err := st.Commit(NewJob{Documents: []NewDocument{{DisplayName: "new.pdf", Path: path}}}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	before, ok := s.Get(oldest.ID)
+	if !ok || before.Status != StatusEvicted {
+		t.Fatalf("job %s was not evicted: ok=%v status=%q", oldest.ID, ok, before.Status)
+	}
+
+	if _, err := s.CreateFile(oldest.ID, "ocr"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("CreateFile on a tombstone: %v, want ErrNotFound", err)
+	}
+	if err := s.SetStatus(oldest.ID, StatusReady, ""); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetStatus on a tombstone: %v, want ErrNotFound", err)
+	}
+	after, ok := s.Get(oldest.ID)
+	if !ok || after.Status != StatusEvicted || !after.ExpiresAt.Equal(before.ExpiresAt) {
+		t.Errorf("tombstone after: status=%q expires=%v, want %q at %v",
+			after.Status, after.ExpiresAt, StatusEvicted, before.ExpiresAt)
+	}
+}
+
+// A second transaction still under way is a promise, not a scan. Committing
+// the first must not evict on its behalf: it may yet turn out to be a "test
+// connection" or a reset, and the scans would be gone for nothing.
+func TestCommitEvictsOnlyForItself(t *testing.T) {
+	s, clk := newTestStore(t, Options{MaxBytes: 2 * reserveBytes})
+	size := int(reserveBytes) / 2
+
+	var kept []Job
+	for i := 0; i < 3; i++ {
+		job, _ := commitReady(t, s, fmt.Sprintf("scan%d", i), size)
+		kept = append(kept, job)
+		clk.advance(time.Minute)
+	}
+
+	first, err := s.Reserve(reserveBytes)
+	if err != nil {
+		t.Fatalf("Reserve 1: %v", err)
+	}
+	second, err := s.Reserve(reserveBytes)
+	if err != nil {
+		t.Fatalf("Reserve 2: %v", err)
+	}
+
+	path := writeStagedFile(t, first, "doc", "x")
+	if _, err := first.Commit(NewJob{Documents: []NewDocument{{DisplayName: "first.pdf", Path: path}}}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	second.Abort()
+
+	// One scan came in, so one scan gives way -- not all three to cover a
+	// transaction that went away.
+	var evicted int
+	for _, want := range kept {
+		got, ok := s.Get(want.ID)
+		if !ok {
+			t.Fatalf("scan %s disappeared entirely", want.ID)
+		}
+		if got.Status == StatusEvicted {
+			evicted++
+		}
+	}
+	if evicted != 1 {
+		t.Errorf("%d of the three scans were evicted, want 1", evicted)
+	}
+	if got, ok := s.Get(kept[0].ID); !ok || got.Status != StatusEvicted {
+		t.Errorf("the oldest scan is %q, want it to be the one evicted", got.Status)
+	}
+}
+
+// Nothing bounds how big a searchable PDF comes back from OCR, so settling
+// up can cost more than the job was booked at. The store must not be left
+// standing above its budget until some later scan happens to arrive.
+func TestFinishingOverTheBudgetMakesRoom(t *testing.T) {
+	s, clk := newTestStore(t, Options{MaxBytes: 2 * reserveBytes})
+	older, olderPath := commitReady(t, s, "older", int(reserveBytes)/2)
+	clk.advance(time.Minute)
+
+	st, err := s.Reserve(reserveBytes)
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	path := writeStagedFile(t, st, "doc", "x")
+	job, err := st.Commit(NewJob{Documents: []NewDocument{{DisplayName: "scan.pdf", Path: path}}})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// OCR comes back with more than the whole message was allowed to be.
+	f, err := s.CreateFile(job.ID, "ocr")
+	if err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	big := int(reserveBytes) * 18 / 10
+	if _, err := f.WriteString(strings.Repeat("y", big)); err != nil {
+		t.Fatalf("WriteString: %v", err)
+	}
+	f.Close()
+	if err := s.ReplaceDocument(job.ID, job.Documents[0].ID, f.Name(), true); err != nil {
+		t.Fatalf("ReplaceDocument: %v", err)
+	}
+	if err := s.SetStatus(job.ID, StatusReady, ""); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+
+	if got := s.usedBytes(); got > 2*reserveBytes {
+		t.Errorf("usedBytes() = %d, want no more than the budget's %d", got, 2*reserveBytes)
+	}
+	if gone, ok := s.Get(older.ID); !ok || gone.Status != StatusEvicted {
+		t.Errorf("the older scan is %q, want it to have given way", gone.Status)
+	}
+	if _, err := os.Stat(olderPath); !os.IsNotExist(err) {
+		t.Errorf("the older scan's file is still on disk: err=%v", err)
+	}
+	// The scan that just finished is the newest, so it keeps its document.
+	if got, ok := s.Get(job.ID); !ok || got.Status != StatusReady || len(got.Documents) != 1 {
+		t.Errorf("the finished scan: ok=%v status=%q docs=%d, want it intact", ok, got.Status, len(got.Documents))
+	}
+}
+
+// The charge can also grow when a finished job's document is replaced by a
+// bigger one. Every path that raises what the store holds makes room; this
+// one is no exception.
+func TestReplacingOverTheBudgetMakesRoom(t *testing.T) {
+	s, clk := newTestStore(t, Options{MaxBytes: 2 * reserveBytes})
+	older, olderPath := commitReady(t, s, "older", int(reserveBytes)/2)
+	clk.advance(time.Minute)
+	target, _ := commitReady(t, s, "target", 64)
+
+	f, err := s.CreateFile(target.ID, "ocr")
+	if err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	if _, err := f.WriteString(strings.Repeat("y", int(reserveBytes)*18/10)); err != nil {
+		t.Fatalf("WriteString: %v", err)
+	}
+	f.Close()
+	if err := s.ReplaceDocument(target.ID, target.Documents[0].ID, f.Name(), true); err != nil {
+		t.Fatalf("ReplaceDocument: %v", err)
+	}
+
+	if got := s.usedBytes(); got > 2*reserveBytes {
+		t.Errorf("usedBytes() = %d, want no more than the budget's %d", got, 2*reserveBytes)
+	}
+	if gone, ok := s.Get(older.ID); !ok || gone.Status != StatusEvicted {
+		t.Errorf("the older scan is %q, want it to have given way", gone.Status)
+	}
+	if _, err := os.Stat(olderPath); !os.IsNotExist(err) {
+		t.Errorf("the older scan's file is still on disk: err=%v", err)
 	}
 }

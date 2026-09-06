@@ -139,10 +139,12 @@ func (s *session) Rcpt(to string, _ *smtp.RcptOptions) error {
 // path must not.
 func (s *session) Data(r io.Reader) error {
 	// Snapshot the transaction together with its generation, and take the
-	// capacity slot, before a single body byte is read: from here on the
-	// command loop may reset this session at any moment.
+	// store budget this message could need, before a single body byte is
+	// read: from here on the command loop may reset this session at any
+	// moment. The DATA cap is what it could need, because a decoded
+	// attachment is always smaller than the message that carried it.
 	s.mu.Lock()
-	staging, err := s.store.Reserve()
+	staging, err := s.store.Reserve(s.cfg.Limits.MaxMessageBytes)
 	if err != nil {
 		s.mu.Unlock()
 		s.reject("data", errNoCapacity)

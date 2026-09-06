@@ -134,7 +134,7 @@ func TestLoadMinimalValidConfigAndDefaults(t *testing.T) {
 	}
 	wantLimits := Limits{
 		MaxMessageBytes:   33554432,
-		MaxJobs:           32,
+		MaxStoredBytes:    536870912,
 		MaxConcurrentJobs: 2,
 	}
 	if c.Limits != wantLimits {
@@ -367,7 +367,7 @@ func TestLoadDurationValidation(t *testing.T) {
 }
 
 func TestLoadLimitValidation(t *testing.T) {
-	limitVars := []string{"S2G_MAX_MESSAGE_BYTES", "S2G_MAX_JOBS", "S2G_MAX_CONCURRENT_JOBS"}
+	limitVars := []string{"S2G_MAX_MESSAGE_BYTES", "S2G_MAX_STORED_BYTES", "S2G_MAX_CONCURRENT_JOBS"}
 	for _, name := range limitVars {
 		t.Run(name+"=0", func(t *testing.T) {
 			env := clone(baseEnv())
@@ -385,6 +385,23 @@ func TestLoadLimitValidation(t *testing.T) {
 			wantLoadErr(t, env, name, "invalid integer")
 		})
 	}
+}
+
+// A message the store could never make room for would be rejected on
+// arrival, every time, so the pair is validated together rather than each
+// value on its own.
+func TestLoadRejectsBudgetSmallerThanTwoMessages(t *testing.T) {
+	env := clone(baseEnv())
+	env["S2G_MAX_MESSAGE_BYTES"] = "2000"
+	env["S2G_MAX_STORED_BYTES"] = "3999"
+	wantLoadErr(t, env, "S2G_MAX_STORED_BYTES", "at least")
+
+	// Doubling the message cap, to compare it or to report it, would
+	// overflow here: it would let through a DATA cap no store could ever
+	// admit, and quote a negative number at whoever has to fix it.
+	env["S2G_MAX_MESSAGE_BYTES"] = "9223372036854775807"
+	env["S2G_MAX_STORED_BYTES"] = "536870912"
+	wantLoadErr(t, env, "S2G_MAX_STORED_BYTES", "at least", "9223372036854775807")
 }
 
 func TestLoadProfilesValidation(t *testing.T) {

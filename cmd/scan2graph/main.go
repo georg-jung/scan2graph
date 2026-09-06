@@ -444,9 +444,9 @@ func run(cfg *config.Config) error {
 	announceSMTPCredentials(cfg)
 
 	store, err := jobs.New(jobs.Options{
-		Root:    cfg.TempDir,
-		TTL:     cfg.JobTTL,
-		MaxJobs: cfg.Limits.MaxJobs,
+		Root:     cfg.TempDir,
+		TTL:      cfg.JobTTL,
+		MaxBytes: cfg.Limits.MaxStoredBytes,
 	})
 	if err != nil {
 		return fmt.Errorf("create job store: %w", err)

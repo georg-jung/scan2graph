@@ -119,9 +119,10 @@ var setupFields = []setupField{
 		Help:        "Where scans are kept while they are worked on; it is wiped on every start and defaults to the operating system's temp directory.",
 		Placeholder: "/tmp",
 	}, {
-		Name: "S2G_MAX_JOBS", Label: "Most scans kept at once", Group: "Advanced", Rare: true,
-		Help:        "How many scans may be queued, in flight or waiting to be picked up together.",
-		Placeholder: "32",
+		Name: "S2G_MAX_STORED_BYTES", Label: "Space for kept scans", Group: "Advanced", Rare: true,
+		Help: "How much temporary space queued, in-flight and waiting-to-be-picked-up scans may " +
+			"take together, in bytes; when it is full, finished scans are removed oldest first to make room.",
+		Placeholder: "536870912",
 	}, {
 		Name: "S2G_MAX_CONCURRENT_JOBS", Label: "Scans processed at once", Group: "Advanced", Rare: true,
 		Help:        "How many scans are worked on at the same time.",

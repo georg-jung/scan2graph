@@ -2,8 +2,11 @@ package smtpin_test
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/georg-jung/scan2graph/internal/jobs"
 )
 
 func TestFullTransaction(t *testing.T) {
@@ -272,14 +275,17 @@ func TestTooManyParts(t *testing.T) {
 
 func TestCapacityExhausted(t *testing.T) {
 	h := &fakeHandler{}
-	addr, store, cfg := newHarness(t, map[string]string{"S2G_MAX_JOBS": "1"}, nil, h)
+	addr, store, cfg := newHarness(t, map[string]string{"S2G_MAX_STORED_BYTES": "2097152"}, nil, h)
 
-	// Occupy the only slot directly, without going through a transaction.
-	held, err := store.Reserve()
-	if err != nil {
-		t.Fatalf("Reserve: %v", err)
+	// Occupy the whole budget with reservations, which are work in flight and
+	// so cannot be evicted to make room -- the one case that still rejects.
+	for i := 0; i < 2; i++ {
+		held, err := store.Reserve(cfg.Limits.MaxMessageBytes)
+		if err != nil {
+			t.Fatalf("Reserve %d: %v", i, err)
+		}
+		defer held.Abort()
 	}
-	defer held.Abort()
 
 	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")
@@ -290,6 +296,50 @@ func TestCapacityExhausted(t *testing.T) {
 	if len(h.enqueued()) != 0 {
 		t.Errorf("enqueued %d jobs, want 0", len(h.enqueued()))
 	}
+}
+
+// The budget being full of scans somebody could still fetch is not a reason
+// to turn the printer away: the oldest finished one gives way instead. Driven
+// over the wire, one scan at a time, until the budget really is full.
+func TestFullBudgetOfFinishedScansStillAcceptsAMessage(t *testing.T) {
+	h := &fakeHandler{}
+	addr, store, cfg := newHarness(t, map[string]string{
+		"S2G_MAX_MESSAGE_BYTES": "4096",
+		"S2G_MAX_STORED_BYTES":  "8192",
+	}, nil, h)
+
+	// Scans big enough that a handful of them fill a budget of two messages,
+	// each finished as it lands so it is charged what it really occupies and
+	// could give way for the next.
+	const attempts = 16
+	var first jobs.Job
+	for i := 0; i < attempts; i++ {
+		c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+		c.cmd(250, "MAIL FROM:<printer@corp.example>")
+		c.cmd(250, "RCPT TO:<alice@corp.example>")
+		msg := scanMessage(fmt.Sprintf("Scan %d", i),
+			[][2]string{{"scan.pdf", pdfBody(strings.Repeat("x", 1500))}})
+		if code, msg := c.data(msg); code != 250 {
+			t.Fatalf("DATA %d: got %d %q, want 250 -- a full budget of finished scans must not turn the printer away", i, code, msg)
+		}
+		sent := h.enqueued()
+		if len(sent) != i+1 {
+			t.Fatalf("enqueued %d jobs after %d scans, want %d", len(sent), i+1, i+1)
+		}
+		if i == 0 {
+			first = sent[0]
+		}
+		if err := store.SetStatus(sent[i].ID, jobs.StatusReady, ""); err != nil {
+			t.Fatalf("SetStatus %d: %v", i, err)
+		}
+		if got, ok := store.Get(first.ID); ok && got.Status == jobs.StatusEvicted {
+			if len(got.Documents) != 0 {
+				t.Errorf("the evicted scan kept %d documents, want none", len(got.Documents))
+			}
+			return
+		}
+	}
+	t.Fatalf("after %d scans the first one was never evicted; the budget never filled", attempts)
 }
 
 func TestHandlerBusy(t *testing.T) {

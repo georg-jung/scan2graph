@@ -32,9 +32,14 @@ type Capabilities struct {
 // so MaxMessageBytes already bounds PDF sizes without a separate cap. MIME
 // part/depth/count caps are constants in the MIME package instead (work
 // package 2), and OCR concurrency follows the worker count.
+//
+// How many scans are kept is deliberately not a setting: the resource that
+// actually runs out is the space they occupy, and a count would have to be
+// guessed against a scan size nobody knows in advance. MaxStoredBytes is
+// that space; the number of scans falls out of it.
 type Limits struct {
 	MaxMessageBytes   int64 // SMTP DATA cap
-	MaxJobs           int   // queued + in-flight + web-visible jobs
+	MaxStoredBytes    int64 // disk budget for queued, in-flight and web-visible scans
 	MaxConcurrentJobs int   // pipeline workers
 }
 
@@ -352,11 +357,24 @@ func (l *loader) tenantURL(name, tenantID, defaultPathSuffix string) string {
 }
 
 func (l *loader) limits() Limits {
-	return Limits{
+	lim := Limits{
 		MaxMessageBytes:   l.int64Positive("S2G_MAX_MESSAGE_BYTES", 33554432),
-		MaxJobs:           l.intPositive("S2G_MAX_JOBS", 32),
+		MaxStoredBytes:    l.int64Positive("S2G_MAX_STORED_BYTES", 536870912),
 		MaxConcurrentJobs: l.intPositive("S2G_MAX_CONCURRENT_JOBS", 2),
 	}
+	// Two messages must fit. One, because the store charges the DATA cap for
+	// a message it has not read yet and would otherwise reject every scan on
+	// arrival; two, because OCR writes the searchable PDF before the original
+	// it replaces is removed, so one scan being worked on can hold twice its
+	// own size. Compared by halving the budget rather than doubling the cap,
+	// and reported the same way: doubling overflows for a large enough cap,
+	// which would wave through the configuration this exists to catch and
+	// quote a negative number at the operator.
+	if lim.MaxStoredBytes > 0 && lim.MaxMessageBytes > lim.MaxStoredBytes/2 {
+		l.errorf("S2G_MAX_STORED_BYTES: must be at least twice S2G_MAX_MESSAGE_BYTES (%d), got %d",
+			lim.MaxMessageBytes, lim.MaxStoredBytes)
+	}
+	return lim
 }
 
 func (l *loader) logLevel() slog.Level {

@@ -29,6 +29,11 @@ const (
 	StatusProcessing Status = "processing"
 	StatusReady      Status = "ready"
 	StatusFailed     Status = "failed"
+	// StatusEvicted is a finished job whose files were removed early to make
+	// room for a new scan; it keeps its metadata, and nothing else, until the
+	// moment it would have expired anyway. Every value here doubles as the
+	// word the web UI puts on a scan, which is why this one reads "removed".
+	StatusEvicted Status = "removed"
 )
 
 // Document is one PDF belonging to a job.
