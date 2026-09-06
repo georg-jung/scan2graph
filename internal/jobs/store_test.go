@@ -1207,3 +1207,50 @@ func TestReserveKeepsEverythingWhenEvictingWouldNotHelp(t *testing.T) {
 		t.Errorf("the finished job's file was removed for nothing: %v", err)
 	}
 }
+
+// A failed OCR leaves behind the file it was writing into. Finishing the job
+// is where that goes: it is not referenced, nothing will ever use it, and
+// accounting for it instead would hold disk for a whole TTL.
+func TestFinishingRemovesWhatNoDocumentPointsAt(t *testing.T) {
+	s, _ := newTestStore(t, Options{})
+
+	const kept = 100
+	st, err := s.Reserve(reserveBytes)
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	path := writeStagedFile(t, st, "doc", strings.Repeat("x", kept))
+	job, err := st.Commit(NewJob{Documents: []NewDocument{{DisplayName: "a.pdf", Path: path}}})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// What the pipeline does before OCR fails on it.
+	f, err := s.CreateFile(job.ID, "ocr")
+	if err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	if _, err := f.WriteString(strings.Repeat("y", 4096)); err != nil {
+		t.Fatalf("WriteString: %v", err)
+	}
+	f.Close()
+	orphan := f.Name()
+
+	if err := s.SetStatus(job.ID, StatusFailed, "ocr failed"); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Errorf("the unreferenced file is still on disk: err=%v", err)
+	}
+	if got := s.Bytes(); got != kept {
+		t.Errorf("Bytes() = %d, want the document's %d", got, kept)
+	}
+	// The document itself is untouched: a failed OCR keeps the original
+	// downloadable for the rest of the TTL.
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("the job's own document was removed: %v", err)
+	}
+	if j, ok := s.Get(job.ID); !ok || len(j.Documents) != 1 {
+		t.Errorf("job after failing: ok=%v documents=%d, want 1", ok, len(j.Documents))
+	}
+}

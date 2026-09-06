@@ -153,11 +153,15 @@ func New(opts Options) (*Store, error) {
 	}, nil
 }
 
-// Reserve charges maxBytes -- the most the caller may write into the staging
-// directory it gets back -- against the store's budget, and keeps charging
-// that worst case until SetStatus finishes the job (see there). A full
-// budget makes room by evicting (see makeRoomLocked); ErrCapacity comes back
-// only when that cannot free enough, and ErrClosed after Close.
+// Reserve charges maxBytes against the store's budget and creates a private
+// staging directory for a new job. maxBytes is what the job is booked at, not
+// a ceiling the store enforces: it bounds the documents the caller stages,
+// and the charge stays at that worst case until SetStatus finishes the job
+// (see there). While the pipeline owns a job it may hold one processed copy
+// on top of the original, so what is on disk can exceed what is charged, by
+// at most one document per worker. A full budget makes room by evicting (see
+// makeRoomLocked); ErrCapacity comes back only when that cannot free enough,
+// and ErrClosed after Close.
 //
 // The caller must eventually call Commit or Abort on the returned Staging so
 // the charge is settled or released.
@@ -388,9 +392,9 @@ func (s *Store) ListForUser(identities []string) []Job {
 // invariant that Error is "" unless the job failed.
 func (s *Store) SetStatus(id string, st Status, errMsg string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	rec, ok := s.jobs[id]
 	if !ok {
+		s.mu.Unlock()
 		return fmt.Errorf("jobs: set status: job %s: %w", id, ErrNotFound)
 	}
 	rec.job.Status = st
@@ -405,17 +409,37 @@ func (s *Store) SetStatus(id string, st Status, errMsg string) error {
 	// expired in the same instant, invisible to the person it was scanned
 	// for - and a failed job needs the window as much as a ready one,
 	// because its notice mail links to the scan it could not deliver.
+	var leftovers []string
 	if finished(st) {
 		rec.job.ExpiresAt = s.now().Add(s.ttl)
 		// Until here the job is charged the worst case its reservation
 		// promised, because OCR writes the searchable PDF before the
 		// original it replaces is removed. Nothing more will be written now,
-		// so it is charged what it really occupies.
+		// so it is charged what it really occupies -- and anything this job
+		// created that no document points at is deleted rather than
+		// accounted for. That is an OCR result whose call failed before it
+		// could replace anything: nothing will ever use it, and it would
+		// otherwise hold disk the budget knows nothing about for a whole TTL.
 		var n int64
+		keep := make(map[string]bool, len(rec.job.Documents))
 		for _, d := range rec.job.Documents {
 			n += d.Size
+			keep[filepath.Clean(d.Path)] = true
 		}
 		s.charge(rec, n)
+		for f := range rec.files {
+			if !keep[filepath.Clean(f)] {
+				leftovers = append(leftovers, f)
+				delete(rec.files, f)
+			}
+		}
+	}
+	s.mu.Unlock()
+
+	for _, f := range leftovers {
+		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+			s.log.Warn("jobs: failed to remove a file the job no longer references", "job_id", id, "err", err)
+		}
 	}
 	return nil
 }
