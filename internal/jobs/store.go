@@ -239,7 +239,7 @@ func (s *Store) admitsLocked(want int64) bool {
 // What is evicted stays as a tombstone until the moment it would have
 // expired anyway, so the web UI can say the scan was removed early rather
 // than letting it vanish from under the person it was scanned for.
-func (s *Store) makeRoomLocked() []string {
+func (s *Store) makeRoomLocked() []*jobRecord {
 	if s.used <= s.maxBytes {
 		return nil
 	}
@@ -254,31 +254,41 @@ func (s *Store) makeRoomLocked() []string {
 		return candidates[i].job.ReceivedAt.Before(candidates[k].job.ReceivedAt)
 	})
 
-	dirs := make([]string, 0, len(candidates))
+	evicted := make([]*jobRecord, 0, len(candidates))
 	for _, rec := range candidates {
 		if s.used <= s.maxBytes {
 			break
 		}
-		s.log.Info("jobs: removing a scan early to make room for a new one",
-			"job_id", rec.job.ID, "bytes", rec.bytes)
-		dirs = append(dirs, rec.dir)
+		evicted = append(evicted, rec)
 		rec.job.Status = StatusEvicted
 		rec.job.Error = ""
 		rec.job.Documents = nil
 		rec.files = nil
 		s.charge(rec, 0)
 	}
-	return dirs
+	return evicted
 }
 
-// removeDirs deletes evicted job directories, logging what it cannot remove:
-// the budget has been freed either way.
-func (s *Store) removeDirs(dirs []string) {
-	for _, dir := range dirs {
-		if err := os.RemoveAll(dir); err != nil {
-			s.log.Warn("jobs: failed to remove evicted job directory", "dir", filepath.Base(dir), "err", err)
+// dropEvicted says what was evicted and removes its files. It is deliberately
+// the caller's job, after unlocking: logging is I/O like any other, and this
+// type does none of it while holding the mutex.
+func (s *Store) dropEvicted(evicted []*jobRecord) {
+	for _, rec := range evicted {
+		s.log.Info("jobs: removed a scan early to make room for a new one", "job_id", rec.job.ID)
+		if err := os.RemoveAll(rec.dir); err != nil {
+			s.log.Warn("jobs: failed to remove evicted job directory", "job_id", rec.job.ID, "err", err)
 		}
 	}
+}
+
+// docBytes is what a job's documents occupy, which is what a job is charged
+// once the pipeline has finished with it.
+func docBytes(docs []Document) int64 {
+	var n int64
+	for _, d := range docs {
+		n += d.Size
+	}
+	return n
 }
 
 // charge sets a record's budget cost to n, keeping s.used in step. The
@@ -321,7 +331,7 @@ func (s *Store) commitReservation(id string, job Job, dir string, files map[stri
 	evicted := s.makeRoomLocked()
 	s.mu.Unlock()
 
-	s.removeDirs(evicted)
+	s.dropEvicted(evicted)
 	return nil
 }
 
@@ -409,7 +419,10 @@ func (s *Store) ListForUser(identities []string) []Job {
 func (s *Store) SetStatus(id string, st Status, errMsg string) error {
 	s.mu.Lock()
 	rec, ok := s.jobs[id]
-	if !ok {
+	// An evicted job is a tombstone with a deadline it must not outlive, so
+	// it counts as gone -- which is what the pipeline's callers already
+	// expect from a job that went away underneath them.
+	if !ok || rec.job.Status == StatusEvicted {
 		s.mu.Unlock()
 		return fmt.Errorf("jobs: set status: job %s: %w", id, ErrNotFound)
 	}
@@ -436,13 +449,11 @@ func (s *Store) SetStatus(id string, st Status, errMsg string) error {
 		// accounted for. That is an OCR result whose call failed before it
 		// could replace anything: nothing will ever use it, and it would
 		// otherwise hold disk the budget knows nothing about for a whole TTL.
-		var n int64
 		keep := make(map[string]bool, len(rec.job.Documents))
 		for _, d := range rec.job.Documents {
-			n += d.Size
 			keep[filepath.Clean(d.Path)] = true
 		}
-		s.charge(rec, n)
+		s.charge(rec, docBytes(rec.job.Documents))
 		for f := range rec.files {
 			if !keep[filepath.Clean(f)] {
 				leftovers = append(leftovers, f)
@@ -498,6 +509,13 @@ func (s *Store) ReplaceDocument(jobID, docID, newPath string, ocrApplied bool) e
 	rec.job.Documents[idx].Path = cleanPath
 	rec.job.Documents[idx].Size = fi.Size()
 	rec.job.Documents[idx].OCRApplied = ocrApplied
+	// Normally the pipeline still owns the job here and the charge is its
+	// reservation's worst case, which SetStatus settles. Re-charging a job
+	// that is already finished keeps the two from drifting apart if that
+	// ever stops being true.
+	if finished(rec.job.Status) {
+		s.charge(rec, docBytes(rec.job.Documents))
+	}
 	s.mu.Unlock()
 
 	if oldPath != cleanPath {
@@ -514,7 +532,7 @@ func (s *Store) ReplaceDocument(jobID, docID, newPath string, ocrApplied bool) e
 func (s *Store) CreateFile(jobID, prefix string) (*os.File, error) {
 	s.mu.Lock()
 	rec, ok := s.jobs[jobID]
-	if !ok {
+	if !ok || rec.job.Status == StatusEvicted {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("jobs: create file: job %s: %w", jobID, ErrNotFound)
 	}
@@ -528,8 +546,9 @@ func (s *Store) CreateFile(jobID, prefix string) (*os.File, error) {
 
 	s.mu.Lock()
 	rec, ok = s.jobs[jobID]
-	if !ok {
-		// The job was deleted or expired while the file was being created.
+	if !ok || rec.job.Status == StatusEvicted {
+		// The job was deleted, expired or evicted while the file was being
+		// created.
 		s.mu.Unlock()
 		f.Close()
 		os.Remove(f.Name())

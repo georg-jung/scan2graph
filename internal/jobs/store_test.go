@@ -1290,3 +1290,39 @@ func TestAbortedTransactionCostsNobodyAScan(t *testing.T) {
 		t.Errorf("usedBytes() = %d, want the three scans' %d back", got, 3*size)
 	}
 }
+
+// A tombstone is a job that is gone: writing to it would panic on the files
+// map it no longer has, and finishing it again would push it past the
+// deadline it must not outlive.
+func TestEvictedJobIsGoneToItsWriters(t *testing.T) {
+	s, _ := newTestStore(t, Options{MaxBytes: 2 * reserveBytes})
+	size := int(reserveBytes) / 2
+	oldest, _ := commitReady(t, s, "oldest", size)
+	commitReady(t, s, "middle", size)
+	commitReady(t, s, "newest", size)
+
+	st, err := s.Reserve(reserveBytes)
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	path := writeStagedFile(t, st, "doc", "x")
+	if _, err := st.Commit(NewJob{Documents: []NewDocument{{DisplayName: "new.pdf", Path: path}}}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	before, ok := s.Get(oldest.ID)
+	if !ok || before.Status != StatusEvicted {
+		t.Fatalf("job %s was not evicted: ok=%v status=%q", oldest.ID, ok, before.Status)
+	}
+
+	if _, err := s.CreateFile(oldest.ID, "ocr"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("CreateFile on a tombstone: %v, want ErrNotFound", err)
+	}
+	if err := s.SetStatus(oldest.ID, StatusReady, ""); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetStatus on a tombstone: %v, want ErrNotFound", err)
+	}
+	after, ok := s.Get(oldest.ID)
+	if !ok || after.Status != StatusEvicted || !after.ExpiresAt.Equal(before.ExpiresAt) {
+		t.Errorf("tombstone after: status=%q expires=%v, want %q at %v",
+			after.Status, after.ExpiresAt, StatusEvicted, before.ExpiresAt)
+	}
+}

@@ -367,7 +367,10 @@ func (l *loader) limits() Limits {
 	// arrival; two, because OCR writes the searchable PDF before the original
 	// it replaces is removed, so one scan being worked on can hold twice its
 	// own size.
-	if lim.MaxStoredBytes > 0 && 2*lim.MaxMessageBytes > lim.MaxStoredBytes {
+	// Written as a division: doubling the message cap overflows for a large
+	// enough one, and the check would then wave through the configuration it
+	// exists to catch.
+	if lim.MaxStoredBytes > 0 && lim.MaxMessageBytes > lim.MaxStoredBytes/2 {
 		l.errorf("S2G_MAX_STORED_BYTES: must be at least twice S2G_MAX_MESSAGE_BYTES (%d), got %d",
 			2*lim.MaxMessageBytes, lim.MaxStoredBytes)
 	}

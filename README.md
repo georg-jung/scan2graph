@@ -605,7 +605,10 @@ Only work still in flight can make the appliance turn a message away: with
 nothing finished left to remove, it is rejected with SMTP `451`, a temporary
 failure the printer may retry. A scan being *received* is charged
 `S2G_MAX_MESSAGE_BYTES` until it has been read, because its real size is not
-known before that.
+known before that, and it keeps that worst case until the pipeline is done
+with it. The budget is what scan2graph *keeps*, not a hard ceiling on the
+directory: scans being received or worked on can stand above it briefly, so
+give the temporary directory some room above the number you set.
 
 A failed job is not silent. Its status and a short, user-safe reason show in
 the web UI whenever the profile has `web`, and its recipients get a notice
