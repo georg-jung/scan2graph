@@ -1379,3 +1379,53 @@ func TestCommitEvictsOnlyForItself(t *testing.T) {
 		t.Errorf("the oldest scan is %q, want it to be the one evicted", got.Status)
 	}
 }
+
+// Nothing bounds how big a searchable PDF comes back from OCR, so settling
+// up can cost more than the job was booked at. The store must not be left
+// standing above its budget until some later scan happens to arrive.
+func TestFinishingOverTheBudgetMakesRoom(t *testing.T) {
+	s, clk := newTestStore(t, Options{MaxBytes: 2 * reserveBytes})
+	older, olderPath := commitReady(t, s, "older", int(reserveBytes)/2)
+	clk.advance(time.Minute)
+
+	st, err := s.Reserve(reserveBytes)
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	path := writeStagedFile(t, st, "doc", "x")
+	job, err := st.Commit(NewJob{Documents: []NewDocument{{DisplayName: "scan.pdf", Path: path}}})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// OCR comes back with more than the whole message was allowed to be.
+	f, err := s.CreateFile(job.ID, "ocr")
+	if err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	big := int(reserveBytes) * 18 / 10
+	if _, err := f.WriteString(strings.Repeat("y", big)); err != nil {
+		t.Fatalf("WriteString: %v", err)
+	}
+	f.Close()
+	if err := s.ReplaceDocument(job.ID, job.Documents[0].ID, f.Name(), true); err != nil {
+		t.Fatalf("ReplaceDocument: %v", err)
+	}
+	if err := s.SetStatus(job.ID, StatusReady, ""); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+
+	if got := s.usedBytes(); got > 2*reserveBytes {
+		t.Errorf("usedBytes() = %d, want no more than the budget's %d", got, 2*reserveBytes)
+	}
+	if gone, ok := s.Get(older.ID); !ok || gone.Status != StatusEvicted {
+		t.Errorf("the older scan is %q, want it to have given way", gone.Status)
+	}
+	if _, err := os.Stat(olderPath); !os.IsNotExist(err) {
+		t.Errorf("the older scan's file is still on disk: err=%v", err)
+	}
+	// The scan that just finished is the newest, so it keeps its document.
+	if got, ok := s.Get(job.ID); !ok || got.Status != StatusReady || len(got.Documents) != 1 {
+		t.Errorf("the finished scan: ok=%v status=%q docs=%d, want it intact", ok, got.Status, len(got.Documents))
+	}
+}

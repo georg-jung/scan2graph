@@ -449,6 +449,7 @@ func (s *Store) SetStatus(id string, st Status, errMsg string) error {
 	// for - and a failed job needs the window as much as a ready one,
 	// because its notice mail links to the scan it could not deliver.
 	var leftovers []string
+	var evicted []*jobRecord
 	if finished(st) {
 		rec.job.ExpiresAt = s.now().Add(s.ttl)
 		// Until here the job is charged the worst case its reservation
@@ -470,8 +471,15 @@ func (s *Store) SetStatus(id string, st Status, errMsg string) error {
 				delete(rec.files, f)
 			}
 		}
+		// Settling up can also cost more than the job was booked at: nothing
+		// bounds how big a searchable PDF comes back from OCR. Make room here
+		// too, or the store would sit above its budget until some later scan
+		// happened to arrive and ask.
+		evicted = s.makeRoomLocked()
 	}
 	s.mu.Unlock()
+
+	s.dropEvicted(evicted)
 
 	for _, f := range leftovers {
 		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
