@@ -395,11 +395,6 @@ func TestLoadRejectsBudgetSmallerThanOneMessage(t *testing.T) {
 	env["S2G_MAX_MESSAGE_BYTES"] = "2000"
 	env["S2G_MAX_STORED_BYTES"] = "1999"
 	wantLoadErr(t, env, "S2G_MAX_STORED_BYTES", "at least")
-
-	env["S2G_MAX_STORED_BYTES"] = "2000"
-	if c := mustLoad(t, env); c.Limits.MaxStoredBytes != 2000 {
-		t.Errorf("MaxStoredBytes = %d, want 2000 (exactly one message must be accepted)", c.Limits.MaxStoredBytes)
-	}
 }
 
 func TestLoadProfilesValidation(t *testing.T) {

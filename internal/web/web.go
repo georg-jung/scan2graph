@@ -179,10 +179,9 @@ func (s *Server) job(sess *session, jobID string) (jobs.Job, bool) {
 }
 
 // notFound is the single answer for an unknown, expired, non-web or
-// somebody-else's job or document. The wording says nothing about which of
-// those it was -- "not yours" has to stay indistinguishable from "never
-// existed" -- but a link from a notice email is far more often an expired
-// scan than a mistake, and gets told what to do about it.
+// somebody-else's job or document. It says nothing about which -- "not
+// yours" stays indistinguishable from "never existed" -- but a stale link
+// from a notice email is the common case, and gets told as much.
 func notFound(w http.ResponseWriter) {
 	http.Error(w, "This scan is not available. Scans are kept for a limited time, "+
 		"and are removed earlier when the space is needed for newer ones.", http.StatusNotFound)

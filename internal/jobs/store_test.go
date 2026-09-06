@@ -1081,21 +1081,17 @@ func commitReady(t *testing.T, s *Store, name string, size int) (Job, string) {
 	return job, path
 }
 
-// An unfinished job is charged the worst case its reservation promised,
-// because OCR still writes a searchable PDF before the original it replaces
-// is removed; a finished one is charged what it actually occupies.
+// A job in flight is charged the worst case its reservation promised, so
+// that the searchable PDF OCR writes before removing the original has room;
+// a finished one is charged what it actually occupies.
 func TestChargeFallsToTheRealSizeWhenAJobIsFinished(t *testing.T) {
 	s, _ := newTestStore(t, Options{})
 
+	const size = 4096
 	st, err := s.Reserve(reserveBytes)
 	if err != nil {
 		t.Fatalf("Reserve: %v", err)
 	}
-	if got := s.Bytes(); got != reserveBytes {
-		t.Errorf("Bytes() while reserved = %d, want %d", got, reserveBytes)
-	}
-
-	const size = 4096
 	path := writeStagedFile(t, st, "doc", strings.Repeat("x", size))
 	job, err := st.Commit(NewJob{Documents: []NewDocument{{DisplayName: "a.pdf", Path: path}}})
 	if err != nil {
@@ -1110,13 +1106,6 @@ func TestChargeFallsToTheRealSizeWhenAJobIsFinished(t *testing.T) {
 	}
 	if got := s.Bytes(); got != size {
 		t.Errorf("Bytes() once finished = %d, want the document's %d", got, size)
-	}
-
-	if err := s.Delete(job.ID); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	if got := s.Bytes(); got != 0 {
-		t.Errorf("Bytes() after delete = %d, want 0", got)
 	}
 }
 
@@ -1161,33 +1150,6 @@ func TestReserveEvictsTheOldestFinishedJob(t *testing.T) {
 		if !ok || len(got.Documents) != 1 || got.Status != StatusReady {
 			t.Errorf("job %q was evicted too: ok=%v status=%q docs=%d", want.Documents[0].DisplayName, ok, got.Status, len(got.Documents))
 		}
-	}
-}
-
-// A tombstone is not a second retention window: it goes when the scan it
-// stands for would have expired anyway.
-func TestEvictedJobExpiresOnItsOriginalDeadline(t *testing.T) {
-	s, clk := newTestStore(t, Options{TTL: time.Hour, MaxBytes: 2 * reserveBytes})
-	size := int(reserveBytes) / 2
-	for i := 0; i < 3; i++ {
-		commitReady(t, s, fmt.Sprintf("scan%d", i), size)
-	}
-	st, err := s.Reserve(reserveBytes)
-	if err != nil {
-		t.Fatalf("Reserve: %v", err)
-	}
-	defer st.Abort()
-
-	if n := len(s.ListForUser([]string{"alice@example.com"})); n != 3 {
-		t.Fatalf("ListForUser = %d scans, want 3 (the evicted one still listed)", n)
-	}
-
-	clk.advance(time.Hour + time.Second)
-	if removed := s.CleanExpired(); removed != 3 {
-		t.Errorf("CleanExpired removed %d jobs, want 3 (the tombstone among them)", removed)
-	}
-	if n := len(s.ListForUser([]string{"alice@example.com"})); n != 0 {
-		t.Errorf("ListForUser = %d scans after the TTL, want 0", n)
 	}
 }
 

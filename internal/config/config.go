@@ -362,9 +362,8 @@ func (l *loader) limits() Limits {
 		MaxStoredBytes:    l.int64Positive("S2G_MAX_STORED_BYTES", 536870912),
 		MaxConcurrentJobs: l.intPositive("S2G_MAX_CONCURRENT_JOBS", 2),
 	}
-	// One message must fit, or every scan is rejected the moment it arrives:
-	// the store takes the DATA cap as the budget for a message it has not
-	// read yet.
+	// One message must fit, or every scan is rejected on arrival: the store
+	// charges the DATA cap for a message it has not read yet.
 	if lim.MaxStoredBytes > 0 && lim.MaxMessageBytes > lim.MaxStoredBytes {
 		l.errorf("S2G_MAX_STORED_BYTES: must be at least S2G_MAX_MESSAGE_BYTES (%d), got %d",
 			lim.MaxMessageBytes, lim.MaxStoredBytes)

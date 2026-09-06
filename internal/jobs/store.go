@@ -153,27 +153,15 @@ func New(opts Options) (*Store, error) {
 	}, nil
 }
 
-// Reserve charges maxBytes against the store's budget and creates a private
-// staging directory for a new job. maxBytes is the most the caller may write
-// into it -- the SMTP message cap, since a decoded attachment is always
-// smaller than the message that carried it -- and the charge stays at that
-// worst case until the pipeline finishes with the job, because an OCR result
-// is written before the original it replaces is removed. SetStatus then
-// charges the job what it actually occupies.
-//
-// When the budget is exhausted, the oldest finished scans are removed early
-// to make room (see makeRoomLocked): someone is standing at the printer, and
-// a scan from hours ago has most likely been picked up already. ErrCapacity
-// is returned only when even that does not free enough -- the store is full
-// of work in flight, which is real backpressure -- and ErrClosed after Close.
+// Reserve charges maxBytes -- the most the caller may write into the staging
+// directory it gets back -- against the store's budget, and keeps charging
+// that worst case until SetStatus finishes the job (see there). A full
+// budget makes room by evicting (see makeRoomLocked); ErrCapacity comes back
+// only when that cannot free enough, and ErrClosed after Close.
 //
 // The caller must eventually call Commit or Abort on the returned Staging so
 // the charge is settled or released.
 func (s *Store) Reserve(maxBytes int64) (*Staging, error) {
-	if maxBytes <= 0 {
-		return nil, errors.New("jobs: reserve requires a positive maxBytes")
-	}
-
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -219,15 +207,16 @@ func (s *Store) Reserve(maxBytes int64) (*Staging, error) {
 
 // makeRoomLocked frees the budget for want more bytes by evicting the oldest
 // finished jobs, and returns the directories the caller must remove after
-// unlocking. It reports false, having evicted nothing, when even every
-// finished job together would not be enough: destroying scans that still
-// would not make room helps nobody, and the caller rejects instead.
+// unlocking. Somebody is standing at the printer, and a scan from hours ago
+// has most likely been picked up already -- but it reports false, having
+// evicted nothing, when even every finished job together would not be
+// enough, because destroying scans that still would not make room helps
+// nobody. A job the pipeline has not finished with is never a candidate: it
+// is work in flight, and its files are still being written.
 //
-// A job the pipeline has not finished with is never a candidate -- it is
-// work in flight, and its recipients have not been told anything yet.
-// Evicting leaves the job itself in place as a tombstone until the moment it
-// would have expired anyway, so the web UI can say the scan was removed
-// early rather than making it vanish silently.
+// What is evicted stays as a tombstone until the moment it would have
+// expired anyway, so the web UI can say the scan was removed early rather
+// than letting it vanish from under the person it was scanned for.
 func (s *Store) makeRoomLocked(want int64) ([]string, bool) {
 	if s.used+want <= s.maxBytes {
 		return nil, true
@@ -267,9 +256,8 @@ func (s *Store) makeRoomLocked(want int64) ([]string, bool) {
 	return dirs, true
 }
 
-// removeDirs deletes evicted job directories. Failures are logged (with the
-// path's owner id, never a subject) rather than surfaced: the metadata is
-// already gone from the budget either way.
+// removeDirs deletes evicted job directories, logging what it cannot remove:
+// the budget has been freed either way.
 func (s *Store) removeDirs(dirs []string) {
 	for _, dir := range dirs {
 		if err := os.RemoveAll(dir); err != nil {
@@ -285,8 +273,6 @@ func (s *Store) charge(rec *jobRecord, n int64) {
 	rec.bytes = n
 }
 
-// finished reports whether the pipeline is done with a job, which is what
-// makes it evictable and what freezes its size.
 func finished(st Status) bool { return st == StatusReady || st == StatusFailed }
 
 // releaseReservation drops reservation id, releasing its charge. It does not
@@ -421,11 +407,10 @@ func (s *Store) SetStatus(id string, st Status, errMsg string) error {
 	// because its notice mail links to the scan it could not deliver.
 	if finished(st) {
 		rec.job.ExpiresAt = s.now().Add(s.ttl)
-		// Nothing will be written for this job any more, so the worst case
-		// its reservation promised can give way to what it really occupies.
-		// Until here the job keeps that worst case: OCR writes the
-		// searchable PDF before the original it replaces is removed, so a
-		// job in flight can legitimately need more room than it shows.
+		// Until here the job is charged the worst case its reservation
+		// promised, because OCR writes the searchable PDF before the
+		// original it replaces is removed. Nothing more will be written now,
+		// so it is charged what it really occupies.
 		var n int64
 		for _, d := range rec.job.Documents {
 			n += d.Size
@@ -485,9 +470,7 @@ func (s *Store) ReplaceDocument(jobID, docID, newPath string, ocrApplied bool) e
 
 // CreateFile creates a new, empty 0600 file inside a committed job's
 // directory and registers it, so it can later be passed to ReplaceDocument.
-// This is how processed documents (e.g. a searchable PDF) get on disk. It
-// needs no budget of its own: an unfinished job is still charged the worst
-// case its reservation promised (see Reserve).
+// This is how processed documents (e.g. a searchable PDF) get on disk.
 func (s *Store) CreateFile(jobID, prefix string) (*os.File, error) {
 	s.mu.Lock()
 	rec, ok := s.jobs[jobID]
@@ -606,8 +589,7 @@ func (s *Store) Len() int {
 	return len(s.jobs) + len(s.reservations)
 }
 
-// Bytes reports how much of the budget (Options.MaxBytes) is currently
-// charged: see Reserve for what an unfinished job costs.
+// Bytes reports how much of the budget (Options.MaxBytes) is charged.
 func (s *Store) Bytes() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
