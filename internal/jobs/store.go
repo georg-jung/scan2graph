@@ -240,7 +240,16 @@ func (s *Store) admitsLocked(want int64) bool {
 // expired anyway, so the web UI can say the scan was removed early rather
 // than letting it vanish from under the person it was scanned for.
 func (s *Store) makeRoomLocked() []*jobRecord {
-	if s.used <= s.maxBytes {
+	// What has to fit is what the store is holding, not what it has promised:
+	// a reservation still open belongs to a transaction that may yet turn out
+	// to be a "test connection" or a reset, and evicting on its behalf would
+	// destroy scans for a scan that never arrives. Its own commit will ask
+	// again, by which time it is a job like any other.
+	held := s.used
+	for _, r := range s.reservations {
+		held -= r.bytes
+	}
+	if held <= s.maxBytes {
 		return nil
 	}
 
@@ -256,9 +265,10 @@ func (s *Store) makeRoomLocked() []*jobRecord {
 
 	evicted := make([]*jobRecord, 0, len(candidates))
 	for _, rec := range candidates {
-		if s.used <= s.maxBytes {
+		if held <= s.maxBytes {
 			break
 		}
+		held -= rec.bytes
 		evicted = append(evicted, rec)
 		rec.job.Status = StatusEvicted
 		rec.job.Error = ""

@@ -1330,3 +1330,52 @@ func TestEvictedJobIsGoneToItsWriters(t *testing.T) {
 			after.Status, after.ExpiresAt, StatusEvicted, before.ExpiresAt)
 	}
 }
+
+// A second transaction still under way is a promise, not a scan. Committing
+// the first must not evict on its behalf: it may yet turn out to be a "test
+// connection" or a reset, and the scans would be gone for nothing.
+func TestCommitEvictsOnlyForItself(t *testing.T) {
+	s, clk := newTestStore(t, Options{MaxBytes: 2 * reserveBytes})
+	size := int(reserveBytes) / 2
+
+	var kept []Job
+	for i := 0; i < 3; i++ {
+		job, _ := commitReady(t, s, fmt.Sprintf("scan%d", i), size)
+		kept = append(kept, job)
+		clk.advance(time.Minute)
+	}
+
+	first, err := s.Reserve(reserveBytes)
+	if err != nil {
+		t.Fatalf("Reserve 1: %v", err)
+	}
+	second, err := s.Reserve(reserveBytes)
+	if err != nil {
+		t.Fatalf("Reserve 2: %v", err)
+	}
+
+	path := writeStagedFile(t, first, "doc", "x")
+	if _, err := first.Commit(NewJob{Documents: []NewDocument{{DisplayName: "first.pdf", Path: path}}}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	second.Abort()
+
+	// One scan came in, so one scan gives way -- not all three to cover a
+	// transaction that went away.
+	var evicted int
+	for _, want := range kept {
+		got, ok := s.Get(want.ID)
+		if !ok {
+			t.Fatalf("scan %s disappeared entirely", want.ID)
+		}
+		if got.Status == StatusEvicted {
+			evicted++
+		}
+	}
+	if evicted != 1 {
+		t.Errorf("%d of the three scans were evicted, want 1", evicted)
+	}
+	if got, ok := s.Get(kept[0].ID); !ok || got.Status != StatusEvicted {
+		t.Errorf("the oldest scan is %q, want it to be the one evicted", got.Status)
+	}
+}
