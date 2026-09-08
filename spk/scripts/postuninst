@@ -1,0 +1,14 @@
+#!/bin/sh
+# Delete the saved configuration - and the Entra client secret the setup
+# wizard stored in it - plus the service log and pid file, on a real
+# uninstall only. The log holds the generated SMTP password and the one-shot
+# setup URL that start printed, so leaving it behind partly defeats deleting
+# the config. SYNOPKG_PKG_STATUS is UPGRADE while upgrading (the old
+# package's postuninst runs then too), and removing any of this there would
+# wipe the operator's setup on every update.
+CONFIG=/var/packages/scan2graph/etc/scan2graph.env
+VAR=/var/packages/scan2graph/var
+
+[ "$SYNOPKG_PKG_STATUS" = "UNINSTALL" ] && rm -f "$CONFIG" "$VAR"/scan2graph.log* "$VAR"/scan2graph.pid
+
+exit 0

@@ -19,19 +19,29 @@ pathless setup remains download-only. Downloading, testing, generating a
 password, invalid saves, and failed writes never start it. Apply files saved by
 explicit setup or edited externally by restarting the managed service.
 
-## Planned native DSM package
+## Native DSM package
 
-The SPK is not implemented yet. It will run the static binary as an unprivileged
-package user, without a Container Manager dependency. Following the
+`spk/` builds a Synology DSM 7 package — `spk/build.sh --version vX.Y.Z` writes
+one `.spk` per architecture (`x86_64`, `armv8`, `armv7`) into `dist/`, and
+`spk/check.sh` verifies them. It carries the same static binary, runs it as an
+unprivileged package user, and needs no Container Manager. Following the
 [Synology package filesystem](https://help.synology.com/developer-guide/integrate_dsm/fhs.html):
 
-- Store configuration at `/var/packages/scan2graph/etc/scan2graph.env`, outside
-  the replaceable application files in `target`, and preserve it across upgrades.
-- Set `S2G_TEMP_DIR=/var/packages/scan2graph/tmp` for ephemeral scans.
-- Let DSM own service lifecycle, the HTTP reverse proxy and TLS. The initial
-  wizard-to-appliance transition stays inside the process; later external file
-  edits and explicit setup still require a DSM service restart. Keep SMTP on
-  the LAN and use unprivileged listener ports.
-- Seed the public URL before first boot when a proxy subpath is needed.
-- Reuse the application setup wizard for Microsoft settings. The package
-  adapter supplies paths and lifecycle integration; it must not duplicate that form.
+- Configuration lives at `/var/packages/scan2graph/etc/scan2graph.env`, outside
+  the replaceable application files in `target`, and survives upgrades. The
+  package seeds it on first install and never rewrites it afterwards;
+  uninstalling deletes it, along with the service log, because both hold
+  secrets the operator did not choose to leave behind.
+- `S2G_TEMP_DIR=/var/packages/scan2graph/tmp` holds ephemeral scans.
+- DSM owns the service lifecycle through `scripts/start-stop-status`. The
+  initial wizard-to-appliance transition stays inside the process, so nothing
+  restarts the DSM service for it; later external file edits and explicit setup
+  still require one. The listeners are the unprivileged defaults, HTTP 8080 and
+  SMTP 2525, both registered with the DSM firewall — a package that does not run
+  as root cannot bind 25, so the printer is pointed at 2525.
+- TLS and the reverse proxy are the operator's, via Control Panel → Login Portal
+  → Advanced → Reverse Proxy. Seed the public URL before first boot when a proxy
+  subpath is needed.
+- The application setup wizard remains the only place Microsoft settings are
+  entered. The package supplies paths and lifecycle integration and has no
+  install wizard of its own.

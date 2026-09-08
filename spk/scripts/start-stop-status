@@ -1,0 +1,68 @@
+#!/bin/sh
+# DSM drives the service lifecycle exclusively through this script. Verbs and
+# exit codes below are DSM's contract, not scan2graph's choice.
+#
+# No "set -e": almost every line here is control flow on a command's exit
+# status (kill -0 to probe a pid, a missing pid file), so failing fast on the
+# first non-zero exit would break the logic rather than protect it.
+set -u
+
+# Hardcoded rather than $SYNOPKG_PKGVAR/$SYNOPKG_PKGTMP/$SYNOPKG_PKGDEST:
+# Synology documents those for the install scripts, not for a start at boot,
+# and an unset one under "set -u" would fail every verb here - including
+# status, which would then exit 1, DSM's code for "it crashed". These are the
+# per-package symlinks DSM's own filesystem hierarchy guarantees, identical
+# under both the volume and the system install layout.
+CONFIG=/var/packages/scan2graph/etc/scan2graph.env
+LOG=/var/packages/scan2graph/var/scan2graph.log
+PID=/var/packages/scan2graph/var/scan2graph.pid
+TMP=/var/packages/scan2graph/tmp
+BIN=/var/packages/scan2graph/target/bin/scan2graph
+
+start() {
+    [ -f "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null && exit 0
+    mkdir -p "$(dirname "$LOG")" "$TMP"
+    # The appliance writes a few lines per scan, so one rotated generation is
+    # the whole policy it needs - not worth a logrotate resource worker.
+    [ -f "$LOG" ] && mv -f "$LOG" "$LOG.1"
+    # Only S2G_CONFIG_FILE is exported. A real environment variable outranks
+    # the config file (internal/config.Load), so exporting any other S2G_*
+    # here would silently override the operator's edits and the setup
+    # wizard's saved values - same rule, same reasoning, as the Dockerfile.
+    # start must fork and return: DSM does not supervise a blocking script,
+    # and on first boot this process is the setup wizard, not the appliance,
+    # so there is nothing to wait for readiness on either.
+    S2G_CONFIG_FILE="$CONFIG" "$BIN" >>"$LOG" 2>&1 &
+    echo $! >"$PID"
+}
+
+stop() {
+    [ -f "$PID" ] || exit 0
+    pid=$(cat "$PID")
+    kill "$pid" 2>/dev/null
+    i=0
+    while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 20 ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+    kill -9 "$pid" 2>/dev/null
+    rm -f "$PID"
+    exit 0
+}
+
+status() {
+    if [ -f "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null; then
+        exit 0 # running
+    elif [ -f "$PID" ]; then
+        exit 1 # dead but pid file present
+    else
+        exit 3 # not running
+    fi
+}
+
+case "${1:-}" in
+    start) start ;;
+    stop) stop ;;
+    status) status ;;
+    log) echo "$LOG" ;;
+esac
