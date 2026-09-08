@@ -65,4 +65,9 @@ case "${1:-}" in
     stop) stop ;;
     status) status ;;
     log) echo "$LOG" ;;
+    # DSM calls these two around every start and stop because
+    # precheckstartstop defaults to yes, and a non-zero from prestart aborts
+    # the start. There is nothing to check, so they succeed - as does any verb
+    # DSM grows later, which is why there is deliberately no failing default.
+    prestart | prestop) ;;
 esac

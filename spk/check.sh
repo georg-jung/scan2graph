@@ -224,6 +224,10 @@ for s in "${spks[@]}"; do structural "$s"; done
 x86=$(printf '%s\n' "${spks[@]}" | grep x86_64 | head -1 || true)
 if ! command -v docker >/dev/null; then
     echo "SKIP lifecycle checks: docker is not on PATH, so only the structural checks above ran"
+elif [ -z "$x86" ]; then
+    # A --arch armv8 build leaves dist/ without one, and the container cannot
+    # exec an arm binary without emulation.
+    echo "SKIP lifecycle checks: no x86_64 .spk in dist/, so only the structural checks above ran"
 else
     lifecycle "$x86"
 fi
