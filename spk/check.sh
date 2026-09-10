@@ -22,11 +22,21 @@ lfonly() {
     local f
     for f in "$@"; do tr -d '\r' <"$f" | cmp -s - "$f" || return 1; done
 }
+# sameport <port> <extracted spk dir>: the HTTP port is a literal in four files
+# and nothing reconciles them - DSM's Open button reads INFO, the main-menu icon
+# reads ui/config, the firewall reads scan2graph.sc, and only postinst decides
+# what actually listens. A port change that misses one of them fails silently.
+sameport() {
+    [ -n "$1" ] &&
+        grep -q "\"port\": $1," "$2/payload/ui/config" &&
+        grep -q "dst.ports=\"$1/tcp\"" "$2/payload/conf/scan2graph.sc" &&
+        grep -qx "S2G_HTTP_ADDR=:$1" "$2/scripts/postinst"
+}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 structural() {
-    local spk=$1 n d arch em sum binmode m s
+    local spk=$1 n d arch em sum binmode m s port
     n=$(basename "$spk")
     d=$work/$n
     mkdir -p "$d/payload"
@@ -66,6 +76,9 @@ structural() {
         lfonly "$d"/scripts/* "$d/INFO" "$d"/conf/* "$d/payload/ui/config"
 
     a "$n: privilege runs as the package user" grep -q '"run-as": *"package"' "$d/conf/privilege"
+
+    port=$(sed -n 's/^adminport="\(.*\)"$/\1/p' "$d/INFO")
+    a "$n: ui/config, scan2graph.sc and postinst all use adminport $port" sameport "$port" "$d"
 
     a "$n: package.tgz contains ui/config" test -f "$d/payload/ui/config"
     # conf/resource's protocol-file resolves against target/, so this is the
@@ -127,7 +140,7 @@ chown -R 1000:1000 "$P"
 
 $AS "$S/postinst" || die "postinst exited non-zero; DSM would leave the package corrupted"
 [ "$(stat -c %a "$CONFIG")" = 600 ] || die "$CONFIG is missing or not mode 0600"
-for v in S2G_HTTP_ADDR=:8080 S2G_SMTP_ADDR=:2525 S2G_TEMP_DIR=/var/packages/scan2graph/tmp; do
+for v in S2G_HTTP_ADDR=:2526 S2G_SMTP_ADDR=:2525 S2G_TEMP_DIR=/var/packages/scan2graph/tmp; do
     grep -qx "$v" "$CONFIG" || die "postinst did not seed $v into $CONFIG"
 done
 ok "postinst writes $CONFIG 0600 with the three seeded settings"
@@ -154,7 +167,7 @@ ok "starting twice leaves the original process running under the same pid"
 # No curl in debian:stable-slim, and installing one would mean a network fetch
 # per run; bash's /dev/tcp is already here and one GET is all this needs.
 get() {
-    exec 3<>/dev/tcp/127.0.0.1/8080 || return 1
+    exec 3<>/dev/tcp/127.0.0.1/2526 || return 1
     printf 'GET /setup HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n' >&3
     timeout 5 cat <&3
     exec 3>&-
@@ -167,7 +180,7 @@ for _ in $(seq 40); do
 done
 case $page in
     *"Set up scan2graph"*) ok "GET /setup serves scan2graph's setup wizard" ;;
-    *) die "GET /setup on 127.0.0.1:8080 did not return the setup wizard" ;;
+    *) die "GET /setup on 127.0.0.1:2526 did not return the setup wizard" ;;
 esac
 
 # The start script's redirect is the only reason the operator can diagnose anything.

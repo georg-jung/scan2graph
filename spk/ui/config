@@ -6,7 +6,7 @@
       "desc": "Scans from the printer, delivered onwards",
       "icon": "images/icon_{0}.png",
       "protocol": "http",
-      "port": 8080,
+      "port": 2526,
       "url": "/",
       "allUsers": true,
       "grantPrivilege": "all",

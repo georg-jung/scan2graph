@@ -36,12 +36,16 @@ unprivileged package user, and needs no Container Manager. Following the
 - DSM owns the service lifecycle through `scripts/start-stop-status`. The
   initial wizard-to-appliance transition stays inside the process, so nothing
   restarts the DSM service for it; later external file edits and explicit setup
-  still require one. The listeners are the unprivileged defaults, HTTP 8080 and
-  SMTP 2525, both registered with the DSM firewall — a package that does not run
-  as root cannot bind 25, so the printer is pointed at 2525. Both ports are
-  fixed: `adminport` and the main-menu icon are baked into the package at build
-  time and cannot follow an edited `S2G_HTTP_ADDR`, so a conflict on 8080 stops
-  the install rather than leaving DSM pointing at whatever else answers there.
+  still require one. The listeners are SMTP 2525 and HTTP 2526, both
+  unprivileged and both registered with the DSM firewall — a package that does
+  not run as root cannot bind 25, so the printer is pointed at 2525. HTTP moves
+  off the appliance's usual 8080 here because a NAS shares one port space with
+  DSM and everything else installed on it, and 8080 is among the most commonly
+  occupied ports on such a box; container deployments keep 8080, where the port
+  is namespaced and collides with nothing. Both ports are fixed: `adminport` and
+  the main-menu icon are baked into the package at build time and cannot follow
+  an edited `S2G_HTTP_ADDR`, so a conflict stops the install rather than leaving
+  DSM pointing at whatever else answers there.
 - TLS and the reverse proxy are the operator's, via Control Panel → Login Portal
   → Advanced → Reverse Proxy. Seed the public URL before first boot when a proxy
   subpath is needed.

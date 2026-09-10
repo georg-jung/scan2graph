@@ -108,12 +108,21 @@ build_one() {
     checksum=$(md5sum "$spk/package.tgz" | cut -d' ' -f1)
     create_time=$(date -u +%Y%m%d-%H:%M:%S)
 
+    # adminport 2526 rather than the appliance's usual 8080: on a NAS this port
+    # is shared with DSM and everything else installed on it, and 8080 is the
+    # 15th most commonly open TCP port there is - SynoCommunity hands out the
+    # whole 8xxx band to its packages, and Container Manager users map into it.
+    # 2526 sits next to the SMTP port, is claimed by nothing in DSM's or
+    # SynoCommunity's port lists, and its lone IANA registration (EMA License
+    # Manager) has never been deployed. Container deployments keep 8080: there
+    # the port lives in its own namespace and collides with nothing.
+    #
     # checkport is left at its default of "yes" on purpose: this package owns
     # adminport, and a conflict on it has to stop the install rather than be
     # worked around later. adminport and ui/config are baked in here at build
     # time, so an operator who moves S2G_HTTP_ADDR afterwards gets a service
     # that runs while the main-menu icon and the Open button still point at
-    # 8080 - i.e. at whatever else is answering there.
+    # 2526 - i.e. at whatever else is answering there.
     cat >"$spk/INFO" <<EOF
 package="scan2graph"
 version="$PKG_VERSION"
@@ -123,7 +132,7 @@ maintainer="Georg Jung"
 maintainer_url="https://github.com/georg-jung"
 support_url="https://github.com/georg-jung/scan2graph/issues"
 description="LAN SMTP gateway that turns scan-to-email from a printer into OCRed PDFs delivered by Microsoft Graph or a small Entra-authenticated web UI."
-adminport="8080"
+adminport="2526"
 dsmuidir="ui"
 dsmappname="SYNO.SDS._ThirdParty.App.scan2graph"
 support_move="yes"

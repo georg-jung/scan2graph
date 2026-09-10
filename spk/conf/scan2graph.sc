@@ -2,7 +2,7 @@
 title="scan2graph Web UI"
 desc="scan2graph"
 port_forward="no"
-dst.ports="8080/tcp"
+dst.ports="2526/tcp"
 
 [scan2graph_smtp]
 title="scan2graph SMTP"

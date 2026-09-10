@@ -15,7 +15,7 @@ if [ ! -f "$CONFIG" ]; then
     # umask 077: the setup wizard will later store an Entra client secret here.
     umask 077
     cat > "$CONFIG.new" <<'EOF'
-S2G_HTTP_ADDR=:8080
+S2G_HTTP_ADDR=:2526
 S2G_SMTP_ADDR=:2525
 S2G_TEMP_DIR=/var/packages/scan2graph/tmp
 EOF
