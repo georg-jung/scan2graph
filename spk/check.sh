@@ -68,6 +68,9 @@ structural() {
     a "$n: privilege runs as the package user" grep -q '"run-as": *"package"' "$d/conf/privilege"
 
     a "$n: package.tgz contains ui/config" test -f "$d/payload/ui/config"
+    # conf/resource's protocol-file resolves against target/, so this is the
+    # path the firewall registration reads - an outer conf/ copy would not be.
+    a "$n: package.tgz contains conf/scan2graph.sc" test -f "$d/payload/conf/scan2graph.sc"
     for s in 16 24 32 48 64 72 256; do
         a "$n: package.tgz contains ui/images/icon_$s.png" test -f "$d/payload/ui/images/icon_$s.png"
     done
@@ -169,7 +172,10 @@ esac
 
 # The start script's redirect is the only reason the operator can diagnose anything.
 [ -s "$P/var/scan2graph.log" ] || die "$P/var/scan2graph.log is missing or empty"
-ok "the service log lands in $P/var/scan2graph.log"
+# 0600 because stderr lands here, and stderr is where the appliance prints the
+# one-shot setup URL and any generated SMTP password.
+[ "$(stat -c %a "$P/var/scan2graph.log")" = 600 ] || die "$P/var/scan2graph.log is not mode 0600"
+ok "the service log lands in $P/var/scan2graph.log, mode 0600"
 
 expect 0 "stop exits 0" $AS "$S/start-stop-status" stop
 ! kill -0 "$pid" 2>/dev/null || die "pid $pid is still alive after stop"

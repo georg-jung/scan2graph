@@ -32,6 +32,12 @@ start() {
     # start must fork and return: DSM does not supervise a blocking script,
     # and on first boot this process is the setup wizard, not the appliance,
     # so there is nothing to wait for readiness on either.
+    #
+    # umask 077 first: stderr carries the one-shot setup URL and, when no
+    # password was saved, the generated SMTP one, and on a NAS this file is
+    # the only place an operator can read either. That makes it as sensitive
+    # as the config file, so it gets the same 0600.
+    umask 077
     S2G_CONFIG_FILE="$CONFIG" "$BIN" >>"$LOG" 2>&1 &
     echo $! >"$PID"
 }
@@ -45,7 +51,7 @@ stop() {
         sleep 1
         i=$((i + 1))
     done
-    kill -9 "$pid" 2>/dev/null
+    kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
     rm -f "$PID"
     exit 0
 }

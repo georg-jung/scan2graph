@@ -51,7 +51,11 @@ PKG_VERSION="${FEATURE}-1"
 
 TAR_OPTS=(--owner=root:0 --group=root:0 --numeric-owner --sort=name --mtime=@0 --format=gnu)
 
+# One invocation owns dist/: a --arch armv8 build that left an x86_64 package
+# from an earlier commit behind would have check.sh run its lifecycle test
+# against that stale payload and report green for scripts it never ran.
 mkdir -p dist
+rm -f dist/scan2graph_*-dsm7_*.spk
 
 build_one() {
     local arch=$1 goarch goarm work stage spk
@@ -132,9 +136,6 @@ EOF
     # tar); ui/ is not a member here - it lives inside package.tgz, and DSM
     # symlinks it out via dsmuidir.
     local out="dist/scan2graph_${arch}-dsm7_${PKG_VERSION}.spk"
-    # An SPK from an earlier --version would otherwise linger in dist/ and be
-    # picked up by check.sh's glob alongside this one.
-    rm -f dist/scan2graph_"${arch}"-dsm7_*.spk
     tar "${TAR_OPTS[@]}" --mode=0755 -cf "$out" -C "$spk" INFO package.tgz scripts conf PACKAGE_ICON.PNG PACKAGE_ICON_256.PNG
     echo "$out"
 }
