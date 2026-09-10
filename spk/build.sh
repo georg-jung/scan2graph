@@ -104,10 +104,12 @@ build_one() {
     checksum=$(md5sum "$spk/package.tgz" | cut -d' ' -f1)
     create_time=$(date -u +%Y%m%d-%H:%M:%S)
 
-    # checkport="no": the ports are fixed and there is deliberately no install
-    # wizard, so an install refused for a conflict on 8080 is a dead end.
-    # With it off, a real conflict instead surfaces as a bind error in the
-    # service log, which the operator fixes by editing the config file.
+    # checkport is left at its default of "yes" on purpose: this package owns
+    # adminport, and a conflict on it has to stop the install rather than be
+    # worked around later. adminport and ui/config are baked in here at build
+    # time, so an operator who moves S2G_HTTP_ADDR afterwards gets a service
+    # that runs while the main-menu icon and the Open button still point at
+    # 8080 - i.e. at whatever else is answering there.
     cat >"$spk/INFO" <<EOF
 package="scan2graph"
 version="$PKG_VERSION"
@@ -118,7 +120,6 @@ maintainer_url="https://github.com/georg-jung"
 support_url="https://github.com/georg-jung/scan2graph/issues"
 description="LAN SMTP gateway that turns scan-to-email from a printer into OCRed PDFs delivered by Microsoft Graph or a small Entra-authenticated web UI."
 adminport="8080"
-checkport="no"
 dsmuidir="ui"
 dsmappname="SYNO.SDS._ThirdParty.App.scan2graph"
 support_move="yes"

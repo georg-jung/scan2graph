@@ -38,7 +38,10 @@ unprivileged package user, and needs no Container Manager. Following the
   restarts the DSM service for it; later external file edits and explicit setup
   still require one. The listeners are the unprivileged defaults, HTTP 8080 and
   SMTP 2525, both registered with the DSM firewall — a package that does not run
-  as root cannot bind 25, so the printer is pointed at 2525.
+  as root cannot bind 25, so the printer is pointed at 2525. Both ports are
+  fixed: `adminport` and the main-menu icon are baked into the package at build
+  time and cannot follow an edited `S2G_HTTP_ADDR`, so a conflict on 8080 stops
+  the install rather than leaving DSM pointing at whatever else answers there.
 - TLS and the reverse proxy are the operator's, via Control Panel → Login Portal
   → Advanced → Reverse Proxy. Seed the public URL before first boot when a proxy
   subpath is needed.
