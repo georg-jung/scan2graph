@@ -56,7 +56,8 @@ export default defineConfig({
       timeout: 120_000,
     },
     {
-      command: 'cd .. && go build -o e2e/.bin/scan2graph ./cmd/scan2graph && exec e2e/.bin/scan2graph',
+      // TMPDIR on the appliance alone: go build would want it to exist already.
+      command: `cd .. && go build -o e2e/.bin/scan2graph ./cmd/scan2graph && exec env TMPDIR="${tmp}" e2e/.bin/scan2graph`,
       url: 'http://127.0.0.1:18080/healthz',
       reuseExistingServer: false,
       timeout: 120_000,
@@ -64,7 +65,6 @@ export default defineConfig({
         S2G_HTTP_ADDR: '127.0.0.1:18080',
         S2G_SMTP_ADDR: '127.0.0.1:12525',
         S2G_PUBLIC_BASE_URL: 'http://127.0.0.1:18080',
-        TMPDIR: tmp,
         S2G_SMTP_PASSWORD: FIXTURE_SECRET,
         S2G_ALLOWED_RECIPIENT_DOMAINS: 'corp.example',
         S2G_GRAPH_SENDER: 'scanner@corp.example',
@@ -84,7 +84,7 @@ export default defineConfig({
     {
       // Default mode starts the wizard, then the same process and HTTP port
       // serve the appliance after Save and start.
-      command: `cd .. && go build -o e2e/.bin/scan2graph ./cmd/scan2graph && mkdir -p "${wizardDir}" && printf '%s\\n' ${wizardSeed.map((line) => `'${line}'`).join(' ')} > "${wizardConfig}" && exec e2e/.bin/scan2graph --config "${wizardConfig}"`,
+      command: `cd .. && go build -o e2e/.bin/scan2graph ./cmd/scan2graph && mkdir -p "${wizardDir}" && printf '%s\\n' ${wizardSeed.map((line) => `'${line}'`).join(' ')} > "${wizardConfig}" && exec env TMPDIR="${wizardDir}" e2e/.bin/scan2graph --config "${wizardConfig}"`,
       url: 'http://127.0.0.1:18082/healthz',
       reuseExistingServer: false,
       timeout: 120_000,
@@ -93,7 +93,6 @@ export default defineConfig({
       // check speaks TLS to a fake that mints a new one on every start.
       env: {
         SSL_CERT_FILE: path.join(tmp, 'fake-ca.pem'),
-        TMPDIR: wizardDir,
       },
     },
   ],
