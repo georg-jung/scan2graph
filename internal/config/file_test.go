@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -74,10 +75,6 @@ func TestFileEnvPrecedence(t *testing.T) {
 		if c.GraphSender != "scanner@example.com" {
 			t.Errorf("GraphSender = %q, want scanner@example.com", c.GraphSender)
 		}
-		// An unquoted JSON value straight out of the file.
-		if len(c.Profiles) != 1 {
-			t.Errorf("len(Profiles) = %d, want 1", len(c.Profiles))
-		}
 		// Not in the file, so the built-in default still applies.
 		if c.HTTPAddr != ":8080" {
 			t.Errorf("HTTPAddr = %q, want :8080", c.HTTPAddr)
@@ -88,10 +85,10 @@ func TestFileEnvPrecedence(t *testing.T) {
 		path := writeEnvFile(t, baseEnv())
 		environ := fakeGetenv(map[string]string{
 			"S2G_PUBLIC_BASE_URL": "https://from-environment.example",
-			"S2G_UI_TITLE":        "From the environment",
+			"S2G_LOG_LEVEL":       "debug",
 		})
 		getenv, overridden := mustFileEnv(t, path, environ)
-		// Named, not counted: S2G_UI_TITLE is in the environment only, so
+		// Named, not counted: S2G_LOG_LEVEL is in the environment only, so
 		// it is not something the file is losing.
 		if want := []string{"S2G_PUBLIC_BASE_URL"}; !slices.Equal(overridden, want) {
 			t.Errorf("overridden = %v, want %v", overridden, want)
@@ -103,8 +100,8 @@ func TestFileEnvPrecedence(t *testing.T) {
 		if c.PublicBaseURL != "https://from-environment.example" {
 			t.Errorf("PublicBaseURL = %q, want the environment's value", c.PublicBaseURL)
 		}
-		if c.UITitle != "From the environment" {
-			t.Errorf("UITitle = %q, want the environment's value", c.UITitle)
+		if c.LogLevel != slog.LevelDebug {
+			t.Errorf("LogLevel = %v, want the environment's value", c.LogLevel)
 		}
 		// Untouched by the environment, so still the file's.
 		if c.DIEndpoint != baseEnv()["S2G_DI_ENDPOINT"] {
@@ -113,76 +110,8 @@ func TestFileEnvPrecedence(t *testing.T) {
 	})
 }
 
-func TestFileEnvFileIndirection(t *testing.T) {
-	const secret = "file-fixture-value"
-
-	t.Run("_FILE inside the configuration file", func(t *testing.T) {
-		secretPath := writeFile(t, "client-secret", secret+"\n")
-		env := clone(baseEnv())
-		delete(env, "S2G_ENTRA_CLIENT_SECRET")
-		env["S2G_ENTRA_CLIENT_SECRET_FILE"] = secretPath
-		getenv, _ := mustFileEnv(t, writeEnvFile(t, env), noEnv)
-		c, err := Load(getenv)
-		if err != nil {
-			t.Fatalf("Load() unexpected error: %v", err)
-		}
-		if c.ClientSecret != secret {
-			t.Errorf("ClientSecret = %q, want %q", c.ClientSecret, secret)
-		}
-	})
-
-	t.Run("the environment's spelling hides the file's other spelling", func(t *testing.T) {
-		// The file names a secret file; the environment supplies the secret
-		// directly. That is an override, not the "set only one" conflict.
-		env := clone(baseEnv())
-		delete(env, "S2G_ENTRA_CLIENT_SECRET")
-		env["S2G_ENTRA_CLIENT_SECRET_FILE"] = writeFile(t, "client-secret", "the file's secret")
-		environ := fakeGetenv(map[string]string{"S2G_ENTRA_CLIENT_SECRET": secret})
-		getenv, overridden := mustFileEnv(t, writeEnvFile(t, env), environ)
-		// The file's spelling is what got overridden, and that is the name
-		// reported - the operator needs to see which line lost.
-		if want := []string{"S2G_ENTRA_CLIENT_SECRET_FILE"}; !slices.Equal(overridden, want) {
-			t.Errorf("overridden = %v, want %v", overridden, want)
-		}
-		c, err := Load(getenv)
-		if err != nil {
-			t.Fatalf("Load() unexpected error: %v", err)
-		}
-		if c.ClientSecret != secret {
-			t.Errorf("ClientSecret = %q, want the environment's %q", c.ClientSecret, secret)
-		}
-	})
-
-	t.Run("the environment's _FILE hides the file's direct value", func(t *testing.T) {
-		environ := fakeGetenv(map[string]string{
-			"S2G_ENTRA_CLIENT_SECRET_FILE": writeFile(t, "client-secret", secret),
-		})
-		getenv, _ := mustFileEnv(t, writeEnvFile(t, baseEnv()), environ)
-		c, err := Load(getenv)
-		if err != nil {
-			t.Fatalf("Load() unexpected error: %v", err)
-		}
-		if c.ClientSecret != secret {
-			t.Errorf("ClientSecret = %q, want the environment's %q", c.ClientSecret, secret)
-		}
-	})
-
-	t.Run("both spellings inside the file is still an error", func(t *testing.T) {
-		env := clone(baseEnv())
-		env["S2G_ENTRA_CLIENT_SECRET_FILE"] = writeFile(t, "client-secret", secret)
-		getenv, _ := mustFileEnv(t, writeEnvFile(t, env), noEnv)
-		_, err := Load(getenv)
-		if err == nil {
-			t.Fatal("Load() succeeded, want the \"set only one\" error")
-		}
-		if !strings.Contains(err.Error(), "S2G_ENTRA_CLIENT_SECRET_FILE") {
-			t.Errorf("error %q does not name the _FILE variable", err)
-		}
-	})
-}
-
 func TestParseEnvFileFormat(t *testing.T) {
-	const profiles = `{"scan@scanner.local":{"email":true,"web":true,"ocr":true}}`
+	const json = `{"a":{"b":true}}`
 	path := writeFile(t, "scan2graph.env", strings.Join([]string{
 		"# a comment",
 		"   # an indented comment",
@@ -190,12 +119,12 @@ func TestParseEnvFileFormat(t *testing.T) {
 		"   ",
 		"S2G_HTTP_ADDR=:8080",
 		"  S2G_SMTP_ADDR = :2525  ",
-		"export S2G_UI_TITLE=ACME Document Scanning",
+		"export S2G_GRAPH_SENDER=scanner@example.com",
 		`S2G_ENTRA_CLIENT_SECRET="quoted secret"`,
 		"S2G_LOG_LEVEL='info'",
-		"S2G_PROFILES=" + profiles,
-		`S2G_GRAPH_SCOPE="` + profiles + `"`,
-		"S2G_DI_SCOPE=https://example.test/.default?a=b#c",
+		"JSON_A=" + json,
+		`JSON_B="` + json + `"`,
+		"S2G_DI_ENDPOINT=https://example.test/x?a=b#c",
 		"S2G_JOB_TTL=",
 	}, "\r\n"))
 
@@ -206,16 +135,16 @@ func TestParseEnvFileFormat(t *testing.T) {
 	want := map[string]string{
 		"S2G_HTTP_ADDR":           ":8080",
 		"S2G_SMTP_ADDR":           ":2525",
-		"S2G_UI_TITLE":            "ACME Document Scanning",
+		"S2G_GRAPH_SENDER":        "scanner@example.com",
 		"S2G_ENTRA_CLIENT_SECRET": "quoted secret",
 		"S2G_LOG_LEVEL":           "info",
-		// JSON survives both unquoted and double-quoted, inner quotes and
-		// all; S2G_LOG_LEVEL above is the single-quoted case.
-		"S2G_PROFILES":    profiles,
-		"S2G_GRAPH_SCOPE": profiles,
+		// Inner quotes survive both unquoted and double-quoted; S2G_LOG_LEVEL
+		// above is the single-quoted case.
+		"JSON_A": json,
+		"JSON_B": json,
 		// Nothing in a value is interpreted: no trailing-comment stripping.
-		"S2G_DI_SCOPE": "https://example.test/.default?a=b#c",
-		"S2G_JOB_TTL":  "",
+		"S2G_DI_ENDPOINT": "https://example.test/x?a=b#c",
+		"S2G_JOB_TTL":     "",
 	}
 	for name, w := range want {
 		if got[name] != w {

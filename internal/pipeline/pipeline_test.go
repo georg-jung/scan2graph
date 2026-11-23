@@ -54,7 +54,7 @@ func commit(t *testing.T, st *jobs.Store, caps jobs.Capabilities, subject string
 		docs = append(docs, jobs.NewDocument{DisplayName: fmt.Sprintf("scan%d.pdf", i), Path: f.Name()})
 	}
 	job, err := staging.Commit(jobs.NewJob{
-		Profile:    "printer@example.invalid",
+		Sender:     "printer@example.invalid",
 		Caps:       caps,
 		Subject:    subject,
 		Recipients: []string{testRecipient},

@@ -49,15 +49,12 @@ test.beforeAll(async () => {
       // With the trailing slash an operator would type: the appliance
       // normalises it away and serves the prefix that is left.
       S2G_PUBLIC_BASE_URL: `${HOST}${PREFIX}/`,
-      S2G_TEMP_DIR: path.join(e2e, '.tmp', 'prefix'),
-      S2G_LOG_FORMAT: 'text',
-      S2G_SMTP_USERNAME: 'printer',
+      TMPDIR: path.join(e2e, '.tmp', 'prefix'),
       S2G_SMTP_PASSWORD: FIXTURE_SECRET,
       S2G_ENTRA_TENANT_ID: '00000000-0000-0000-0000-0000000000aa',
       S2G_ENTRA_CLIENT_ID: '00000000-0000-0000-0000-000000000001',
       S2G_ENTRA_CLIENT_SECRET: FIXTURE_SECRET,
       S2G_ENTRA_AUTHORITY_URL: 'http://127.0.0.1:19000/idp',
-      S2G_ENTRA_TOKEN_URL: 'http://127.0.0.1:19000/idp/token',
       S2G_JOB_TTL: '30m',
     },
     smtpPort: SMTP_PORT,
@@ -134,7 +131,6 @@ test('the setup wizard is reached through the proxy path, not the root', async (
   await writeFile(config, [
     `S2G_HTTP_ADDR=${WIZARD.replace('http://', '')}`,
     `S2G_PUBLIC_BASE_URL=${WIZARD}${WIZARD_PREFIX}/`,
-    `S2G_TEMP_DIR=${WIZARD_DIR}`,
     '',
   ].join('\n'));
   wizard = startAppliance({

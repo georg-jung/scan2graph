@@ -13,16 +13,13 @@ const e2e = path.dirname(fileURLToPath(import.meta.url));
 const tmp = path.join(e2e, '.tmp');
 
 // The second appliance: the setup wizard, on a fresh install, seeded with
-// only the S2G_* settings the form has no box for - where it listens, and
-// this harness's pointers at the fakes. Written afresh on every start,
-// because the suite saves a whole configuration over it.
+// where it listens and this harness's pointers at the fakes. Written afresh
+// on every start, because the suite saves a whole configuration over it.
 const wizardDir = path.join(tmp, 'wizard');
 const wizardConfig = path.join(wizardDir, 'scan2graph.env');
 const wizardSeed = [
   'S2G_HTTP_ADDR=127.0.0.1:18082',
-  `S2G_TEMP_DIR=${wizardDir}`,
   'S2G_ENTRA_AUTHORITY_URL=http://127.0.0.1:19000/idp',
-  'S2G_ENTRA_TOKEN_URL=http://127.0.0.1:19000/idp/token',
   'S2G_GRAPH_BASE_URL=http://127.0.0.1:19000/graph',
 ];
 
@@ -67,16 +64,8 @@ export default defineConfig({
         S2G_HTTP_ADDR: '127.0.0.1:18080',
         S2G_SMTP_ADDR: '127.0.0.1:12525',
         S2G_PUBLIC_BASE_URL: 'http://127.0.0.1:18080',
-        S2G_TEMP_DIR: tmp,
-        S2G_LOG_FORMAT: 'text',
-        S2G_LOG_LEVEL: 'info',
-        S2G_SMTP_USERNAME: 'printer',
+        TMPDIR: tmp,
         S2G_SMTP_PASSWORD: FIXTURE_SECRET,
-        S2G_PROFILES: JSON.stringify({
-          'web-only@scanner.local': { web: true },
-          'ocr-web@scanner.local': { web: true, ocr: true },
-          'ocr-email@scanner.local': { email: true, ocr: true },
-        }),
         S2G_ALLOWED_RECIPIENT_DOMAINS: 'corp.example',
         S2G_GRAPH_SENDER: 'scanner@corp.example',
         S2G_GRAPH_BASE_URL: 'http://127.0.0.1:19000/graph',
@@ -85,7 +74,6 @@ export default defineConfig({
         S2G_ENTRA_CLIENT_ID: '00000000-0000-0000-0000-000000000001',
         S2G_ENTRA_CLIENT_SECRET: FIXTURE_SECRET,
         S2G_ENTRA_AUTHORITY_URL: 'http://127.0.0.1:19000/idp',
-        S2G_ENTRA_TOKEN_URL: 'http://127.0.0.1:19000/idp/token',
         S2G_JOB_TTL: '30m',
         // Deliberately small, so the resource-limit rejection can be
         // provoked with a 2 MB message instead of a 40 MB one.
@@ -105,6 +93,7 @@ export default defineConfig({
       // check speaks TLS to a fake that mints a new one on every start.
       env: {
         SSL_CERT_FILE: path.join(tmp, 'fake-ca.pem'),
+        TMPDIR: wizardDir,
       },
     },
   ],

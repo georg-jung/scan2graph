@@ -125,7 +125,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		s.sessions.drop(c.Value)
 	}
 	clearCookie(w, sessionCookie, cmp.Or(s.cfg.PathPrefix, "/")) // the path it was set with, or the browser keeps it
-	render(s.log, w, signedOutTmpl, page{Title: "Signed out", Brand: s.cfg.UITitle, Base: s.cfg.PathPrefix + "/"})
+	render(s.log, w, signedOutTmpl, page{Title: "Signed out", Base: s.cfg.PathPrefix + "/"})
 }
 
 // identities are the addresses the signed-in user is known by, taken from the

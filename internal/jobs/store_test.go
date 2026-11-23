@@ -107,7 +107,7 @@ func TestReserveCommitGetRoundtrip(t *testing.T) {
 	path := writeStagedFile(t, st, "doc", "hello world")
 
 	job, err := st.Commit(NewJob{
-		Profile:    "scan-web@printer.local",
+		Sender:     "scan-web@printer.local",
 		Caps:       Capabilities{Web: true},
 		Subject:    "Scan",
 		Recipients: []string{"alice@example.com"},

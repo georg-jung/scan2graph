@@ -171,7 +171,7 @@ func (f *fakes) httpRoutes() http.Handler {
 	mux.HandleFunc("GET /idp/jwks", f.jwks)
 	mux.HandleFunc("GET /idp/authorize", f.authorize)
 	mux.HandleFunc("GET /idp/approve", f.approve)
-	mux.HandleFunc("POST /idp/token", f.token)
+	mux.HandleFunc("POST /idp/oauth2/v2.0/token", f.token)
 	mux.HandleFunc("POST /graph/users/{sender}/sendMail", f.sendMail)
 	mux.HandleFunc("POST /graph/users/{sender}/messages", f.createDraft)
 	mux.HandleFunc("POST /graph/users/{sender}/messages/{id}/attachments/createUploadSession", f.createUploadSession)
@@ -257,8 +257,8 @@ func (f *fakes) inspectGraph(w http.ResponseWriter, _ *http.Request) {
 // Graph both require, and that it was issued for that service's own scope.
 // A fake that served an unauthenticated request would let the appliance
 // stop asking for a token without any test noticing; one that ignored the
-// scope would accept a token real Entra never issues, and a wrong
-// S2G_*_SCOPE would first be heard about in production. The token is a JWT,
+// scope would accept a token real Entra never issues, and a wrong scope
+// constant would first be heard about in production. The token is a JWT,
 // so the scope is a claim to read rather than a suffix to compare.
 func authorized(w http.ResponseWriter, r *http.Request, scope string) bool {
 	if appClaims(r)["scope"] == scope {

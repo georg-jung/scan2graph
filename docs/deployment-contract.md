@@ -27,7 +27,7 @@ package user, without a Container Manager dependency. Following the
 
 - Store configuration at `/var/packages/scan2graph/etc/scan2graph.env`, outside
   the replaceable application files in `target`, and preserve it across upgrades.
-- Set `S2G_TEMP_DIR=/var/packages/scan2graph/tmp` for ephemeral scans.
+- Set `TMPDIR=/var/packages/scan2graph/tmp` for ephemeral scans.
 - Let DSM own service lifecycle, the HTTP reverse proxy and TLS. The initial
   wizard-to-appliance transition stays inside the process; later external file
   edits and explicit setup still require a DSM service restart. Keep SMTP on

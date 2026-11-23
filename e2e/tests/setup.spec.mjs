@@ -41,7 +41,6 @@ const FORM = {
   S2G_PUBLIC_BASE_URL: APPLIANCE,
   S2G_HTTP_ADDR: APPLIANCE.replace('http://', ''),
   S2G_SMTP_ADDR: `127.0.0.1:${SMTP_PORT}`,
-  S2G_SMTP_USERNAME: 'printer',
   S2G_DI_ENDPOINT: 'https://127.0.0.1:19443',
 };
 
@@ -89,27 +88,25 @@ test('the browser that claims the wizard is the only one that gets it', async ({
 });
 
 test('advanced scanner settings stay folded but reopen around bad input', async () => {
-  const profiles = page.locator('#S2G_PROFILES');
+  const maxBytes = page.locator('#S2G_MAX_MESSAGE_BYTES');
   const smtpBind = page.locator('#S2G_SMTP_ADDR');
   const httpBind = page.locator('#S2G_HTTP_ADDR');
-  await expect(profiles).toBeHidden();
+  await expect(maxBytes).toBeHidden();
   await expect(smtpBind).toBeHidden();
   await expect(httpBind).toBeHidden();
 
-  await revealField('S2G_PROFILES');
-  await expect(profiles).toBeVisible();
+  await revealField('S2G_MAX_MESSAGE_BYTES');
   await expect(smtpBind).toBeVisible();
   await revealField('S2G_HTTP_ADDR');
   await expect(httpBind).toBeVisible();
 
-  const webWithoutSender = page.getByLabel('Row 1: web');
-  await webWithoutSender.check();
-  await page.locator('details:has(#S2G_PROFILES) > summary').click();
+  await maxBytes.fill('lots');
+  await page.locator('details:has(#S2G_MAX_MESSAGE_BYTES) > summary').click();
   await testConnection().click();
-  await expect(webWithoutSender).toBeVisible();
-  await expect(webWithoutSender).toBeChecked();
-  await expect(page.locator('.field.bad:has(#S2G_PROFILES)')).toContainText('needs the address');
-  await webWithoutSender.uncheck();
+  await expect(maxBytes).toBeVisible();
+  await expect(maxBytes).toHaveValue('lots');
+  await expect(page.locator('.field.bad:has(#S2G_MAX_MESSAGE_BYTES)')).toContainText('invalid integer');
+  await maxBytes.fill('');
 });
 
 test('generates an SMTP password for the pending configuration', async () => {

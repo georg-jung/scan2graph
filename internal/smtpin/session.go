@@ -21,13 +21,12 @@ import (
 // are deliberately static: none of them echo attacker-controlled input back
 // onto the wire.
 var (
-	errUnknownSender = &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 7, 1}, Message: "sender not recognized"}
-	errRecipient     = &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 7, 1}, Message: "recipient not accepted"}
-	errNoPDF         = &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 6, 0}, Message: "message carries no usable PDF attachment"}
-	errTooComplex    = &smtp.SMTPError{Code: 552, EnhancedCode: smtp.EnhancedCode{5, 3, 4}, Message: "message exceeds structural limits"}
-	errNoCapacity    = &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 3, 1}, Message: "no capacity for another job, please retry later"}
-	errAborted       = &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 3, 0}, Message: "transaction was reset before the message was accepted"}
-	errInternal      = &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 3, 0}, Message: "temporary failure, please retry later"}
+	errRecipient  = &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 7, 1}, Message: "recipient not accepted"}
+	errNoPDF      = &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 6, 0}, Message: "message carries no usable PDF attachment"}
+	errTooComplex = &smtp.SMTPError{Code: 552, EnhancedCode: smtp.EnhancedCode{5, 3, 4}, Message: "message exceeds structural limits"}
+	errNoCapacity = &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 3, 1}, Message: "no capacity for another job, please retry later"}
+	errAborted    = &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 3, 0}, Message: "transaction was reset before the message was accepted"}
+	errInternal   = &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 3, 0}, Message: "temporary failure, please retry later"}
 )
 
 // session is one SMTP transaction's worth of state. It implements
@@ -57,8 +56,8 @@ type session struct {
 
 	// Transaction state, valid between Mail and Data/Reset.
 	staging    *jobs.Staging // set only while Data is reserving/using it
-	profile    string        // canonical envelope sender
-	caps       config.Capabilities
+	sender     string        // canonical envelope sender
+	caps       jobs.Capabilities
 	recipients []string // canonical, deduplicated, in RCPT order
 }
 
@@ -70,8 +69,8 @@ func (s *session) Reset() {
 	staging := s.staging
 	s.staging = nil
 	s.generation++
-	s.profile = ""
-	s.caps = config.Capabilities{}
+	s.sender = ""
+	s.caps = jobs.Capabilities{}
 	s.recipients = nil
 	s.mu.Unlock()
 
@@ -88,12 +87,12 @@ func (s *session) Logout() error {
 	return nil
 }
 
-// Mail selects the sender profile for envelopeSender via cfg.Profile. AUTH
-// (when required) must already have succeeded.
+// Mail selects the features for envelopeSender via cfg.Features. AUTH (when
+// required) must already have succeeded.
 func (s *session) Mail(from string, _ *smtp.MailOptions) error {
 	// go-smtp accepts a second MAIL FROM without an intervening RSET, so the
 	// previous transaction is discarded here rather than only in Reset --
-	// otherwise its recipients and profile would carry over into this one.
+	// otherwise its recipients and sender would carry over into this one.
 	s.Reset()
 
 	s.mu.Lock()
@@ -103,13 +102,15 @@ func (s *session) Mail(from string, _ *smtp.MailOptions) error {
 		s.reject("mail", smtp.ErrAuthRequired)
 		return smtp.ErrAuthRequired
 	}
-	caps, ok := s.cfg.Profile(from)
-	if !ok {
-		s.reject("mail", errUnknownSender)
-		return errUnknownSender
+	caps, err := s.cfg.Features(from)
+	if err != nil {
+		// Features' refusals are static text, never the client's input.
+		se := &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 7, 1}, Message: err.Error()}
+		s.reject("mail", se)
+		return se
 	}
 	s.mu.Lock()
-	s.profile = config.NormalizeAddress(from)
+	s.sender = config.NormalizeAddress(from)
 	s.caps = caps
 	s.mu.Unlock()
 	return nil
@@ -150,7 +151,7 @@ func (s *session) Data(r io.Reader) error {
 		s.reject("data", errNoCapacity)
 		return errNoCapacity
 	}
-	gen, profile, caps := s.generation, s.profile, s.caps
+	gen, sender, caps := s.generation, s.sender, s.caps
 	recipients := slices.Clone(s.recipients)
 	s.staging = staging
 	s.mu.Unlock()
@@ -206,7 +207,7 @@ func (s *session) Data(r io.Reader) error {
 		// PDF still gets a 550 below - that one is a printer set to JPEG,
 		// and the rejection is the only way it will ever be told.
 		staging.Abort()
-		s.log.Info("smtpin: accepted a message with nothing attached", "profile", profile, "recipients", len(recipients))
+		s.log.Info("smtpin: accepted a message with nothing attached", "sender", sender, "recipients", len(recipients))
 		return nil
 	case err != nil:
 		staging.Abort()
@@ -216,8 +217,8 @@ func (s *session) Data(r io.Reader) error {
 	}
 
 	job, err := staging.Commit(jobs.NewJob{
-		Profile:    profile,
-		Caps:       jobs.Capabilities{Email: caps.Email, Web: caps.Web, OCR: caps.OCR},
+		Sender:     sender,
+		Caps:       caps,
 		Subject:    result.Subject,
 		Recipients: recipients,
 		Documents:  docs,
@@ -237,7 +238,7 @@ func (s *session) Data(r io.Reader) error {
 	}
 
 	s.log.Info("smtpin: accepted",
-		"profile", profile,
+		"sender", sender,
 		"recipients", len(recipients),
 		"pdfs", len(docs),
 		"bytes", totalBytes,
@@ -313,7 +314,7 @@ func (a *authSession) Auth(mech string) (sasl.Server, error) {
 // authenticate verifies credentials with crypto/subtle.ConstantTimeCompare,
 // comparing both username and password even once one has already mismatched.
 func (a *authSession) authenticate(username, password string) error {
-	userOK := subtle.ConstantTimeCompare([]byte(username), []byte(a.cfg.SMTPUsername)) == 1
+	userOK := subtle.ConstantTimeCompare([]byte(username), []byte(config.SMTPUsername)) == 1
 	passOK := subtle.ConstantTimeCompare([]byte(password), []byte(a.cfg.SMTPPassword)) == 1
 	if !userOK || !passOK {
 		a.reject("auth", smtp.ErrAuthFailed)

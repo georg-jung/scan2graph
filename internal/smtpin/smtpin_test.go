@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/georg-jung/scan2graph/internal/config"
 	"github.com/georg-jung/scan2graph/internal/jobs"
 )
 
@@ -13,7 +14,7 @@ func TestFullTransaction(t *testing.T) {
 	h := &fakeHandler{}
 	addr, store, cfg := newHarness(t, nil, nil, h)
 
-	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+	c := mustAuth(t, addr, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")
 	c.cmd(250, "RCPT TO:<Alice@Corp.Example>")
 	if code, msg := c.data(singlePDFMessage("Test Scan")); code != 250 {
@@ -25,8 +26,8 @@ func TestFullTransaction(t *testing.T) {
 		t.Fatalf("enqueued %d jobs, want 1", len(got))
 	}
 	job := got[0]
-	if job.Profile != "printer@corp.example" {
-		t.Errorf("Profile = %q, want printer@corp.example", job.Profile)
+	if job.Sender != "printer@corp.example" {
+		t.Errorf("Sender = %q, want printer@corp.example", job.Sender)
 	}
 	if !job.Caps.Email || !job.Caps.Web || job.Caps.OCR {
 		t.Errorf("Caps = %+v, want email+web only", job.Caps)
@@ -51,7 +52,7 @@ func TestAuthLoginSuccess(t *testing.T) {
 
 	c := dialSMTP(t, addr)
 	c.ehlo()
-	if code, msg := c.authLogin(cfg.SMTPUsername, cfg.SMTPPassword); code != 235 {
+	if code, msg := c.authLogin(config.SMTPUsername, cfg.SMTPPassword); code != 235 {
 		t.Fatalf("AUTH LOGIN: got %d %q, want 235", code, msg)
 	}
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")
@@ -61,10 +62,12 @@ func TestAuthFailure(t *testing.T) {
 	h := &fakeHandler{}
 	addr, _, cfg := newHarness(t, nil, nil, h)
 
-	c := dialSMTP(t, addr)
-	c.ehlo()
-	if code, msg := c.authPlain(cfg.SMTPUsername, "wrong-password"); code != 535 {
-		t.Fatalf("AUTH PLAIN with wrong password: got %d %q, want 535", code, msg)
+	for _, creds := range [][2]string{{config.SMTPUsername, "wrong-password"}, {"admin", cfg.SMTPPassword}} {
+		c := dialSMTP(t, addr)
+		c.ehlo()
+		if code, msg := c.authPlain(creds[0], creds[1]); code != 535 {
+			t.Errorf("AUTH PLAIN as %q: got %d %q, want 535", creds[0], code, msg)
+		}
 	}
 }
 
@@ -82,7 +85,7 @@ func TestMailBeforeAuthRejected(t *testing.T) {
 func TestAnonymousMode(t *testing.T) {
 	h := &fakeHandler{}
 	addr, _, _ := newHarness(t, map[string]string{"S2G_SMTP_ALLOW_ANONYMOUS": "true"},
-		[]string{"S2G_SMTP_USERNAME", "S2G_SMTP_PASSWORD"}, h)
+		[]string{"S2G_SMTP_PASSWORD"}, h)
 
 	c := dialSMTP(t, addr)
 	ehloMsg := c.ehlo()
@@ -100,13 +103,22 @@ func TestAnonymousMode(t *testing.T) {
 	}
 }
 
-func TestUnknownSender(t *testing.T) {
+// TestSenderRefused: a sender naming no delivery, or a feature this
+// configuration lacks (OCR here), is refused at MAIL FROM with a reply that
+// says which.
+func TestSenderRefused(t *testing.T) {
 	h := &fakeHandler{}
 	addr, _, cfg := newHarness(t, nil, nil, h)
 
-	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
-	if code, msg := c.readCodeAfter(func() { c.send("MAIL FROM:<stranger@corp.example>") }); code != 550 {
-		t.Fatalf("MAIL FROM unknown sender: got %d %q, want 550", code, msg)
+	c := mustAuth(t, addr, cfg.SMTPPassword)
+	for sender, want := range map[string]string{
+		"ocr@corp.example":     "names no delivery",
+		"web-ocr@corp.example": "has not configured",
+	} {
+		code, msg := c.readCodeAfter(func() { c.send("MAIL FROM:<%s>", sender) })
+		if code != 550 || !strings.Contains(msg, want) {
+			t.Errorf("MAIL FROM %s: got %d %q, want 550 %q", sender, code, msg, want)
+		}
 	}
 }
 
@@ -114,7 +126,7 @@ func TestDisallowedRecipientDomain(t *testing.T) {
 	h := &fakeHandler{}
 	addr, _, cfg := newHarness(t, nil, nil, h)
 
-	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+	c := mustAuth(t, addr, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")
 	if code, msg := c.readCodeAfter(func() { c.send("RCPT TO:<eve@other.example>") }); code != 550 {
 		t.Fatalf("RCPT TO disallowed domain: got %d %q, want 550", code, msg)
@@ -125,7 +137,7 @@ func TestRecipientNotAnAddress(t *testing.T) {
 	h := &fakeHandler{}
 	addr, _, cfg := newHarness(t, nil, nil, h)
 
-	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+	c := mustAuth(t, addr, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")
 	// Has an "@" so the SMTP grammar itself accepts it, but the domain has
 	// no "." so it is not a plausible address by our own rules.
@@ -138,7 +150,7 @@ func TestDuplicateRecipientsCollapse(t *testing.T) {
 	h := &fakeHandler{}
 	addr, _, cfg := newHarness(t, nil, nil, h)
 
-	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+	c := mustAuth(t, addr, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")
 	c.cmd(250, "RCPT TO:<alice@corp.example>")
 	c.cmd(250, "RCPT TO:<Alice@Corp.Example>") // same identity, different case
@@ -162,7 +174,7 @@ func TestConnectionTest(t *testing.T) {
 	h := &fakeHandler{}
 	addr, store, cfg := newHarness(t, nil, nil, h)
 
-	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+	c := mustAuth(t, addr, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")
 	c.cmd(250, "RCPT TO:<alice@corp.example>")
 	if code, msg := c.data(textMessage("Test connection")); code != 250 {
@@ -190,7 +202,7 @@ func TestOversizedTextIsStillRefused(t *testing.T) {
 	h := &fakeHandler{}
 	addr, _, cfg := newHarness(t, map[string]string{"S2G_MAX_MESSAGE_BYTES": "4096"}, nil, h)
 
-	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+	c := mustAuth(t, addr, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")
 	c.cmd(250, "RCPT TO:<alice@corp.example>")
 	msg := textMessage("Huge test") + strings.Repeat("padding, no attachment\r\n", 500)
@@ -210,7 +222,7 @@ func TestConnectionTestOverChunking(t *testing.T) {
 	h := &fakeHandler{}
 	addr, store, cfg := newHarness(t, nil, nil, h)
 
-	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+	c := mustAuth(t, addr, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")
 	c.cmd(250, "RCPT TO:<alice@corp.example>")
 	msg := textMessage("Test connection") + strings.Repeat("padding, no attachment\r\n", 500)
@@ -230,7 +242,7 @@ func TestOversizedData(t *testing.T) {
 	h := &fakeHandler{}
 	addr, _, cfg := newHarness(t, map[string]string{"S2G_MAX_MESSAGE_BYTES": "100"}, nil, h)
 
-	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+	c := mustAuth(t, addr, cfg.SMTPPassword)
 	// The server's own SIZE= check (go-smtp) rejects this before our code
 	// ever runs.
 	if code, msg := c.readCodeAfter(func() { c.send("MAIL FROM:<printer@corp.example> SIZE=999999") }); code != 552 {
@@ -246,7 +258,7 @@ func TestOversizedBodyRejected(t *testing.T) {
 	h := &fakeHandler{}
 	addr, store, cfg := newHarness(t, map[string]string{"S2G_MAX_MESSAGE_BYTES": "8192"}, nil, h)
 
-	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+	c := mustAuth(t, addr, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")
 	c.cmd(250, "RCPT TO:<alice@corp.example>")
 	// Many short lines: a single long one would trip go-smtp's line limit
@@ -265,7 +277,7 @@ func TestTooManyParts(t *testing.T) {
 	h := &fakeHandler{}
 	addr, _, cfg := newHarness(t, nil, nil, h)
 
-	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+	c := mustAuth(t, addr, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")
 	c.cmd(250, "RCPT TO:<alice@corp.example>")
 	if code, msg := c.data(manyPartsMessage(105)); code != 552 {
@@ -287,7 +299,7 @@ func TestCapacityExhausted(t *testing.T) {
 		defer held.Abort()
 	}
 
-	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+	c := mustAuth(t, addr, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")
 	c.cmd(250, "RCPT TO:<alice@corp.example>")
 	if code, msg := c.data(singlePDFMessage("Full")); code != 451 {
@@ -314,7 +326,7 @@ func TestFullBudgetOfFinishedScansStillAcceptsAMessage(t *testing.T) {
 	const attempts = 16
 	var first jobs.Job
 	for i := 0; i < attempts; i++ {
-		c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+		c := mustAuth(t, addr, cfg.SMTPPassword)
 		c.cmd(250, "MAIL FROM:<printer@corp.example>")
 		c.cmd(250, "RCPT TO:<alice@corp.example>")
 		msg := scanMessage(fmt.Sprintf("Scan %d", i),
@@ -346,7 +358,7 @@ func TestHandlerBusy(t *testing.T) {
 	h := &fakeHandler{err: errors.New("no room in the pipeline")}
 	addr, store, cfg := newHarness(t, nil, nil, h)
 
-	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+	c := mustAuth(t, addr, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")
 	c.cmd(250, "RCPT TO:<alice@corp.example>")
 	if code, msg := c.data(singlePDFMessage("Busy")); code != 451 {
@@ -361,7 +373,7 @@ func TestResetReleasesCapacity(t *testing.T) {
 	h := &fakeHandler{}
 	addr, store, cfg := newHarness(t, nil, nil, h)
 
-	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+	c := mustAuth(t, addr, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")
 	c.cmd(250, "RCPT TO:<eve@corp.example>")
 	c.cmd(250, "RSET")
@@ -387,16 +399,16 @@ func TestResetReleasesCapacity(t *testing.T) {
 
 // TestSecondMailFromStartsFreshTransaction: go-smtp lets a client send MAIL
 // FROM again without RSET, and the session must then behave like a fresh
-// one -- neither the recipients nor the profile of the earlier transaction
+// one -- neither the recipients nor the sender of the earlier transaction
 // may survive into the new one.
 func TestSecondMailFromStartsFreshTransaction(t *testing.T) {
 	h := &fakeHandler{}
 	addr, _, cfg := newHarness(t, nil, nil, h)
 
-	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+	c := mustAuth(t, addr, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>") // email+web
 	c.cmd(250, "RCPT TO:<eve@corp.example>")
-	c.cmd(250, "MAIL FROM:<webonly@corp.example>") // web only
+	c.cmd(250, "MAIL FROM:<web@corp.example>") // web only
 	c.cmd(250, "RCPT TO:<alice@corp.example>")
 	if code, msg := c.data(singlePDFMessage("Second")); code != 250 {
 		t.Fatalf("DATA: got %d %q, want 250", code, msg)
@@ -410,8 +422,8 @@ func TestSecondMailFromStartsFreshTransaction(t *testing.T) {
 	if r := job.Recipients; len(r) != 1 || r[0] != "alice@corp.example" {
 		t.Errorf("Recipients = %v, want only alice@corp.example", r)
 	}
-	if job.Profile != "webonly@corp.example" || job.Caps.Email {
-		t.Errorf("Profile = %q, Caps = %+v, want the webonly profile (no email)", job.Profile, job.Caps)
+	if job.Sender != "web@corp.example" || job.Caps != (jobs.Capabilities{Web: true}) {
+		t.Errorf("Sender = %q, Caps = %+v, want web only", job.Sender, job.Caps)
 	}
 }
 
@@ -419,7 +431,7 @@ func TestDisconnectDuringDataLeavesNoStaging(t *testing.T) {
 	h := &fakeHandler{}
 	addr, store, cfg := newHarness(t, nil, nil, h)
 
-	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+	c := mustAuth(t, addr, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")
 	c.cmd(250, "RCPT TO:<alice@corp.example>")
 	c.send("DATA")
@@ -447,7 +459,7 @@ func TestBdatResetDoesNotCommit(t *testing.T) {
 	h := &fakeHandler{}
 	addr, store, cfg := newHarness(t, nil, nil, h)
 
-	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+	c := mustAuth(t, addr, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")
 	c.cmd(250, "RCPT TO:<alice@corp.example>")
 	if code, msg := c.bdat(singlePDFMessage("Chunked")); code != 250 {
@@ -467,7 +479,7 @@ func TestBdatLastCommits(t *testing.T) {
 	h := &fakeHandler{}
 	addr, store, cfg := newHarness(t, nil, nil, h)
 
-	c := mustAuth(t, addr, cfg.SMTPUsername, cfg.SMTPPassword)
+	c := mustAuth(t, addr, cfg.SMTPPassword)
 	c.cmd(250, "MAIL FROM:<printer@corp.example>")
 	c.cmd(250, "RCPT TO:<alice@corp.example>")
 	if code, msg := c.bdat(singlePDFMessage("Chunked")); code != 250 {

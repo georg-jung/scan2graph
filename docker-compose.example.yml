@@ -26,7 +26,7 @@ services:
     # Configuration is the only persistent state; jobs remain ephemeral.
     read_only: true
     tmpfs:
-      # The one directory scan2graph writes to (S2G_TEMP_DIR defaults to /tmp).
+      # The one directory scan2graph writes to ($TMPDIR, which defaults to /tmp).
       - /tmp:mode=1777
     cap_drop:
       - ALL

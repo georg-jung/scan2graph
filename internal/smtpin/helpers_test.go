@@ -21,29 +21,26 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// testConfig builds a valid *config.Config for tests: two sender profiles
-// (printer@corp.example with email+web, webonly@corp.example with only
-// web), one allowed recipient domain, SMTP AUTH required with fixed
-// credentials. set overrides/adds env vars; unset removes them (needed for
-// e.g. the anonymous-mode tests, where a plain "" value would itself be a
-// config error).
 // testSecret is the one fixture value these tests use wherever the
 // configuration wants a credential. It is not a secret: it never leaves the
 // fake getenv below.
 const testSecret = "fixture-not-a-secret"
 
+// testConfig builds a valid *config.Config for tests: email and web
+// available, OCR not, one allowed recipient domain, SMTP AUTH required with
+// fixed credentials. set overrides/adds env vars; unset removes them (needed for
+// e.g. the anonymous-mode tests, where a plain "" value would itself be a
+// config error).
 func testConfig(t *testing.T, set map[string]string, unset ...string) *config.Config {
 	t.Helper()
 	env := map[string]string{
 		"S2G_ENTRA_TENANT_ID":           "tenant-id",
 		"S2G_ENTRA_CLIENT_ID":           "client-id",
 		"S2G_ENTRA_CLIENT_SECRET":       testSecret,
-		"S2G_SMTP_USERNAME":             "scanner",
 		"S2G_SMTP_PASSWORD":             testSecret,
 		"S2G_GRAPH_SENDER":              "scans@corp.example",
 		"S2G_ALLOWED_RECIPIENT_DOMAINS": "corp.example",
 		"S2G_PUBLIC_BASE_URL":           "https://scan2graph.example",
-		"S2G_PROFILES":                  `{"printer@corp.example":{"email":true,"web":true},"webonly@corp.example":{"web":true}}`,
 		"S2G_MAX_STORED_BYTES":          "8388608", // 8 messages at the 1 MiB cap below
 		"S2G_MAX_MESSAGE_BYTES":         "1048576",
 	}
@@ -211,13 +208,13 @@ func (c *smtpClient) authLogin(user, pass string) (int, string) {
 	return c.readCode()
 }
 
-// mustAuth dials, EHLOs and authenticates with the given credentials via
-// AUTH PLAIN, failing the test unless the server accepts them (235).
-func mustAuth(t *testing.T, addr, user, pass string) *smtpClient {
+// mustAuth dials, EHLOs and authenticates as the SMTP user via AUTH PLAIN,
+// failing the test unless the server accepts the password (235).
+func mustAuth(t *testing.T, addr, pass string) *smtpClient {
 	t.Helper()
 	c := dialSMTP(t, addr)
 	c.ehlo()
-	if code, msg := c.authPlain(user, pass); code != 235 {
+	if code, msg := c.authPlain(config.SMTPUsername, pass); code != 235 {
 		t.Fatalf("AUTH PLAIN: got %d %q, want 235", code, msg)
 	}
 	return c

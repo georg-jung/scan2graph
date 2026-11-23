@@ -1,6 +1,7 @@
 package config
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"slices"
@@ -26,7 +27,7 @@ func FileEnv(path string, environ func(string) string) (getenv func(string) stri
 		return nil, nil, err
 	}
 	for name := range file {
-		if environ(name) != "" || environ(pairedName(name)) != "" {
+		if environ(name) != "" {
 			overridden = append(overridden, name)
 		}
 	}
@@ -38,30 +39,8 @@ func FileEnv(path string, environ func(string) string) (getenv func(string) stri
 // setup wizard can validate an edit the way the next start will read it.
 func Layer(file map[string]string, environ func(string) string) func(string) string {
 	return func(name string) string {
-		if v := environ(name); v != "" {
-			return v
-		}
-		// The environment overrides a setting, not one spelling of it. With
-		// S2G_X in the environment and S2G_X_FILE in the file, resolve would
-		// otherwise see both and refuse to start over a conflict the
-		// operator never created - which is exactly what happens when a
-		// copy of .env.example gets its secret replaced by a mounted one.
-		// So whichever spelling the environment uses hides both of the
-		// file's, and "both set" stays an error within a single layer.
-		if environ(pairedName(name)) != "" {
-			return ""
-		}
-		return file[name]
+		return cmp.Or(environ(name), file[name])
 	}
-}
-
-// pairedName is the other spelling of the setting name refers to:
-// S2G_X_FILE for S2G_X, and S2G_X for S2G_X_FILE.
-func pairedName(name string) string {
-	if base, ok := strings.CutSuffix(name, "_FILE"); ok {
-		return base
-	}
-	return name + "_FILE"
 }
 
 // ParseFile reads a configuration file in the format of .env.example:
@@ -69,9 +48,7 @@ func pairedName(name string) string {
 // optional "export " prefix. The value is taken verbatim to the end of the
 // line (nothing is interpreted, so no shell expansion and no trailing
 // comments) with one matched pair of surrounding single or double quotes
-// stripped, which is what makes the JSON-valued settings read the same
-// whether or not the writer quoted them. A duplicate key is an error rather
-// than last-one-wins, as it already is inside those JSON values.
+// stripped. A duplicate key is an error rather than last-one-wins.
 //
 // Errors name the file and the line number but never the line itself: a
 // malformed line in a configuration file may well hold a client secret.

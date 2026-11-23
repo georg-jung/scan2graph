@@ -5,7 +5,7 @@
 //
 // There is no persistence and no retry queue here. Each client owns its own
 // bounded retry loop, so an error coming back from OCR or the mailer is
-// final and fails the job. A failed job whose profile has email still
+// final and fails the job. A failed job whose sender has email still
 // tells its recipients what happened (see notice).
 package pipeline
 
@@ -63,15 +63,15 @@ type Mailer interface {
 	Send(ctx context.Context, m graphmail.Message) error
 }
 
-// Options configures a Pipeline. OCR and Mailer may be nil exactly when no
-// sender profile enables that capability, since a job only reaches them
-// through its own Caps.
+// Options configures a Pipeline. OCR and Mailer may be nil exactly when that
+// feature is not available, since a job only reaches them through its own
+// Caps.
 type Options struct {
 	Store   *jobs.Store
-	OCR     OCR    // nil when no profile enables ocr
-	Mailer  Mailer // nil when no profile enables email
+	OCR     OCR    // nil when OCR is not available
+	Mailer  Mailer // nil when email is not available
 	BaseURL string // public base URL for links in notices; "" when no web
-	Workers int
+	Workers int    // at least one
 	Logger  *slog.Logger
 }
 
@@ -87,8 +87,7 @@ type Pipeline struct {
 	queue   chan jobs.Job
 }
 
-// New creates a Pipeline. opts.Workers must be at least one; config
-// validation already guarantees that.
+// New creates a Pipeline.
 func New(opts Options) *Pipeline {
 	log := opts.Logger
 	if log == nil {

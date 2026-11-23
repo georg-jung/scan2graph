@@ -9,13 +9,6 @@ const (
 	fieldText   fieldKind = "text"
 	fieldSecret fieldKind = "secret"
 	fieldBool   fieldKind = "bool"
-	fieldChoice fieldKind = "choice"
-	fieldArea   fieldKind = "area"
-	// fieldProfiles is a setting whose value is a JSON object of sender
-	// address to capabilities, asked for as one row of boxes per profile:
-	// nobody should have to type JSON by hand to say what a printer button
-	// is allowed to do.
-	fieldProfiles fieldKind = "profiles"
 )
 
 // setupField is one setting as the wizard asks for it. Help is one sentence,
@@ -25,13 +18,10 @@ const (
 type setupField struct {
 	Name, Label, Help string
 	Kind              fieldKind
-	Choice            []string // fieldChoice only
-	Group             string   // fieldset heading
-	Rare              bool     // renders inside the group's <details> block
+	Group             string // fieldset heading
+	Rare              bool   // renders inside the group's <details> block
 	// Placeholder is a synthetic example shown in an empty box, so the shape
-	// of an answer needs no sentence of its own. It never shows once Set is
-	// true: what the box then has to say is that something is configured,
-	// not what one might look like.
+	// of an answer needs no sentence of its own.
 	Placeholder string
 }
 
@@ -59,10 +49,6 @@ var setupFields = []setupField{
 		Help:        "Where this appliance is reached through the reverse proxy that terminates TLS; setting it is what turns the web UI on. A host of its own, or a subpath under a shared one (https://nas.acme.office/scanner/) that the proxy forwards unchanged.",
 		Placeholder: "https://scan2graph.example.com",
 	}, {
-		Name: "S2G_UI_TITLE", Label: "Name shown in the UI", Group: "Browser downloads", Rare: true,
-		Help:        "What the web UI calls itself in its title and header, so it can say the household's or the office's name.",
-		Placeholder: "scan2graph",
-	}, {
 		Name: "S2G_JOB_TTL", Label: "How long a scan stays available", Group: "Browser downloads", Rare: true,
 		Help:        "How long a scan can be downloaded before it and its files are deleted; must be at least 1m.",
 		Placeholder: "8h",
@@ -86,47 +72,28 @@ var setupFields = []setupField{
 		Name: "S2G_ENTRA_CLIENT_SECRET", Label: "Client secret", Kind: fieldSecret, Group: groupIdentity,
 		Help: "The secret's Value (not its Secret ID) under Certificates & secrets in that app registration, which the portal shows only once, right after you create it.",
 	}, {
-		Name: "S2G_SMTP_USERNAME", Label: "SMTP username", Group: "Scanner",
-		Help:        "Username the printer signs in with; only means anything once a password is set.",
-		Placeholder: "scanner",
-	}, {
 		Name: "S2G_SMTP_PASSWORD", Label: "SMTP password", Kind: fieldSecret, Group: "Scanner",
-		Help: "Password the printer signs in with. Use Generate SMTP password below to create or replace it, then Save or Download to keep it across restarts. If left unset, a new one is made on every start.",
+		Help: "Password the printer signs in with, as user scanner. Use Generate SMTP password below to create or replace it, then Save or Download to keep it across restarts. If left unset, a new one is made on every start.",
 	}, {
 		Name: "S2G_SMTP_ALLOW_ANONYMOUS", Label: "Accept scans without SMTP AUTH", Kind: fieldBool, Group: "Scanner",
-		Help: "For a printer that cannot authenticate at all: only on a trusted, isolated network segment, and not together with a username or password.",
+		Help: "For a printer that cannot authenticate at all: only on a trusted, isolated network segment, and not together with a password.",
 	}, {
 		Name: "S2G_SMTP_ADDR", Label: "SMTP listen address", Group: "Scanner", Rare: true,
 		Help:        "Address this process listens on for SMTP. In a container, the printer connects to the appliance host on the LAN and the port published to this address.",
 		Placeholder: ":2525",
 	}, {
-		Name: "S2G_PROFILES", Label: "Printer profiles", Kind: fieldProfiles, Group: "Scanner", Rare: true,
-		Help: "One row per address the printer sends from, ticking what a scan from that address may do; with no rows filled in there are no profiles at all, and then every sender is accepted and gets whatever the rest of this configuration enables. Type into the blank rows to add profiles; two fresh ones come back with every submission the appliance accepts.",
-	}, {
 		Name: "S2G_MAX_MESSAGE_BYTES", Label: "Largest accepted message", Group: "Scanner", Rare: true,
 		Help:        "Biggest message the SMTP listener accepts, in bytes; the default is 32 MiB.",
 		Placeholder: "33554432",
 	}, {
-		Name: "S2G_LOG_LEVEL", Label: "Log level", Kind: fieldChoice,
-		Choice: []string{"debug", "info", "warn", "error"}, Group: "Advanced", Rare: true,
-		Help: "How much scan2graph writes to its log; defaults to info.",
-	}, {
-		Name: "S2G_LOG_FORMAT", Label: "Log format", Kind: fieldChoice,
-		Choice: []string{"json", "text"}, Group: "Advanced", Rare: true,
-		Help: "json for a log collector, text for reading it yourself; defaults to json.",
-	}, {
-		Name: "S2G_TEMP_DIR", Label: "Temporary directory", Group: "Advanced", Rare: true,
-		Help:        "Where scans are kept while they are worked on; it is wiped on every start and defaults to the operating system's temp directory.",
-		Placeholder: "/tmp",
+		Name: "S2G_LOG_LEVEL", Label: "Log level", Group: "Advanced", Rare: true,
+		Help:        "How much scan2graph writes to its log: debug, info, warn or error.",
+		Placeholder: "info",
 	}, {
 		Name: "S2G_MAX_STORED_BYTES", Label: "Space for kept scans", Group: "Advanced", Rare: true,
 		Help: "How much temporary space queued, in-flight and waiting-to-be-picked-up scans may " +
 			"take together, in bytes; when it is full, finished scans are removed oldest first to make room.",
 		Placeholder: "536870912",
-	}, {
-		Name: "S2G_MAX_CONCURRENT_JOBS", Label: "Scans processed at once", Group: "Advanced", Rare: true,
-		Help:        "How many scans are worked on at the same time.",
-		Placeholder: "2",
 	},
 }
 
@@ -143,7 +110,8 @@ var groupIntro = map[string]string{
 	"Browser downloads": "Set the public URL to let people pick scans up in a browser.",
 	"Text recognition":  "Optional: with a Document Intelligence resource, scans come out as PDFs you can search rather than pictures of paper.",
 	groupIdentity:       "Required for every setup. One Entra app registration signs people in to browser downloads and supplies the tokens used for email and text recognition.",
-	"Scanner":           "Set how the printer authenticates. In a container, it connects to the appliance's published host and port on the LAN.",
+	"Scanner": "Set how the printer authenticates. Its sender address picks the features: scan@… gets everything configured here, web@… or web-ocr@… only what it names. " +
+		"In a container, it connects to the appliance's published host and port on the LAN.",
 }
 
 // handEdited are S2G_* settings that exist only for the end-to-end test
@@ -154,11 +122,7 @@ var groupIntro = map[string]string{
 // loader reads is never missing from both lists at once.
 var handEdited = []string{
 	"S2G_ENTRA_AUTHORITY_URL",
-	"S2G_ENTRA_TOKEN_URL",
 	"S2G_GRAPH_BASE_URL",
-	"S2G_GRAPH_SCOPE",
-	"S2G_DI_API_VERSION",
-	"S2G_DI_SCOPE",
 }
 
 // protected are the settings whose presence means there is something here
@@ -176,16 +140,15 @@ var protected = []string{
 	"S2G_SMTP_PASSWORD",
 }
 
-// AnyConfigured reports whether any of protected resolves non-empty in either
-// spelling. It is the one rule behind both of the wizard's unauthenticated
-// doors: main opens the first-boot wizard without a token only when the
+// AnyConfigured reports whether any of protected is set. It is the one rule
+// behind both of the wizard's unauthenticated doors: main opens the first-boot wizard without a token only when the
 // answer is no, and mints one for "setup" exactly when it is yes. A
-// half-configured appliance - the identity present, the secret's mount gone -
+// half-configured appliance - the identity configured but not the secret -
 // answers yes and stays an error exit rather than an open configuration
 // editor on the LAN.
 func AnyConfigured(getenv func(string) string) bool {
 	for _, name := range protected {
-		if getenv(name) != "" || getenv(name+"_FILE") != "" {
+		if getenv(name) != "" {
 			return true
 		}
 	}

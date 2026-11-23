@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -33,13 +32,12 @@ import (
 
 const (
 	setupCookie = "s2g_setup"
-	// setupFormLimit bounds a submission. The JSON-valued settings are the
-	// only large ones and a household's are a few hundred bytes.
+	// setupFormLimit bounds a submission; a whole configuration is a few
+	// hundred bytes.
 	setupFormLimit = 64 << 10
 	// setupFileName is what a downloaded configuration file is called, and
 	// what the README tells the operator to mount.
 	setupFileName = "scan2graph.env"
-	setupBrand    = "scan2graph"
 	// setupFormsKept is how many rendered forms remember what was typed into
 	// them, oldest falling off first: the operator is looking at the newest,
 	// and growth on a page nobody else can reach is still growth.
@@ -106,7 +104,7 @@ type pendingForm struct {
 // the one thing on the other end of it is a human who can be sent along.
 func NewSetup(opts SetupOptions) http.Handler {
 	s := &setupServer{SetupOptions: opts}
-	s.prefix = config.BasePath(config.ResolveBaseURL(config.Layer(opts.FileValues, opts.Getenv), "S2G_PUBLIC_BASE_URL"))
+	s.prefix = config.BasePath(config.ResolveBaseURL(config.Layer(opts.FileValues, opts.Getenv)))
 	static, err := fs.Sub(assets, "static")
 	if err != nil {
 		panic(err) // embedded at build time, cannot fail
@@ -132,12 +130,12 @@ func NewSetup(opts SetupOptions) http.Handler {
 			// another browser's press has claimed out from under, which would
 			// otherwise be handed the form it holds no key to.
 			render(slog.Default(), w, setupTmpl, setupView{
-				page: page{Title: "Setup", Brand: setupBrand, Base: s.prefix + "/"}, Claim: true,
+				page: page{Title: "Setup", Base: s.prefix + "/"}, Claim: true,
 			})
 			return
 		}
-		current, _, _ := s.values(nil)
-		render(slog.Default(), w, setupTmpl, s.view(current, nil, nil, nil))
+		current, _ := s.values(nil)
+		render(slog.Default(), w, setupTmpl, s.view(current, nil, nil))
 	})
 	mux.HandleFunc("POST "+p+"/setup/start", s.start)
 	mux.HandleFunc("POST "+p+"/setup", s.submit)
@@ -260,34 +258,29 @@ func (s *setupServer) submit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the submitted form is malformed or too large", http.StatusBadRequest)
 		return
 	}
-	values, file, foldErr := s.values(r.PostForm)
+	values, file := s.values(r.PostForm)
 	action := r.PostForm.Get("action")
 	var generated string
 	var cfg *config.Config
 	var err error
 	if action == "generate-smtp-password" {
-		anonymous, _ := strconv.ParseBool(config.Resolve(config.Layer(values, s.Getenv), "S2G_SMTP_ALLOW_ANONYMOUS"))
+		anonymous, _ := strconv.ParseBool(config.Layer(values, s.Getenv)("S2G_SMTP_ALLOW_ANONYMOUS"))
 		switch {
-		case s.Getenv("S2G_SMTP_PASSWORD") != "" || s.Getenv("S2G_SMTP_PASSWORD_FILE") != "":
-			err = errors.New("S2G_SMTP_PASSWORD: cannot generate while S2G_SMTP_PASSWORD or S2G_SMTP_PASSWORD_FILE is set in the environment; remove the override first")
+		case s.Getenv("S2G_SMTP_PASSWORD") != "":
+			err = errors.New("S2G_SMTP_PASSWORD: cannot generate while S2G_SMTP_PASSWORD is set in the environment; remove the override first")
 		case anonymous:
 			err = errors.New("S2G_SMTP_ALLOW_ANONYMOUS: turn off anonymous SMTP before generating a password")
 		default:
 			generated = rand.Text()
 			values["S2G_SMTP_PASSWORD"] = generated
-			delete(values, "S2G_SMTP_PASSWORD_FILE")
 		}
 	} else {
 		cfg, err = config.Load(config.Layer(values, s.Getenv))
 	}
 
 	// The real loader through the real precedence, so the wizard cannot
-	// disagree with the next start about what is valid. The profile editor's
-	// own complaint is written like a loader message and joined in front of
-	// them, so it lands under its box through the same path - and, being
-	// first, is the one shown there when the loader has something to say
-	// about the same setting too.
-	general, byField := attribute(errors.Join(foldErr, err))
+	// disagree with the next start about what is valid.
+	general, byField := attribute(err)
 	var checks []checkResult
 	if action != "generate-smtp-password" && len(general) == 0 && len(byField) == 0 {
 		switch {
@@ -303,7 +296,7 @@ func (s *setupServer) submit(w http.ResponseWriter, r *http.Request) {
 			return
 		default:
 			if err := s.save(values); err == nil {
-				p := page{Title: "Saved", Brand: setupBrand, Base: s.prefix + "/"}
+				p := page{Title: "Saved", Base: s.prefix + "/"}
 				if s.OnSaved != nil {
 					p.Title = "Starting scan2graph"
 					p.InlineCSS = setupStartingStyle(w)
@@ -322,16 +315,7 @@ func (s *setupServer) submit(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	// The rows exactly as they were posted, and only where the fold refused
-	// them: it collapses rows into a map keyed by the address, so a row with
-	// no address at all - or a second one naming an address another row
-	// already used - lands on top of another entry, and rendering that map
-	// back would take away the very row the complaint is about.
-	var posted []setupProfile
-	if foldErr != nil {
-		posted = postedProfiles(r.PostForm)
-	}
-	v := s.view(values, general, byField, posted)
+	v := s.view(values, general, byField)
 	v.Checks = checks
 	v.GeneratedSMTPPassword = generated
 	// Everything that reaches this render was handed back rather than saved,
@@ -356,167 +340,32 @@ func setupStartingStyle(w http.ResponseWriter) template.CSS {
 }
 
 // values folds a submission into what the page it came from is showing. An
-// absent or empty field removes the setting and both of its spellings, so the
-// form can turn something off - except where that page holds an answer the
-// form cannot show, which a blank box keeps instead: a secret, and any
-// setting supplied by its S2G_..._FILE spelling. A nil form changes nothing.
-// The error is the profile editor's alone, and reads like a loader message so
-// that submit can attribute it to its box the same way.
-func (s *setupServer) values(form url.Values) (map[string]string, uint64, error) {
+// absent or empty field removes the setting, so the form can turn something
+// off - except a secret, which the page cannot show, so a blank box keeps it.
+// A nil form changes nothing.
+func (s *setupServer) values(form url.Values) (map[string]string, uint64) {
 	base, file := s.base(form.Get("form"))
 	values := maps.Clone(base)
 	if values == nil {
 		values = make(map[string]string, len(setupFields))
 	}
 	if form == nil {
-		return values, file, nil
+		return values, file
 	}
-	var foldErr error
 	for _, f := range setupFields {
-		// A newline would end the KEY=value line; the JSON in a textarea does
-		// not care where its whitespace is.
+		// A newline would end the KEY=value line.
 		v := strings.TrimSpace(strings.NewReplacer("\r", "", "\n", " ").Replace(form.Get(f.Name)))
-		// The profile editor names its boxes for itself, so a submission
-		// carrying them is one the editor rendered - and one without them came
-		// from the textarea the unparseable-value fallback puts under f.Name
-		// instead.
-		if f.Kind == fieldProfiles && form.Has(profSender) {
-			v, foldErr = foldProfiles(postedProfiles(form))
-		}
 		switch {
 		case v != "":
 			values[f.Name] = v
-			// One setting, two spellings: leaving the _FILE one behind would
-			// make the next start refuse over "both are set", from a box the
-			// form does not even show.
-			delete(values, f.Name+"_FILE")
-		case f.Kind == fieldSecret, values[f.Name+"_FILE"] != "":
-			// Blank keeps what the file holds, in whichever spelling: a
-			// secret is never rendered into the page, and neither is a value
-			// that lives in the file S2G_..._FILE points at, so an empty box
-			// is all the operator can be shown either way. Deleting on blank
-			// here would mean editing any other field silently drops a
-			// documented S2G_GRAPH_SENDER_FILE - and with it email, the web
-			// UI or OCR - on the next start. Removing one stays a file edit,
-			// which is where it was set.
+		case f.Kind == fieldSecret:
 		default:
 			// An unchecked checkbox arrives as nothing at all, and unset is
 			// what it means: the loader's default, not a written false.
 			delete(values, f.Name)
-			delete(values, f.Name+"_FILE")
 		}
 	}
-	return values, file, foldErr
-}
-
-// The profile editor's boxes on the wire, deliberately not S2G_ names (which
-// the fold loop iterates) and deliberately not numbered (which would need the
-// page to remember how many rows it drew). The address column is repeated, so
-// its values come back in row order. The three feature columns cannot be:
-// an unchecked box posts nothing at all, so every box in one of them carries
-// the same name and its row's index as its value, and what comes back is the
-// list of rows that are ticked.
-const (
-	profSender = "profile-sender"
-	profEmail  = "profile-email"
-	profWeb    = "profile-web"
-	profOCR    = "profile-ocr"
-)
-
-// postedProfiles reads the editor back off the wire, one row per address box
-// in the order the page drew them. A tick for a row the address column does
-// not have is ignored: it can only come from a hand-made submission, and the
-// holder gains nothing by aiming one at a row that does not exist.
-func postedProfiles(form url.Values) []setupProfile {
-	rows := make([]setupProfile, len(form[profSender]))
-	for i, sender := range form[profSender] {
-		rows[i] = setupProfile{Row: i + 1, Sender: strings.TrimSpace(sender)}
-	}
-	tick := func(name string, on func(*config.Capabilities)) {
-		for _, v := range form[name] {
-			if i, err := strconv.Atoi(v); err == nil && i >= 0 && i < len(rows) {
-				on(&rows[i].Caps)
-			}
-		}
-	}
-	tick(profEmail, func(c *config.Capabilities) { c.Email = true })
-	tick(profWeb, func(c *config.Capabilities) { c.Web = true })
-	tick(profOCR, func(c *config.Capabilities) { c.OCR = true })
-	return rows
-}
-
-// foldProfiles composes the editor's rows into the JSON object the loader
-// already parses, so nothing downstream knows the form changed. Rows nobody
-// touched - every page ends with two spares - are dropped, and no row at all
-// leaves the setting empty, which reads as "delete it" exactly like an empty
-// box: there are then no profiles, and every sender is accepted again. The
-// config type is what a row is marshalled from, so the wizard cannot disagree
-// with the loader about the shape, and marshalling a map is what sorts the
-// keys, so saving the same profiles twice writes the same file.
-//
-// The map is also why the two rows it cannot hold apart are named: one with
-// features ticked but no address, and a second one naming an address another
-// row already used. Both land on one entry and take what was typed with them,
-// which is exactly what the operator would otherwise not find out about.
-// Naming is the whole job here - the submission is refused either way, and
-// what comes back is the rows as posted rather than this map - so the
-// addressless one is left out of the object instead of going in under the
-// empty key, where it would only buy a second complaint from the loader about
-// a row the operator can already see. A row with an address and nothing
-// ticked needs nothing at all: the loader itself says that a profile with no
-// capability enabled is not one, and says it under this box.
-func foldProfiles(rows []setupProfile) (string, error) {
-	profiles := make(map[string]config.Capabilities, len(rows))
-	var err error
-	for _, row := range rows {
-		if row.Sender == "" {
-			if row.Caps != (config.Capabilities{}) {
-				err = errors.New("S2G_PROFILES: a profile needs the address the printer sends from, and one row has only its features ticked")
-			}
-			continue // a spare nobody touched, or a row already named
-		}
-		if _, dup := profiles[row.Sender]; dup {
-			err = fmt.Errorf("S2G_PROFILES: %q is on two rows, so one printer address has two answers", row.Sender)
-		}
-		profiles[row.Sender] = row.Caps
-	}
-	if len(profiles) == 0 {
-		// Nothing to write, but a row that was left out is still a row the
-		// operator typed into: the complaint has to travel even when it is
-		// all there is.
-		return "", err
-	}
-	out, _ := json.Marshal(profiles) // a map of plain structs always marshals
-	return string(out), err
-}
-
-// profileRows is the stored value as the editor shows it: one row per
-// profile, ordered by the address the printer sends from so two renders
-// agree, then two blank rows to type the next profile into. Two standing
-// spares rather than an "add" button, which as a second submit before the
-// actions row would become the form's default - and Enter in any box would
-// then add a row instead of saving. The false answer means the value is not
-// something rows can show faithfully, and the textarea has to stand in.
-//
-// Which is anything the loader itself would refuse, so it is the loader's own
-// parser that is asked rather than a second opinion beside it. encoding/json
-// alone would take the last of two entries and ignore a misspelled
-// capability, so a file the appliance refuses to start on - which is exactly
-// what sends the operator to this form - would render as tidy rows whose next
-// save threw the problem away without ever naming it.
-func profileRows(v string) ([]setupProfile, bool) {
-	// An unset setting is the empty string here, and means what "{}" means;
-	// the loader keeps the two apart because a _FILE that failed to populate
-	// resolves to the empty string too, and this form has no such spelling.
-	profiles, err := config.ParseProfiles(cmp.Or(v, "{}"))
-	if err != nil {
-		return nil, false
-	}
-	rows := make([]setupProfile, 0, len(profiles)+2)
-	for _, sender := range slices.Sorted(maps.Keys(profiles)) {
-		rows = append(rows, setupProfile{Row: len(rows) + 1, Sender: sender, Caps: profiles[sender]})
-	}
-	return append(rows, setupProfile{Row: len(rows) + 1}, setupProfile{Row: len(rows) + 2}), true
+	return values, file
 }
 
 // save writes the configuration file and republishes what the wizard reads
@@ -624,7 +473,7 @@ func attribute(err error) (general []string, byField map[string]string) {
 // appears - typing "S2G_HTTP_ADDR" into another box is enough to make the
 // line look like it names two settings - and a message naming several
 // genuinely does start with something else, so it lands above the form where
-// the whole picture is. The _FILE spelling answers to its own box.
+// the whole picture is.
 func leadingSetting(line string) string {
 	end := strings.IndexFunc(line, func(r rune) bool {
 		return !(r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_')
@@ -632,7 +481,7 @@ func leadingSetting(line string) string {
 	if end >= 0 {
 		line = line[:end]
 	}
-	return strings.TrimSuffix(line, "_FILE")
+	return line
 }
 
 // serialize renders the settings as a sorted KEY=value file: a diff between
@@ -652,7 +501,7 @@ func (s *setupServer) serialize(values map[string]string) []byte {
 		b.WriteString("#\n# The Entra app registration needs this redirect URI, under\n" +
 			"# Authentication as a Web platform, or signing in fails:\n#   " + uri + "\n")
 	}
-	if config.Resolve(config.Layer(values, s.Getenv), "S2G_GRAPH_SENDER") != "" {
+	if config.Layer(values, s.Getenv)("S2G_GRAPH_SENDER") != "" {
 		b.WriteString("#\n# It also needs the Mail.Send application permission, with admin\n" +
 			"# consent granted, or nothing can be mailed out - and Mail.ReadWrite\n" +
 			"# beside it if a scan can be larger than 2.2 MB, which the default\n" +
@@ -756,11 +605,10 @@ type setupGroup struct {
 // settings, or "" when it will register nothing because it signs nobody in.
 // It answers through the loader's own resolver over the loader's own
 // precedence, so it cannot disagree with a real start: the environment sits
-// above the file, the S2G_..._FILE spelling is followed, and a value Load
-// would refuse resolves to nothing here rather than being offered with
-// confidence.
+// above the file, and a value Load would refuse resolves to nothing here
+// rather than being offered with confidence.
 func (s *setupServer) redirectURI(values map[string]string) string {
-	base := config.ResolveBaseURL(config.Layer(values, s.Getenv), "S2G_PUBLIC_BASE_URL")
+	base := config.ResolveBaseURL(config.Layer(values, s.Getenv))
 	if base == "" {
 		return ""
 	}
@@ -782,9 +630,9 @@ type setupStep struct{ Text, Code string }
 // meets again as AADSTS50011, naming neither this page nor the box that
 // caused it. So the answer comes from the loader's own resolver over the
 // loader's own precedence rather than from string surgery on the box: the
-// environment sits above the file and the S2G_..._FILE spelling is followed,
-// exactly as a start would, and a value Load would refuse resolves to nothing
-// here rather than being printed with confidence. A plain GET never runs
+// environment sits above the file, exactly as a start would, and a value Load
+// would refuse resolves to nothing here rather than being printed with
+// confidence. A plain GET never runs
 // Load, so nothing else on the page would have contradicted it.
 func (s *setupServer) entraSteps(values map[string]string) []setupStep {
 	getenv := config.Layer(values, s.Getenv)
@@ -798,7 +646,7 @@ func (s *setupServer) entraSteps(values map[string]string) []setupStep {
 		steps = append(steps, setupStep{Text: "Nothing to add under Authentication yet: the redirect URI is worked out from the Public URL field on this page, so fill that in and come back here for it. An appliance that only mails scans out signs nobody in and needs none at all."})
 	}
 	steps = append(steps, setupStep{Text: "Certificates & secrets → New client secret. The portal shows its Value once, right after you create it; that is what goes in the Client secret box below."})
-	if config.Resolve(getenv, "S2G_GRAPH_SENDER") != "" {
+	if getenv("S2G_GRAPH_SENDER") != "" {
 		steps = append(steps, setupStep{Text: "API permissions → Microsoft Graph → Application permissions → Mail.Send, then Grant admin consent, or nothing can be mailed out. Add Mail.ReadWrite beside it if a scan can be larger than 2.2 MB; the README explains why."})
 	}
 	return steps
@@ -808,28 +656,14 @@ func (s *setupServer) entraSteps(values map[string]string) []setupStep {
 // is never rendered back.
 type setupInput struct {
 	setupField
-	Value    string
-	Checked  bool
-	Set      bool // a value is configured that no box can show
-	Error    string
-	Profiles []setupProfile // fieldProfiles only
+	Value   string
+	Checked bool
+	Error   string
 }
 
-// setupProfile is one row of the profile editor: the address the printer
-// sends from, and what a scan from it may do. Row is the row's number as the
-// page shows it, which is all a screen reader has to tell one row's three
-// identically named checkboxes from the next row's.
-type setupProfile struct {
-	Row    int
-	Sender string
-	Caps   config.Capabilities
-}
-
-// view renders values as the form. posted is the profile editor's rows as
-// they arrived, and is set only when the fold refused them; otherwise the
-// rows come from the folded value like every other field's box does.
-func (s *setupServer) view(values map[string]string, general []string, byField map[string]string, posted []setupProfile) setupView {
-	v := setupView{page: page{Title: "Setup", Brand: setupBrand, Base: s.prefix + "/"}, Path: s.Path, Errors: general, Form: rand.Text()}
+// view renders values as the form.
+func (s *setupServer) view(values map[string]string, general []string, byField map[string]string) setupView {
+	v := setupView{page: page{Title: "Setup", Base: s.prefix + "/"}, Path: s.Path, Errors: general, Form: rand.Text()}
 	v.StartAfterSave = s.OnSaved != nil && s.Path != ""
 	for _, f := range setupFields {
 		in := setupInput{setupField: f, Value: values[f.Name]}
@@ -838,46 +672,16 @@ func (s *setupServer) view(values map[string]string, general []string, byField m
 		// "Application (client) ID is required because ..." and "Sending
 		// mailbox: ... is not a valid address".
 		in.Error = strings.Replace(byField[f.Name], f.Name, f.Label, 1)
-		// Set drives the hint that says an empty box keeps what is there, so
-		// it has to mean exactly what values() will do with a blank box on
-		// the next press from this page - which folds into these values,
-		// remember having stored them under the id being rendered.
-		in.Set = values[f.Name+"_FILE"] != "" || (f.Kind == fieldSecret && values[f.Name] != "")
-		// Set wins over the field's own shape example: once there is a value
-		// no box can show, saying so is more important than what one would
-		// look like.
-		if in.Set {
-			in.Placeholder = "configured — leave empty to keep"
-		}
 		switch f.Kind {
 		case fieldSecret:
-			// Never rendered back into the page.
+			// Never rendered back into the page. The hint is what values()
+			// does with a blank box on the next press from this page.
+			if in.Value != "" {
+				in.Placeholder = "configured — leave empty to keep"
+			}
 			in.Value = ""
 		case fieldBool:
 			in.Checked, _ = strconv.ParseBool(in.Value)
-		case fieldChoice:
-			// A value the options cannot show - S2G_LOG_LEVEL=warning, which
-			// the loader accepts - would render as "(default)", and the next
-			// save would delete a setting nobody touched. Offer it as an
-			// option of its own instead.
-			if in.Value != "" && !slices.Contains(f.Choice, in.Value) {
-				in.Choice = append(slices.Clone(f.Choice), in.Value)
-			}
-		case fieldProfiles:
-			// Rows, unless the file holds something that is not an object of
-			// profiles at all: somebody hand-edited it, and the wizard is
-			// the tool they would reach for to fix it, so show them the text
-			// itself in a textarea rather than empty rows that would silently
-			// replace it on the next save.
-			rows, ok := profileRows(in.Value)
-			switch {
-			case posted != nil:
-				in.Profiles = posted
-			case ok:
-				in.Profiles = rows
-			default:
-				in.Kind = fieldArea
-			}
 		}
 		if len(v.Groups) == 0 || v.Groups[len(v.Groups)-1].Name != f.Group {
 			g := setupGroup{Name: f.Group, Intro: groupIntro[f.Group]}
