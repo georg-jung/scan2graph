@@ -1,0 +1,3 @@
+#!/bin/sh
+# DSM requires this file to exist; scan2graph has nothing to do after upgrade.
+exit 0

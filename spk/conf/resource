@@ -1,0 +1,3 @@
+{
+  "port-config": { "protocol-file": "conf/scan2graph.sc" }
+}

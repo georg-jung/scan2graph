@@ -1,0 +1,25 @@
+#!/bin/sh
+# Seed the config only when absent: an upgrade must not clobber the operator's
+# settings, and this is the only file that survives one (target is wiped and
+# re-extracted on every upgrade). A non-zero exit here leaves the package
+# permanently "corrupted", so this never fails past the write itself.
+set -eu
+
+CONFIG=/var/packages/scan2graph/etc/scan2graph.env
+
+mkdir -p "$(dirname "$CONFIG")"
+if [ ! -f "$CONFIG" ]; then
+    # Write to a temp file and rename into place: set -eu still lets a write
+    # fail mid-file, and a partial $CONFIG would never reach chmod, so the
+    # "already exists" guard above would then skip it forever.
+    # umask 077: the setup wizard will later store an Entra client secret here.
+    umask 077
+    cat > "$CONFIG.new" <<'EOF'
+S2G_HTTP_ADDR=:2526
+S2G_SMTP_ADDR=:2525
+S2G_TEMP_DIR=/var/packages/scan2graph/tmp
+EOF
+    mv "$CONFIG.new" "$CONFIG"
+fi
+
+exit 0
