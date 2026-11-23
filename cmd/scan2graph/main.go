@@ -116,6 +116,13 @@ func serve(cfg *config.Config, configFile string, overridden []string) {
 		// where the client secret usually lives.
 		slog.Info("configuration file read", "path", configFile, "overridden_by_environment", overridden)
 	}
+	var file map[string]string
+	if configFile != "" {
+		file, _ = config.ParseFile(configFile) // read once already by configSource
+	}
+	if names := config.Unknown(file, os.Environ()); len(names) > 0 {
+		slog.Warn("unknown settings ignored", "names", names) // names only, never values
+	}
 	if err := run(cfg); err != nil {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)

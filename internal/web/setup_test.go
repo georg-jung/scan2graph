@@ -203,7 +203,7 @@ func TestSetupGenerateSMTPPasswordRetained(t *testing.T) {
 			h := newSetupHarness(t, SetupOptions{FileValues: file, Path: path})
 			c := h.claimed()
 			// Generation works before Entra is configured and preserves other input.
-			_, body := h.post(c, url.Values{"action": {"generate-smtp-password"}, "S2G_SMTP_ADDR": {"Office scanner"}})
+			_, body := h.post(c, url.Values{"action": {"generate-smtp-password"}, "S2G_SMTP_ADDR": {":2526"}})
 			match := regexp.MustCompile(`<code[^>]*>([A-Z2-7]+)</code>`).FindStringSubmatch(body)
 			if len(match) != 2 || len(match[1]) < 26 {
 				t.Fatal("generation did not reveal a random password before validation")
@@ -212,7 +212,7 @@ func TestSetupGenerateSMTPPasswordRetained(t *testing.T) {
 			if logs.Len() != 0 {
 				t.Fatal("generation unexpectedly logged output")
 			}
-			if strings.Count(body, password) != 1 || strings.Contains(body, testClientSecret) || !strings.Contains(body, "Office scanner") || strings.Contains(body, "Not usable yet") || strings.Contains(body, "App-only token") {
+			if strings.Count(body, password) != 1 || strings.Contains(body, testClientSecret) || !strings.Contains(body, ":2526") || strings.Contains(body, "Not usable yet") || strings.Contains(body, "App-only token") {
 				t.Fatal("generation leaked another secret, lost input, or validated/tested configuration")
 			}
 			if path != "" {
@@ -316,6 +316,9 @@ func TestSetupFieldsCoverConfig(t *testing.T) {
 	re := regexp.MustCompile(`"(S2G_[A-Z0-9_]+)"`)
 	want := make(map[string]bool)
 	for _, source := range sources {
+		if filepath.Base(source) == "settings.go" { // the list under test
+			continue
+		}
 		src, err := os.ReadFile(source)
 		if err != nil {
 			t.Fatal(err)
@@ -367,6 +370,15 @@ func TestSetupFieldsCoverConfig(t *testing.T) {
 	for name := range hand {
 		if !want[name] {
 			t.Errorf("%s is in handEdited but internal/config never reads it", name)
+		}
+	}
+	// config.Settings is what the startup warning trusts.
+	if len(config.Settings) != len(want) {
+		t.Errorf("config.Settings has %d names, the loader reads %d", len(config.Settings), len(want))
+	}
+	for _, name := range config.Settings {
+		if !want[name] {
+			t.Errorf("config.Settings lists %s, which the loader never reads", name)
 		}
 	}
 }
@@ -639,11 +651,11 @@ func TestSetupSaves(t *testing.T) {
 		Path: path,
 		// A hand-added line the wizard knows nothing about, and a setting it
 		// does: both have to survive.
-		FileValues: map[string]string{"S2G_FUTURE_SETTING": "kept", "S2G_SMTP_ADDR": "Hallway printer"},
+		FileValues: map[string]string{"S2G_FUTURE_SETTING": "kept", "S2G_SMTP_ADDR": ":2527"},
 	})
 	form := validForm()
 	form.Set("action", "save")
-	form.Set("S2G_SMTP_ADDR", "Hallway printer")
+	form.Set("S2G_SMTP_ADDR", ":2527")
 	form.Set("S2G_SMTP_ALLOW_ANONYMOUS", "true")
 	resp, body := h.post(h.claimed(), form)
 	if resp.StatusCode != http.StatusOK {
@@ -852,13 +864,13 @@ func TestSetupSecondSaveKeepsTheSecret(t *testing.T) {
 
 	second := validForm()
 	second.Del("S2G_ENTRA_CLIENT_SECRET") // left blank, as a browser sends it
-	second.Set("S2G_SMTP_ADDR", "Hallway printer")
+	second.Set("S2G_SMTP_ADDR", ":2527")
 	second.Set("action", "save")
 	if resp, body := h.post(c, second); resp.StatusCode != http.StatusOK || !strings.Contains(body, "Saved") {
 		t.Fatalf("second save: status %d, body:\n%s", resp.StatusCode, body)
 	}
 	values := loads(t, path)
-	if values["S2G_SMTP_ADDR"] != "Hallway printer" {
+	if values["S2G_SMTP_ADDR"] != ":2527" {
 		t.Errorf("the second save did not take: S2G_SMTP_ADDR = %q", values["S2G_SMTP_ADDR"])
 	}
 	if got := values["S2G_ENTRA_CLIENT_SECRET"]; got != testClientSecret {
@@ -1366,7 +1378,7 @@ func TestSetupConcurrentSavesAndReads(t *testing.T) {
 			defer wg.Done()
 			for range 3 {
 				form := validForm()
-				form.Set("S2G_SMTP_ADDR", "Hallway printer "+strconv.Itoa(i))
+				form.Set("S2G_SMTP_ADDR", ":"+strconv.Itoa(2600+i))
 				form.Set("action", "save")
 				serve("save", i, postForm(strings.NewReader(form.Encode())))
 			}
@@ -1485,9 +1497,9 @@ func TestSetupOverlappingSavesAgreeWithTheFile(t *testing.T) {
 	for range 20 {
 		var wg sync.WaitGroup
 		start := make(chan struct{})
-		for _, title := range []string{"one", "two"} {
+		for _, addr := range []string{":2528", ":2529"} {
 			form := validForm()
-			form.Set("S2G_SMTP_ADDR", title)
+			form.Set("S2G_SMTP_ADDR", addr)
 			form.Set("action", "save")
 			wg.Add(1)
 			go func() {
@@ -1535,7 +1547,7 @@ func TestSetupConcurrentSavesAreRaceFree(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			form := validForm()
-			form.Set("S2G_SMTP_ADDR", "browser-"+string(rune('a'+i)))
+			form.Set("S2G_SMTP_ADDR", ":"+strconv.Itoa(2700+i))
 			form.Set("action", "save")
 			for range 10 {
 				resp, err := c.PostForm(h.ts.URL+"/setup", form)
@@ -1559,7 +1571,7 @@ func TestSetupConcurrentSavesAreRaceFree(t *testing.T) {
 	if got["S2G_ENTRA_CLIENT_SECRET"] != testClientSecret {
 		t.Errorf("client secret is %q, want the one every submission carried", got["S2G_ENTRA_CLIENT_SECRET"])
 	}
-	if !strings.HasPrefix(got["S2G_SMTP_ADDR"], "browser-") {
+	if !strings.HasPrefix(got["S2G_SMTP_ADDR"], ":27") {
 		t.Errorf("S2G_SMTP_ADDR is %q, want one browser's whole submission", got["S2G_SMTP_ADDR"])
 	}
 }

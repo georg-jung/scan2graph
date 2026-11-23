@@ -267,7 +267,9 @@ given, and a path that cannot be read or parsed stops startup rather than
 falling back. Precedence is **environment variable > file > built-in
 default**. Startup logs
 which file was read and names any of its settings the environment overrode,
-so a setting that is being ignored says so by name.
+so a setting that is being ignored says so by name; an `S2G_*` name that
+nothing reads (removed or mistyped), in the file or the environment, is
+warned about the same way.
 Comment lines (`#`), blank lines, an `export ` prefix and single- or
 double-quoted values are all accepted; a duplicate key is an error. Only
 `S2G_*` settings come from the file — `S2G_CONFIG_FILE` itself and anything
