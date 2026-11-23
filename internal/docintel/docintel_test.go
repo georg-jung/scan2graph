@@ -28,9 +28,8 @@ const (
 func testClient(srv *httptest.Server) (*Client, *[]time.Duration) {
 	waits := new([]time.Duration)
 	c := &Client{
-		HTTP:       srv.Client(),
-		Endpoint:   srv.URL,
-		APIVersion: "2024-11-30",
+		HTTP:     srv.Client(),
+		Endpoint: srv.URL,
 		sleep: func(_ context.Context, d time.Duration) {
 			*waits = append(*waits, d)
 		},
@@ -439,7 +438,7 @@ func TestSearchablePDF_ContextCancelledMidPoll(t *testing.T) {
 
 	// Real waiting here, deliberately: this is what proves cancellation
 	// during the wait itself is honoured, not just plumbed through.
-	c := &Client{HTTP: srv.Client(), Endpoint: srv.URL, APIVersion: "2024-11-30"}
+	c := &Client{HTTP: srv.Client(), Endpoint: srv.URL}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {

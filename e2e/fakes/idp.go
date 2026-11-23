@@ -32,7 +32,7 @@ func (f *fakes) discovery(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issuer":                                f.issuer,
 		"authorization_endpoint":                f.issuer + "/authorize",
-		"token_endpoint":                        f.issuer + "/token",
+		"token_endpoint":                        f.issuer + "/oauth2/v2.0/token",
 		"jwks_uri":                              f.issuer + "/jwks",
 		"response_types_supported":              []string{"code"},
 		"subject_types_supported":               []string{"public"},

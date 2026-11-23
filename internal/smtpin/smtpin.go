@@ -1,7 +1,7 @@
 // Package smtpin is the SMTP listener printers send scans to.
 //
 // It is not a mail relay: it accepts one message, decides from the envelope
-// sender which sender profile (capabilities) applies and from the envelope
+// sender which features apply and from the envelope
 // recipients who the scan is for, extracts the PDF attachments, hands a job
 // to the pipeline and answers 250 -- all before any OCR or Graph work
 // happens. MIME From:/To: headers are never used for routing; see the

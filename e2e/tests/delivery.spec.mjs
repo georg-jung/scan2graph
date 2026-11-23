@@ -1,4 +1,4 @@
-// What each sender profile does with a scan, end to end: the printer's SMTP
+// What each sender address does with a scan, end to end: the printer's SMTP
 // transaction, the pipeline, and what the recipient can actually get hold of.
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -19,7 +19,7 @@ test.beforeEach(resetFakes);
 test('a web-only scan is downloadable exactly as it was sent', async ({ page }) => {
   const subject = unique('web-only');
   const pdf = makePdf(subject);
-  const codes = await sendScan({ from: 'web-only@scanner.local', to: ALICE, subject, pdf });
+  const codes = await sendScan({ from: 'web@scanner.local', to: ALICE, subject, pdf });
   expect(codes.body).toBe(250);
 
   await signIn(page, 'alice');
@@ -28,7 +28,7 @@ test('a web-only scan is downloadable exactly as it was sent', async ({ page }) 
 
   const downloaded = await downloadDocument(page);
   expect(downloaded.equals(pdf)).toBe(true);
-  // A profile without ocr must not have asked Document Intelligence anything.
+  // A sender without ocr must not have asked Document Intelligence anything.
   expect(await diSubmissions()).toEqual([]);
 });
 
@@ -67,7 +67,7 @@ test('an email scan goes out through Graph and never appears on the web', async 
   expect(Buffer.from(message.attachments[0].base64, 'base64').toString())
     .toContain(`OCRED-BY-FAKE ${sha256(pdf)}`);
 
-  // The profile has no web capability, so the scan Alice was mailed is not
+  // The sender named no web, so the scan Alice was mailed is not
   // hers to download.
   await signIn(page, 'alice');
   await expect(rowFor(page, subject)).toHaveCount(0);
@@ -96,8 +96,8 @@ test('a failed OCR fails the scan and never passes the original off as searchabl
 
 // A scan too large for Graph's sendMail, on both sides of the permission that
 // decides what becomes of it. Neither appliance can be the harness's: this
-// needs an SMTP cap well above sendMail's ceiling, a profile with email and
-// without ocr so the PDF that reaches Graph is the one the printer sent rather
+// needs an SMTP cap well above sendMail's ceiling, email configured and
+// ocr not, so the PDF that reaches Graph is the one the printer sent rather
 // than the fake OCR's, and an app registration on each side of Mail.ReadWrite -
 // which is a property of the registration, so the fake grants the permission
 // to one of the two client ids it knows (e2e/fakes/main.go). The appliances
@@ -253,18 +253,15 @@ function start({ clientID, http, smtp }) {
       // A directory of its own: jobs.New wipes its root on start and
       // removes it on shutdown, so sharing .tmp would delete the harness
       // appliance's job store twice per run, underneath it.
-      S2G_TEMP_DIR: path.join(e2e, '.tmp', `appliance-${smtp}`),
-      S2G_LOG_FORMAT: 'text',
-      S2G_SMTP_USERNAME: 'printer',
+      TMPDIR: path.join(e2e, '.tmp', `appliance-${smtp}`),
       S2G_SMTP_PASSWORD: FIXTURE_SECRET,
-      S2G_PROFILES: JSON.stringify({ 'big@scanner.local': { email: true } }),
       S2G_ALLOWED_RECIPIENT_DOMAINS: 'corp.example',
       S2G_GRAPH_SENDER: 'scanner@corp.example',
       S2G_GRAPH_BASE_URL: 'http://127.0.0.1:19000/graph',
       S2G_ENTRA_TENANT_ID: '00000000-0000-0000-0000-0000000000aa',
       S2G_ENTRA_CLIENT_ID: clientID,
       S2G_ENTRA_CLIENT_SECRET: FIXTURE_SECRET,
-      S2G_ENTRA_TOKEN_URL: 'http://127.0.0.1:19000/idp/token',
+      S2G_ENTRA_AUTHORITY_URL: 'http://127.0.0.1:19000/idp',
       // Above sendMail's ceiling by some margin: nothing can choose a
       // delivery path for a scan the SMTP listener refused to take.
       S2G_MAX_MESSAGE_BYTES: String(8 * 1024 * 1024),

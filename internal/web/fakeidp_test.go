@@ -93,7 +93,7 @@ func newFakeIDP(t *testing.T) *fakeIDP {
 	mux.HandleFunc("GET /.well-known/openid-configuration", f.discovery)
 	mux.HandleFunc("GET /jwks", f.jwks)
 	mux.HandleFunc("GET /authorize", f.authorize)
-	mux.HandleFunc("POST /token", f.token)
+	mux.HandleFunc("POST /oauth2/v2.0/token", f.token)
 	f.server = httptest.NewServer(mux)
 	f.URL = f.server.URL
 	t.Cleanup(f.server.Close)
@@ -104,7 +104,7 @@ func (f *fakeIDP) discovery(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, map[string]any{
 		"issuer":                                f.URL,
 		"authorization_endpoint":                f.URL + "/authorize",
-		"token_endpoint":                        f.URL + "/token",
+		"token_endpoint":                        f.URL + "/oauth2/v2.0/token",
 		"jwks_uri":                              f.URL + "/jwks",
 		"id_token_signing_alg_values_supported": []string{"RS256"},
 	})

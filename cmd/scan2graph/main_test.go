@@ -109,8 +109,7 @@ func TestWizardValidatesSubmittedValue(t *testing.T) {
 	}
 }
 
-// only answers for one setting: a getenv that answers for every name would
-// have S2G_X and S2G_X_FILE both set, which the resolver refuses outright.
+// only answers for one setting.
 func only(name, value string) func(string) string {
 	return func(n string) string {
 		if n == name {
@@ -314,7 +313,7 @@ func (p *mainProc) waitListening(addr string) {
 
 // TestDefaultModeDispatch is the security-shaped decision in main: with no
 // subcommand, only a genuinely blank appliance may open the wizard without a
-// token. A half-configured one - the secret file that went missing - has to
+// token. A half-configured one - the identity configured but not the secret - has to
 // exit, because a plain "Load failed, open the wizard" would turn a broken
 // appliance into an unauthenticated configuration editor on the LAN.
 // web.AnyConfigured's own test proves the helper works; this proves main
@@ -327,10 +326,8 @@ func TestDefaultModeDispatch(t *testing.T) {
 	t.Run("half configured exits instead of opening the wizard", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "scan2graph.env")
-		// Everything but the secret, whose file is not there - the exact
-		// shape of a Docker secret that failed to mount.
-		body := identity + "S2G_ENTRA_CLIENT_SECRET_FILE=" + filepath.Join(dir, "gone") + "\n"
-		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		// Everything but the secret.
+		if err := os.WriteFile(path, []byte(identity), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		code, out := startMain(t, "", map[string]string{
@@ -446,7 +443,7 @@ func TestSetupSaveHandover(t *testing.T) {
 			env := map[string]string{
 				"S2G_CONFIG_FILE": path, "S2G_HTTP_ADDR": addr,
 				"S2G_ENTRA_AUTHORITY_URL": fakeDiscovery(t),
-				"S2G_UI_TITLE":            "Environment title", "S2G_TEMP_DIR": t.TempDir(),
+				"S2G_LOG_LEVEL":           "debug", "TMPDIR": t.TempDir(),
 			}
 			args, token := "", ""
 			switch mode {
@@ -489,7 +486,7 @@ func TestSetupSaveHandover(t *testing.T) {
 			form.Set("S2G_HTTP_ADDR", "127.0.0.1:0") // environment must still win
 			form.Set("S2G_SMTP_ADDR", smtpAddr)
 			form.Set("S2G_SMTP_ALLOW_ANONYMOUS", "true")
-			form.Set("S2G_UI_TITLE", "File title")
+			form.Set("S2G_LOG_LEVEL", "error")
 			resp, err = client.PostForm(base+"/setup", form)
 			if err != nil {
 				t.Fatal(err)
@@ -500,7 +497,7 @@ func TestSetupSaveHandover(t *testing.T) {
 				t.Fatalf("save response: status %d, read error %v", resp.StatusCode, err)
 			}
 			values, err := config.ParseFile(path)
-			if err != nil || values["S2G_UI_TITLE"] != "File title" {
+			if err != nil || values["S2G_LOG_LEVEL"] != "error" {
 				t.Fatalf("save did not replace the selected config: %v", err)
 			}
 			if mode == "explicit setup" {
@@ -549,7 +546,7 @@ func TestSetupSaveHandover(t *testing.T) {
 			}
 			body, _ = io.ReadAll(resp.Body)
 			resp.Body.Close()
-			if resp.StatusCode != http.StatusOK || string(body) != "ok\n" || !strings.Contains(p.output(), `"ui_title":"Environment title"`) {
+			if resp.StatusCode != http.StatusOK || string(body) != "ok\n" || !strings.Contains(p.output(), "config.log_level=DEBUG") {
 				t.Fatal("same HTTP port is not serving the reloaded configuration with environment precedence")
 			}
 		})
@@ -640,7 +637,7 @@ func TestSetupModeToken(t *testing.T) {
 	// does not change that.
 	for name, body := range map[string]string{
 		"no file at all":       "",
-		"only cosmetic values": "S2G_LOG_LEVEL=info\nS2G_UI_TITLE=Hallway printer\n",
+		"only cosmetic values": "S2G_LOG_LEVEL=info\nS2G_SMTP_ADDR=:2526\n",
 	} {
 		t.Run(name+" needs no token", func(t *testing.T) {
 			addr := freePort(t)
@@ -732,36 +729,6 @@ func TestSetupModesOverAMalformedFile(t *testing.T) {
 			t.Errorf("the wizard does not say a token gates it:\n%s", out)
 		}
 	})
-}
-
-// TestSetupFollowsFileIndirection pins that the wizard's own two settings -
-// where to listen and which URL to print - follow the documented S2G_X_FILE
-// indirection like every other setting, rather than a raw lookup that would
-// silently fall back to the default port and hand the operator a filesystem
-// path as a URL - found out, on a marker-armed start, only once the one-shot
-// marker is already spent.
-func TestSetupFollowsFileIndirection(t *testing.T) {
-	dir := t.TempDir()
-	addr, base := freePort(t), "http://scan2graph.example.com"
-	// The trailing newline a mounted file or an editor leaves behind is part
-	// of the case: the value is what resolve trims it to.
-	write := func(name, value string) string {
-		t.Helper()
-		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte(value+"\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		return path
-	}
-	p := startMain(t, "setup", map[string]string{
-		"S2G_CONFIG_FILE":          filepath.Join(dir, "scan2graph.env"), // not written yet
-		"S2G_HTTP_ADDR_FILE":       write("http-addr", addr),
-		"S2G_PUBLIC_BASE_URL_FILE": write("public-base-url", base),
-	})
-	p.waitListening(addr) // fails here if the file indirection were ignored
-	if out := p.output(); !strings.Contains(out, base+"/setup") {
-		t.Errorf("the wizard did not print the configured public base URL:\n%s", out)
-	}
 }
 
 // TestHealthEndpointsFollowThePrefix covers the two callers the health

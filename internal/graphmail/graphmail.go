@@ -29,6 +29,9 @@ import (
 	"github.com/georg-jung/scan2graph/internal/msapi"
 )
 
+// Scope is the OAuth scope of the app-only token the HTTP client carries.
+const Scope = "https://graph.microsoft.com/.default"
+
 // maxGraphMessageBytes is Graph's documented limit on the MIME sendMail
 // request body (~4 MB). A constant, not configuration: it is a property of
 // the API, not something an operator can usefully change.

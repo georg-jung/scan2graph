@@ -8,7 +8,7 @@ import { FIXTURE_SECRET, resetFakes } from '../lib/fakes.mjs';
 import { makePdf, sendScan } from '../lib/smtp.mjs';
 
 const subject = 'e2e smtp';
-const scan = { from: 'web-only@scanner.local', to: 'alice@corp.example', subject, pdf: makePdf(subject) };
+const scan = { from: 'web@scanner.local', to: 'alice@corp.example', subject, pdf: makePdf(subject) };
 
 // Not for the recordings - nothing here reads them - but because the last
 // delivery test leaves Document Intelligence in fail mode, and the next
@@ -16,8 +16,8 @@ const scan = { from: 'web-only@scanner.local', to: 'alice@corp.example', subject
 // hour on it.
 test.beforeEach(resetFakes);
 
-test('an envelope sender with no profile is refused at MAIL FROM', async () => {
-  const codes = await sendScan({ ...scan, from: 'stranger@scanner.local' });
+test('an envelope sender that names no delivery is refused at MAIL FROM', async () => {
+  const codes = await sendScan({ ...scan, from: 'ocr@scanner.local' });
   expect(codes.auth).toBe(235);
   expect(codes.mail).toBe(550);
 });

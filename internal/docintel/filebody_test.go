@@ -57,7 +57,7 @@ func TestRetryWithFileBody(t *testing.T) {
 	defer srv.Close()
 	base = srv.URL
 
-	c := &Client{HTTP: srv.Client(), Endpoint: srv.URL, APIVersion: "2024-11-30", sleep: func(context.Context, time.Duration) {}}
+	c := &Client{HTTP: srv.Client(), Endpoint: srv.URL, sleep: func(context.Context, time.Duration) {}}
 	var out bytes.Buffer
 	if err := c.SearchablePDF(context.Background(), f, &out); err != nil {
 		t.Fatalf("SearchablePDF with an *os.File over a retry: %v", err)

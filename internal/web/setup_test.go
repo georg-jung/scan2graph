@@ -5,10 +5,8 @@ import (
 	"cmp"
 	"crypto/sha256"
 	"encoding/base64"
-	"html"
 	"io"
 	"log/slog"
-	"maps"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -16,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -65,7 +62,7 @@ func newSetupHarness(t *testing.T, opts SetupOptions) *setupHarness {
 	}
 	ts := httptest.NewServer(NewSetup(opts))
 	t.Cleanup(ts.Close)
-	prefix := config.BasePath(config.ResolveBaseURL(config.Layer(opts.FileValues, opts.Getenv), "S2G_PUBLIC_BASE_URL"))
+	prefix := config.BasePath(config.ResolveBaseURL(config.Layer(opts.FileValues, opts.Getenv)))
 	return &setupHarness{t: t, ts: ts, path: opts.Path, prefix: prefix}
 }
 
@@ -198,7 +195,6 @@ func TestSetupGenerateSMTPPasswordRetained(t *testing.T) {
 			file["S2G_SMTP_PASSWORD"] = testClientSecret
 			if action == "download" {
 				delete(file, "S2G_SMTP_PASSWORD")
-				file["S2G_SMTP_PASSWORD_FILE"] = "/missing/secret"
 			}
 			path := filepath.Join(t.TempDir(), setupFileName)
 			if action == "download" {
@@ -207,7 +203,7 @@ func TestSetupGenerateSMTPPasswordRetained(t *testing.T) {
 			h := newSetupHarness(t, SetupOptions{FileValues: file, Path: path})
 			c := h.claimed()
 			// Generation works before Entra is configured and preserves other input.
-			_, body := h.post(c, url.Values{"action": {"generate-smtp-password"}, "S2G_UI_TITLE": {"Office scanner"}})
+			_, body := h.post(c, url.Values{"action": {"generate-smtp-password"}, "S2G_SMTP_ADDR": {":2526"}})
 			match := regexp.MustCompile(`<code[^>]*>([A-Z2-7]+)</code>`).FindStringSubmatch(body)
 			if len(match) != 2 || len(match[1]) < 26 {
 				t.Fatal("generation did not reveal a random password before validation")
@@ -216,7 +212,7 @@ func TestSetupGenerateSMTPPasswordRetained(t *testing.T) {
 			if logs.Len() != 0 {
 				t.Fatal("generation unexpectedly logged output")
 			}
-			if strings.Count(body, password) != 1 || strings.Contains(body, testClientSecret) || !strings.Contains(body, "Office scanner") || strings.Contains(body, "Not usable yet") || strings.Contains(body, "App-only token") {
+			if strings.Count(body, password) != 1 || strings.Contains(body, testClientSecret) || !strings.Contains(body, ":2526") || strings.Contains(body, "Not usable yet") || strings.Contains(body, "App-only token") {
 				t.Fatal("generation leaked another secret, lost input, or validated/tested configuration")
 			}
 			if path != "" {
@@ -255,8 +251,8 @@ func TestSetupGenerateSMTPPasswordRetained(t *testing.T) {
 				t.Fatal("save failed")
 			}
 			got := loads(t, path)
-			if got["S2G_SMTP_PASSWORD"] != password || got["S2G_SMTP_PASSWORD_FILE"] != "" || got["S2G_ENTRA_CLIENT_SECRET"] != testClientSecret {
-				t.Fatal("saved/downloaded credentials differ from pending form or retain _FILE")
+			if got["S2G_SMTP_PASSWORD"] != password || got["S2G_ENTRA_CLIENT_SECRET"] != testClientSecret {
+				t.Fatal("saved/downloaded credentials differ from pending form")
 			}
 			_, body = h.get(c, "/setup")
 			if strings.Contains(body, password) || strings.Contains(body, testClientSecret) {
@@ -274,10 +270,6 @@ func TestSetupGenerateSMTPPasswordConflicts(t *testing.T) {
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	defer slog.SetDefault(previous)
-	anonFile := filepath.Join(t.TempDir(), "anonymous")
-	if err := os.WriteFile(anonFile, []byte("true\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
 	for _, tc := range []struct {
 		name      string
 		env, file map[string]string
@@ -285,12 +277,8 @@ func TestSetupGenerateSMTPPasswordConflicts(t *testing.T) {
 		want      string
 	}{
 		{name: "environment password", env: map[string]string{"S2G_SMTP_PASSWORD": testClientSecret}, want: "remove the override first"},
-		{name: "environment password file", env: map[string]string{"S2G_SMTP_PASSWORD_FILE": "/missing/secret"}, want: "remove the override first"},
-		{name: "environment both", env: map[string]string{"S2G_SMTP_PASSWORD": testClientSecret, "S2G_SMTP_PASSWORD_FILE": "/missing/secret"}, want: "remove the override first"},
 		{name: "form anonymous", form: url.Values{"S2G_SMTP_ALLOW_ANONYMOUS": {"true"}}, want: "turn off anonymous SMTP"},
 		{name: "environment anonymous", env: map[string]string{"S2G_SMTP_ALLOW_ANONYMOUS": "true"}, form: url.Values{"S2G_SMTP_ALLOW_ANONYMOUS": {"false"}}, want: "turn off anonymous SMTP"},
-		{name: "environment anonymous file", env: map[string]string{"S2G_SMTP_ALLOW_ANONYMOUS_FILE": anonFile}, want: "turn off anonymous SMTP"},
-		{name: "configuration anonymous file", file: map[string]string{"S2G_SMTP_ALLOW_ANONYMOUS_FILE": anonFile}, want: "turn off anonymous SMTP"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), setupFileName)
@@ -328,6 +316,9 @@ func TestSetupFieldsCoverConfig(t *testing.T) {
 	re := regexp.MustCompile(`"(S2G_[A-Z0-9_]+)"`)
 	want := make(map[string]bool)
 	for _, source := range sources {
+		if filepath.Base(source) == "settings.go" { // the list under test
+			continue
+		}
 		src, err := os.ReadFile(source)
 		if err != nil {
 			t.Fatal(err)
@@ -338,10 +329,10 @@ func TestSetupFieldsCoverConfig(t *testing.T) {
 			if m[1] == "S2G_CONFIG_FILE" {
 				continue
 			}
-			want[strings.TrimSuffix(m[1], "_FILE")] = true
+			want[m[1]] = true
 		}
 	}
-	if len(want) < 20 {
+	if len(want) < 15 {
 		t.Fatalf("only %d settings found in internal/config; the pattern stopped matching", len(want))
 	}
 
@@ -381,6 +372,15 @@ func TestSetupFieldsCoverConfig(t *testing.T) {
 			t.Errorf("%s is in handEdited but internal/config never reads it", name)
 		}
 	}
+	// config.Settings is what the startup warning trusts.
+	if len(config.Settings) != len(want) {
+		t.Errorf("config.Settings has %d names, the loader reads %d", len(config.Settings), len(want))
+	}
+	for _, name := range config.Settings {
+		if !want[name] {
+			t.Errorf("config.Settings lists %s, which the loader never reads", name)
+		}
+	}
 }
 
 // TestAnyConfigured pins the narrowed rule: the question is "is there a
@@ -402,15 +402,14 @@ func TestAnyConfigured(t *testing.T) {
 	}
 	for _, name := range []string{
 		"S2G_ENTRA_TENANT_ID", "S2G_ENTRA_CLIENT_ID",
-		"S2G_ENTRA_CLIENT_SECRET", "S2G_ENTRA_CLIENT_SECRET_FILE",
-		"S2G_SMTP_PASSWORD", "S2G_SMTP_PASSWORD_FILE",
+		"S2G_ENTRA_CLIENT_SECRET", "S2G_SMTP_PASSWORD",
 	} {
 		if !AnyConfigured(only(name)) {
 			t.Errorf("AnyConfigured with %s set = false, want true", name)
 		}
 	}
 	for _, name := range []string{
-		"S2G_HTTP_ADDR", "S2G_LOG_LEVEL", "S2G_UI_TITLE", "S2G_SMTP_ADDR",
+		"S2G_HTTP_ADDR", "S2G_LOG_LEVEL", "S2G_SMTP_ADDR",
 		"S2G_PUBLIC_BASE_URL", "S2G_DI_ENDPOINT",
 		"S2G_GRAPH_BASE_URL", // hand-edited: for the e2e harness, not a secret
 	} {
@@ -561,11 +560,8 @@ func TestSetupOnSaved(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			s := &setupServer{SetupOptions: SetupOptions{
 				Getenv: noEnv, Path: filepath.Join(t.TempDir(), "scan2graph.env"),
-				TokenHash: sha256Of(setupToken),
-				FileValues: map[string]string{
-					"S2G_ENTRA_AUTHORITY_URL": "http://127.0.0.1:1",
-					"S2G_ENTRA_TOKEN_URL":     "http://127.0.0.1:1/token",
-				},
+				TokenHash:  sha256Of(setupToken),
+				FileValues: map[string]string{"S2G_ENTRA_AUTHORITY_URL": "http://127.0.0.1:1"},
 			}}
 			form := validForm()
 			form.Set("action", "save")
@@ -601,8 +597,8 @@ func TestSetupOnSaved(t *testing.T) {
 				loads(t, s.Path)
 			}
 			// Every re-render retains the mode's label; pathless stays download-only.
-			current, _, _ := s.values(nil)
-			render(slog.Default(), w, setupTmpl, s.view(current, nil, nil, nil))
+			current, _ := s.values(nil)
+			render(slog.Default(), w, setupTmpl, s.view(current, nil, nil))
 			if strings.Contains(w.Body.String(), ">Save and start</button>") != (s.Path != "") {
 				t.Error("save label does not match the mode and path")
 			}
@@ -655,11 +651,11 @@ func TestSetupSaves(t *testing.T) {
 		Path: path,
 		// A hand-added line the wizard knows nothing about, and a setting it
 		// does: both have to survive.
-		FileValues: map[string]string{"S2G_FUTURE_SETTING": "kept", "S2G_UI_TITLE": "Hallway printer"},
+		FileValues: map[string]string{"S2G_FUTURE_SETTING": "kept", "S2G_SMTP_ADDR": ":2527"},
 	})
 	form := validForm()
 	form.Set("action", "save")
-	form.Set("S2G_UI_TITLE", "Hallway printer")
+	form.Set("S2G_SMTP_ADDR", ":2527")
 	form.Set("S2G_SMTP_ALLOW_ANONYMOUS", "true")
 	resp, body := h.post(h.claimed(), form)
 	if resp.StatusCode != http.StatusOK {
@@ -691,89 +687,6 @@ func TestSetupSaves(t *testing.T) {
 	}
 	if _, ok := values["S2G_LOG_LEVEL"]; ok {
 		t.Error("an empty box was written out instead of being left to the default")
-	}
-}
-
-// TestSetupKeepsAFileSuppliedValue pins that a blank box never deletes a
-// value the file supplies through its S2G_..._FILE spelling: no box can show
-// what that file holds, so a save that only touches an unrelated field must
-// leave it, and whatever it enables, in place. A secret and an ordinary
-// setting reach the same blank box by different paths - fieldSecret's own
-// case in values(), and simply having no other spelling set - so both need
-// the guarantee.
-func TestSetupKeepsAFileSuppliedValue(t *testing.T) {
-	for _, tc := range []struct {
-		name, fileField, content string
-		extra                    map[string]string // other FileValues an unrelated save must also leave alone
-	}{
-		{"a secret", "S2G_ENTRA_CLIENT_SECRET_FILE", testClientSecret, nil},
-		{"a plain setting", "S2G_GRAPH_SENDER_FILE", "scanner@example.com\n",
-			map[string]string{"S2G_ALLOWED_RECIPIENT_DOMAINS": "example.com"}},
-		// A dropdown has no placeholder to carry the hint, and "(default)"
-		// where something is configured misstates the configuration. The
-		// value is one the loader takes but the options do not offer, so
-		// finding it in the page would mean it really had been rendered.
-		{"a choice", "S2G_LOG_LEVEL_FILE", "warning\n", nil},
-		// The profile editor has no single box to leave empty: what a browser
-		// sends from it is the two spare rows, blank. That has to read as
-		// "nothing typed" rather than as "delete the profiles".
-		{"a profile editor", "S2G_PROFILES_FILE",
-			`{"scan-web@scanner.local":{"email":false,"web":true,"ocr":false}}`, nil},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			valuePath := filepath.Join(dir, "value")
-			if err := os.WriteFile(valuePath, []byte(tc.content), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			fileValues := map[string]string{tc.fileField: valuePath}
-			for k, v := range tc.extra {
-				fileValues[k] = v
-			}
-			path := filepath.Join(dir, "scan2graph.env")
-			h := newSetupHarness(t, SetupOptions{Path: path, FileValues: fileValues})
-			c := h.client()
-			h.claim(c)
-
-			// The box is empty because no box can show what is in that other
-			// file, so the page has to say that leaving it empty is what keeps
-			// it - without ever rendering the value itself.
-			name := strings.TrimSuffix(tc.fileField, "_FILE")
-			_, body := h.get(c, "/setup")
-			if strings.Contains(body, tc.content) {
-				t.Fatal("the configured value was rendered into the page")
-			}
-			field, _, _ := strings.Cut(body[strings.Index(body, `id="`+name+`"`):], "</div>")
-			if !strings.Contains(field, "configured — leave empty to keep") {
-				t.Errorf("the page does not say that an empty box keeps the configured value:\n%s", field)
-			}
-
-			// A save that changes something else entirely.
-			form := validForm()
-			form.Del(name) // left blank, as a browser sends it
-			for k, v := range tc.extra {
-				form.Set(k, v)
-			}
-			form.Set("S2G_UI_TITLE", "Hallway printer")
-			// Every rendered page ends with the profile editor's two spare
-			// rows, and a browser sends them whether or not anything was
-			// typed into them.
-			form[profSender] = []string{"", ""}
-			form.Set("action", "save")
-			if resp, body := h.post(c, form); resp.StatusCode != http.StatusOK || !strings.Contains(body, "Saved") {
-				t.Fatalf("status %d, body:\n%s", resp.StatusCode, body)
-			}
-			values := loads(t, path)
-			if values[tc.fileField] != valuePath {
-				t.Errorf("%s = %q, want the path it had", tc.fileField, values[tc.fileField])
-			}
-			if _, ok := values[name]; ok {
-				t.Error("both spellings were written, which the next start refuses")
-			}
-			if values["S2G_UI_TITLE"] != "Hallway printer" {
-				t.Errorf("the save that was meant to happen did not: S2G_UI_TITLE = %q", values["S2G_UI_TITLE"])
-			}
-		})
 	}
 }
 
@@ -868,7 +781,7 @@ func FuzzSetupFileRoundTrip(f *testing.F) {
 	}
 	s := &setupServer{}
 	f.Fuzz(func(t *testing.T, v string) {
-		values, _, _ := s.values(url.Values{"S2G_UI_TITLE": {v}, "S2G_TEMP_DIR": {v}})
+		values, _ := s.values(url.Values{"S2G_SMTP_ADDR": {v}, "S2G_HTTP_ADDR": {v}})
 		got := roundTrip(t, values)
 		if len(got) != len(values) {
 			t.Errorf("input %q: wrote %d settings, read back %d: %#v", v, len(values), len(got), got)
@@ -889,20 +802,18 @@ func FuzzSetupFileRoundTrip(f *testing.F) {
 // empty FileValues, so nothing there exercises that half.
 func FuzzSetupFilePreservesTheFileItRead(f *testing.F) {
 	for _, seed := range []string{
-		"S2G_UI_TITLE=plain\n",
-		"S2G_UI_TITLE='  padded  '\n",
+		"S2G_SMTP_ADDR=plain\n",
+		"S2G_SMTP_ADDR='  padded  '\n",
 		"S2G_ENTRA_AUTHORITY_URL=http://idp.example.test/tenant/v2.0\n",
-		"export S2G_UI_TITLE=exported\n",
-		"S2G_UI_TITLE=\"has # hash\"\n",
+		"export S2G_SMTP_ADDR=exported\n",
+		"S2G_SMTP_ADDR=\"has # hash\"\n",
 		"A#B=c\n",
-		"S2G_UI_TITLE=a\rb\n",
-		"S2G_UI_TITLE=''\n",
-		"S2G_UI_TITLE=\n",
-		"\ufeffS2G_UI_TITLE=bom\n",
-		"S2G_PROFILES={\"p@scanner.local\":{\"web\":true}}\n",
-		"S2G_UI_TITLE=$HOME\n",
+		"S2G_SMTP_ADDR=a\rb\n",
+		"S2G_SMTP_ADDR=''\n",
+		"S2G_SMTP_ADDR=\n",
+		"\ufeffS2G_SMTP_ADDR=bom\n",
+		"S2G_SMTP_ADDR=$HOME\n",
 		"export=weird\n",
-		"S2G_ENTRA_CLIENT_SECRET_FILE=/run/secrets/s\n",
 	} {
 		f.Add(seed, "")
 	}
@@ -916,7 +827,7 @@ func FuzzSetupFilePreservesTheFileItRead(f *testing.F) {
 			t.Skip() // not a configuration file at all
 		}
 		s := &setupServer{SetupOptions: SetupOptions{FileValues: fileValues}}
-		values, _, _ := s.values(url.Values{"S2G_UI_TITLE": {typed}})
+		values, _ := s.values(url.Values{"S2G_SMTP_ADDR": {typed}})
 		got := roundTrip(t, values)
 		if len(got) != len(values) {
 			t.Fatalf("file %q typed %q: wrote %d settings, read back %d: %#v", file, typed, len(values), len(got), got)
@@ -953,14 +864,14 @@ func TestSetupSecondSaveKeepsTheSecret(t *testing.T) {
 
 	second := validForm()
 	second.Del("S2G_ENTRA_CLIENT_SECRET") // left blank, as a browser sends it
-	second.Set("S2G_UI_TITLE", "Hallway printer")
+	second.Set("S2G_SMTP_ADDR", ":2527")
 	second.Set("action", "save")
 	if resp, body := h.post(c, second); resp.StatusCode != http.StatusOK || !strings.Contains(body, "Saved") {
 		t.Fatalf("second save: status %d, body:\n%s", resp.StatusCode, body)
 	}
 	values := loads(t, path)
-	if values["S2G_UI_TITLE"] != "Hallway printer" {
-		t.Errorf("the second save did not take: S2G_UI_TITLE = %q", values["S2G_UI_TITLE"])
+	if values["S2G_SMTP_ADDR"] != ":2527" {
+		t.Errorf("the second save did not take: S2G_SMTP_ADDR = %q", values["S2G_SMTP_ADDR"])
 	}
 	if got := values["S2G_ENTRA_CLIENT_SECRET"]; got != testClientSecret {
 		t.Errorf("the second save reverted the client secret to %q, want the one the first save wrote", got)
@@ -1221,387 +1132,6 @@ func postForm(body io.Reader) *http.Request {
 	return r
 }
 
-// TestSetupWritesJSONUnquoted pins quoteValue's rule for a JSON-valued
-// setting: it must never come out wrapped, because `docker run --env-file`
-// strips nothing, so a quoted value would reach the appliance with the quotes
-// still on and fail as invalid JSON. Reading the file back is the whole check
-// - no Docker involved, since what docker does with the line is "take it
-// verbatim".
-func TestSetupWritesJSONUnquoted(t *testing.T) {
-	const profiles = `{"scan-web@scanner.local":{"email":false,"web":true,"ocr":false}}`
-	path := filepath.Join(t.TempDir(), "scan2graph.env")
-	h := newSetupHarness(t, SetupOptions{Path: path})
-	form := validForm()
-	form.Set("S2G_PROFILES", profiles)
-	form.Set("action", "save")
-	if resp, body := h.post(h.claimed(), form); resp.StatusCode != http.StatusOK ||
-		!strings.Contains(body, "Saved") {
-		t.Fatalf("status %d, body:\n%s", resp.StatusCode, body)
-	}
-
-	written, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := "S2G_PROFILES=" + profiles + "\n"; !strings.Contains(string(written), want) {
-		t.Errorf("the JSON value did not come out verbatim; the file says:\n%s", written)
-	}
-	if got := loads(t, path)["S2G_PROFILES"]; got != profiles {
-		t.Errorf("S2G_PROFILES read back as %q", got)
-	}
-}
-
-// editorRows is the profile editor as the page rendered it, in order and
-// spares included: every row's address box and the three ticks beside it,
-// straight out of the HTML, so what these tests read is what a browser would
-// send back.
-func editorRows(t *testing.T, body string) []setupProfile {
-	t.Helper()
-	var rows []setupProfile
-	for _, chunk := range strings.Split(body, `name="profile-sender" value="`)[1:] {
-		sender, rest, _ := strings.Cut(chunk, `"`)
-		rest, _, _ = strings.Cut(rest, `name="profile-sender"`) // this row's boxes only
-		ticked := func(name string) bool {
-			i := strings.Index(rest, `name="`+name+`"`)
-			if i < 0 {
-				t.Fatalf("row %d carries no %s box:\n%s", len(rows)+1, name, rest)
-			}
-			box, _, _ := strings.Cut(rest[i:], ">")
-			return strings.Contains(box, " checked")
-		}
-		rows = append(rows, setupProfile{Row: len(rows) + 1, Sender: html.UnescapeString(sender), Caps: config.Capabilities{
-			Email: ticked(profEmail), Web: ticked(profWeb), OCR: ticked(profOCR),
-		}})
-	}
-	return rows
-}
-
-// fieldBlock is the part of the page that belongs to one setting: from its
-// first box to where the next field starts, which is where the loader's
-// complaint about it and its help line are.
-func fieldBlock(t *testing.T, body, name string) string {
-	t.Helper()
-	i := strings.Index(body, `id="`+name+`"`)
-	if i < 0 {
-		t.Fatalf("the page has no box for %s:\n%s", name, body)
-	}
-	block, _, _ := strings.Cut(body[i:], `<div class="field`)
-	return block
-}
-
-// profileForm is validForm plus everything a profile can ask for, since a
-// profile that enables a feature the rest of the configuration cannot deliver
-// is a configuration the loader refuses - and these tests are about the rows.
-func profileForm() url.Values {
-	form := validForm()
-	form.Set("S2G_GRAPH_SENDER", "scanner@example.com")
-	form.Set("S2G_ALLOWED_RECIPIENT_DOMAINS", "example.com")
-	form.Set("S2G_DI_ENDPOINT", "https://example.cognitiveservices.azure.com")
-	return form
-}
-
-// TestSetupProfileRoundTrip is the operator's whole loop, and with it the
-// whole point of the editor: a column of printer addresses and three columns
-// of ticks are saved as exactly the JSON object the loader already parses, so
-// nothing downstream knows the form changed, and the wizard opened again on
-// that file shows the same ticks on the same rows. The keys come out sorted
-// because a map is what they are marshalled from - saving the same profiles
-// twice has to write the same file - the spare rows nobody typed into leave
-// no trace, and a pasted address keeps no whitespace. Those two blank rows
-// are all there is to type into instead of an "add" button.
-func TestSetupProfileRoundTrip(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "scan2graph.env")
-	h := newSetupHarness(t, SetupOptions{Path: path})
-	c := h.claimed()
-	form := profileForm()
-	form[profSender] = []string{"scan-web@scanner.local", "  scan-all@scanner.local  ", "scan-ocr@scanner.local", "", ""}
-	// An unchecked box posts nothing, so what a browser sends is the row
-	// indices that are ticked - here row 2 has everything, row 1 the web UI
-	// and row 3 text recognition.
-	form[profEmail] = []string{"1"}
-	form[profWeb] = []string{"0", "1"}
-	form[profOCR] = []string{"1", "2"}
-	form.Set("action", "save")
-	if resp, body := h.post(c, form); resp.StatusCode != http.StatusOK ||
-		!strings.Contains(body, "Saved") {
-		t.Fatalf("status %d, body:\n%s", resp.StatusCode, body)
-	}
-
-	const wantJSON = `{"scan-all@scanner.local":{"email":true,"web":true,"ocr":true},` +
-		`"scan-ocr@scanner.local":{"email":false,"web":false,"ocr":true},` +
-		`"scan-web@scanner.local":{"email":false,"web":true,"ocr":false}}`
-	values := loads(t, path)
-	if got := values["S2G_PROFILES"]; got != wantJSON {
-		t.Errorf("S2G_PROFILES = %q, want %q", got, wantJSON)
-	}
-	// Through the real loader, because the file agreeing with a string is not
-	// the claim: the claim is that the appliance reads back the profiles the
-	// operator ticked.
-	cfg, err := config.Load(config.Layer(values, noEnv))
-	if err != nil {
-		t.Fatalf("the written file does not load: %v", err)
-	}
-	want := map[string]config.Capabilities{
-		"scan-web@scanner.local": {Web: true},
-		"scan-all@scanner.local": {Email: true, Web: true, OCR: true},
-		"scan-ocr@scanner.local": {OCR: true},
-	}
-	if !maps.Equal(cfg.Profiles, want) {
-		t.Errorf("the appliance would read %+v, want %+v", cfg.Profiles, want)
-	}
-
-	_, body := h.get(c, "/setup")
-	wantRows := []setupProfile{
-		{1, "scan-all@scanner.local", config.Capabilities{Email: true, Web: true, OCR: true}},
-		{2, "scan-ocr@scanner.local", config.Capabilities{OCR: true}},
-		{3, "scan-web@scanner.local", config.Capabilities{Web: true}},
-		{4, "", config.Capabilities{}}, {5, "", config.Capabilities{}},
-	}
-	if got := editorRows(t, body); !slices.Equal(got, wantRows) {
-		t.Errorf("the wizard reopened on %+v, want %+v", got, wantRows)
-	}
-}
-
-// TestSetupProfileEmptyEditorRemovesTheSetting pins what an editor nobody
-// typed into means, which is the common case and not a mistake: no profiles
-// at all, so the appliance accepts every sender and gives it whatever the
-// rest of the configuration enables. The two assertions are different
-// questions and both are wanted. The file must not carry the setting at all,
-// because a written S2G_PROFILES={} would say the operator configured
-// something when they configured nothing - and because the loader reads an
-// empty _FILE mount as a refusal rather than as no profiles, so "there is a
-// value here" is a claim worth not making falsely. And whatever the file
-// says, an unknown sender has to still be accepted: that is the invariant
-// the operator actually depends on.
-func TestSetupProfileEmptyEditorRemovesTheSetting(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "scan2graph.env")
-	h := newSetupHarness(t, SetupOptions{Path: path, FileValues: map[string]string{
-		"S2G_PROFILES": `{"scan-web@scanner.local":{"email":false,"web":true,"ocr":false}}`,
-	}})
-	form := validForm()
-	form[profSender] = []string{"", ""} // the two spares, as a browser sends them
-	form.Set("action", "save")
-	if resp, body := h.post(h.claimed(), form); resp.StatusCode != http.StatusOK ||
-		!strings.Contains(body, "Saved") {
-		t.Fatalf("status %d, body:\n%s", resp.StatusCode, body)
-	}
-	values := loads(t, path)
-	if got, ok := values["S2G_PROFILES"]; ok {
-		t.Errorf("S2G_PROFILES = %q, want the setting gone entirely", got)
-	}
-	cfg, err := config.Load(config.Layer(values, noEnv))
-	if err != nil {
-		t.Fatalf("the written file does not load: %v", err)
-	}
-	if _, ok := cfg.Profile("any-printer@scanner.local"); !ok {
-		t.Error("an unknown sender is rejected, so the empty editor configured profiles after all")
-	}
-}
-
-// TestSetupProfileHalfRowIsNamed pins the one row the fold must not drop: an
-// operator who ticked a feature and forgot the address would otherwise be told
-// the file was saved and find nothing there. The complaint lands under the
-// box, and what they ticked is in the page they get back - a complaint about a
-// row that is no longer there would be worse than none.
-func TestSetupProfileHalfRowIsNamed(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "scan2graph.env")
-	h := newSetupHarness(t, SetupOptions{Path: path})
-	form := validForm()
-	form[profSender] = []string{"", ""}
-	form[profWeb] = []string{"0"}
-	form.Set("action", "save")
-	resp, body := h.post(h.claimed(), form)
-	if resp.StatusCode != http.StatusOK || strings.Contains(body, "Saved") {
-		t.Fatalf("the half-typed row was saved anyway: status %d, body:\n%s", resp.StatusCode, body)
-	}
-	if !strings.Contains(fieldBlock(t, body, "S2G_PROFILES"), "Printer profiles: a profile needs the address") {
-		t.Errorf("the page does not say what is wrong with the row:\n%s", body)
-	}
-	// Once, in the editor's own words. Folding the row in under the empty key
-	// would add the loader's account of it above the form as well, which says
-	// `key ""` about a row the operator is looking at.
-	if strings.Contains(body, "is not a valid address") {
-		t.Errorf("the row is complained about twice:\n%s", body)
-	}
-	want := []setupProfile{{1, "", config.Capabilities{Web: true}}, {2, "", config.Capabilities{}}}
-	if got := editorRows(t, body); !slices.Equal(got, want) {
-		t.Errorf("the rows came back as %+v, want the tick kept: %+v", got, want)
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Errorf("a configuration file was written: %v", err)
-	}
-}
-
-// TestSetupProfileKeepsEveryPostedRow is why a refused fold renders what was
-// posted instead of what it folded into. Rows collapse into a map keyed by
-// the address, so two rows with no address at all - or two naming the same
-// one - land on a single entry, and rendering that map back would take away a
-// row the operator typed while complaining about it, which is precisely what
-// keeping a half-filled row exists to prevent.
-func TestSetupProfileKeepsEveryPostedRow(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		senders []string
-		want    []setupProfile
-	}{{
-		"two rows with no address", []string{"", "", ""},
-		[]setupProfile{
-			{1, "", config.Capabilities{Web: true}},
-			{2, "", config.Capabilities{OCR: true}},
-			{3, "", config.Capabilities{}},
-		},
-	}, {
-		"two rows naming one address", []string{"scan@scanner.local", "scan@scanner.local", ""},
-		[]setupProfile{
-			{1, "scan@scanner.local", config.Capabilities{Web: true}},
-			{2, "scan@scanner.local", config.Capabilities{OCR: true}},
-			{3, "", config.Capabilities{}},
-		},
-	}} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "scan2graph.env")
-			h := newSetupHarness(t, SetupOptions{Path: path})
-			form := profileForm()
-			form[profSender] = tc.senders
-			form[profWeb] = []string{"0"}
-			form[profOCR] = []string{"1"}
-			form.Set("action", "save")
-			resp, body := h.post(h.claimed(), form)
-			if resp.StatusCode != http.StatusOK || strings.Contains(body, "Saved") {
-				t.Fatalf("the rows were saved anyway: status %d, body:\n%s", resp.StatusCode, body)
-			}
-			if got := editorRows(t, body); !slices.Equal(got, tc.want) {
-				t.Errorf("the rows came back as %+v, want both kept: %+v", got, tc.want)
-			}
-			if _, err := os.Stat(path); !os.IsNotExist(err) {
-				t.Errorf("a configuration file was written: %v", err)
-			}
-		})
-	}
-}
-
-// TestSetupProfileWithoutAFeatureIsTheLoadersToSay pins that the editor grows
-// no rule the loader already has: a row with an address and nothing ticked
-// folds into a profile with every capability false, which the loader refuses
-// in words of its own - and that refusal lands under this box like any other
-// loader message, which is the whole reason the fold does not repeat it.
-func TestSetupProfileWithoutAFeatureIsTheLoadersToSay(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "scan2graph.env")
-	h := newSetupHarness(t, SetupOptions{Path: path})
-	form := validForm()
-	form[profSender] = []string{"scan-web@scanner.local", "", ""}
-	form.Set("action", "save")
-	resp, body := h.post(h.claimed(), form)
-	if resp.StatusCode != http.StatusOK || strings.Contains(body, "Saved") {
-		t.Fatalf("a profile that does nothing was saved: status %d, body:\n%s", resp.StatusCode, body)
-	}
-	if !strings.Contains(fieldBlock(t, body, "S2G_PROFILES"), "has no capability enabled") {
-		t.Errorf("the loader's complaint is not under the box it is about:\n%s", body)
-	}
-}
-
-// TestSetupProfileBoxesNameTheRowTheyAreIn pins the accessible names the three
-// feature columns need. The visible column headings are one word each and are
-// hidden on a phone altogether, so a screen reader has only what each box says
-// for itself: "Email" repeated eight times would say nothing about which
-// printer address is about to be given email.
-func TestSetupProfileBoxesNameTheRowTheyAreIn(t *testing.T) {
-	h := newSetupHarness(t, SetupOptions{FileValues: map[string]string{
-		"S2G_PROFILES": `{"scan-web@scanner.local":{"email":false,"web":true,"ocr":false}}`,
-	}})
-	_, body := h.get(h.claimed(), "/setup")
-	for _, want := range []string{
-		`aria-label="Row 1: address the printer sends from"`,
-		`aria-label="Row 1: email"`, `aria-label="Row 1: web"`, `aria-label="Row 1: OCR"`,
-		`aria-label="Row 3: OCR"`, // the second spare, so no row is left unnamed
-		// The headings are for the eye alone: read out as well, they would
-		// announce every column twice.
-		`<span aria-hidden="true">Address the printer sends from</span>`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the editor does not carry %s:\n%s", want, fieldBlock(t, body, "S2G_PROFILES"))
-		}
-	}
-}
-
-// TestSetupProfileFallsBackToText pins the values the editor cannot show
-// faithfully, all of which mean somebody hand-edited the file: something that
-// is not an object of profiles at all, an object naming the same address
-// twice, and a misspelled capability. Rows there would silently replace what
-// is in the file on the next save - and the last two are the ones that
-// matter, because they are files the appliance refuses to start on, which is
-// exactly what sends the operator to this form. The broken text goes into the
-// textarea instead, and the fix typed there is what gets saved.
-func TestSetupProfileFallsBackToText(t *testing.T) {
-	for _, tc := range []struct{ name, broken string }{
-		{"an address where an object belongs", `"jane.doe@example.com"`},
-		{"the same address twice", `{"dup@scanner.local":{"web":true},"dup@scanner.local":{"ocr":true}}`},
-		{"a misspelled capability", `{"scan@scanner.local":{"weeb":true}}`},
-	} {
-		t.Run(tc.name, func(t *testing.T) { profileTextFallback(t, tc.broken) })
-	}
-}
-
-func profileTextFallback(t *testing.T, broken string) {
-	path := filepath.Join(t.TempDir(), "scan2graph.env")
-	h := newSetupHarness(t, SetupOptions{
-		Path:       path,
-		FileValues: map[string]string{"S2G_PROFILES": broken},
-	})
-	c := h.claimed()
-	_, body := h.get(c, "/setup")
-	if rows := editorRows(t, body); rows != nil {
-		t.Errorf("a value no row can show was rendered as rows: %+v", rows)
-	}
-	if !strings.Contains(body, `<textarea id="S2G_PROFILES" name="S2G_PROFILES" rows="3" spellcheck="false">`+html.EscapeString(broken)) {
-		t.Errorf("the broken value is not in a box the operator can fix it in:\n%s", body)
-	}
-
-	const fixed = `{"scan-web@scanner.local":{"email":false,"web":true,"ocr":false}}`
-	form := validForm()
-	form.Set("form", h.formID(body))
-	form.Set("S2G_PROFILES", fixed)
-	form.Set("action", "save")
-	if resp, body := h.post(c, form); resp.StatusCode != http.StatusOK ||
-		!strings.Contains(body, "Saved") {
-		t.Fatalf("status %d, body:\n%s", resp.StatusCode, body)
-	}
-	if got := loads(t, path)["S2G_PROFILES"]; got != fixed {
-		t.Errorf("S2G_PROFILES = %q, want the typed fix %q", got, fixed)
-	}
-}
-
-// TestSetupChoiceKeepsAnUnlistedValue pins the defect that a <select> silently
-// dropped a value it had no option for: S2G_LOG_LEVEL=warning is valid to the
-// loader, so the box showed "(default)" and the next save deleted a setting
-// nobody had touched.
-func TestSetupChoiceKeepsAnUnlistedValue(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "scan2graph.env")
-	h := newSetupHarness(t, SetupOptions{
-		Path:       path,
-		FileValues: map[string]string{"S2G_LOG_LEVEL": "warning"},
-	})
-	c := h.client()
-	h.claim(c)
-	_, body := h.get(c, "/setup")
-	if !strings.Contains(body, `<option value="warning" selected>warning</option>`) {
-		t.Errorf("the configured log level is not an option the box can show:\n%s",
-			body[strings.Index(body, `id="S2G_LOG_LEVEL"`):][:400])
-	}
-
-	// And what the browser then submits - the option that was selected -
-	// survives the save rather than being deleted.
-	form := validForm()
-	form.Set("S2G_LOG_LEVEL", "warning")
-	form.Set("action", "save")
-	if resp, body := h.post(c, form); resp.StatusCode != http.StatusOK || !strings.Contains(body, "Saved") {
-		t.Fatalf("status %d, body:\n%s", resp.StatusCode, body)
-	}
-	if got := loads(t, path)["S2G_LOG_LEVEL"]; got != "warning" {
-		t.Errorf("S2G_LOG_LEVEL = %q after the save, want it kept", got)
-	}
-}
-
 // TestSetupErrorsUseTheLabel: the loader names the setting, the operator reads
 // a label. Stripping the name outright left "is required because ..." with no
 // subject at all, so view substitutes the label instead.
@@ -1848,7 +1378,7 @@ func TestSetupConcurrentSavesAndReads(t *testing.T) {
 			defer wg.Done()
 			for range 3 {
 				form := validForm()
-				form.Set("S2G_UI_TITLE", "Hallway printer "+strconv.Itoa(i))
+				form.Set("S2G_SMTP_ADDR", ":"+strconv.Itoa(2600+i))
 				form.Set("action", "save")
 				serve("save", i, postForm(strings.NewReader(form.Encode())))
 			}
@@ -1885,13 +1415,13 @@ func TestSetupSaveDuringATestWins(t *testing.T) {
 	s := &setupServer{SetupOptions: SetupOptions{Path: path, Getenv: noEnv}}
 
 	// The slow test folds first, and its results page will carry this id.
-	slow, slowFile, _ := s.values(validForm())
+	slow, slowFile := s.values(validForm())
 	slowPage := "the-slow-test's-page"
 
 	// The other tab saves a rotated secret while that test is still waiting.
 	rotated := validForm()
 	rotated.Set("S2G_ENTRA_CLIENT_SECRET", "rotated-"+testClientSecret)
-	saved, _, _ := s.values(rotated)
+	saved, _ := s.values(rotated)
 	if err := s.save(saved); err != nil {
 		t.Fatal(err)
 	}
@@ -1903,7 +1433,7 @@ func TestSetupSaveDuringATestWins(t *testing.T) {
 	blank := validForm()
 	blank.Del("S2G_ENTRA_CLIENT_SECRET")
 	blank.Set("form", slowPage)
-	next, _, _ := s.values(blank)
+	next, _ := s.values(blank)
 	if got := next["S2G_ENTRA_CLIENT_SECRET"]; got != "rotated-"+testClientSecret {
 		t.Errorf("a blank box folded into %q, want the secret the save wrote", got)
 	}
@@ -1967,9 +1497,9 @@ func TestSetupOverlappingSavesAgreeWithTheFile(t *testing.T) {
 	for range 20 {
 		var wg sync.WaitGroup
 		start := make(chan struct{})
-		for _, title := range []string{"one", "two"} {
+		for _, addr := range []string{":2528", ":2529"} {
 			form := validForm()
-			form.Set("S2G_UI_TITLE", title)
+			form.Set("S2G_SMTP_ADDR", addr)
 			form.Set("action", "save")
 			wg.Add(1)
 			go func() {
@@ -1984,9 +1514,9 @@ func TestSetupOverlappingSavesAgreeWithTheFile(t *testing.T) {
 		// Whichever won, the file and the map the next save folds into must
 		// be the same submission: fold a blank-secret save in and see it come
 		// back unchanged.
-		onDisk := loads(t, path)["S2G_UI_TITLE"]
+		onDisk := loads(t, path)["S2G_SMTP_ADDR"]
 		blank := validForm()
-		blank.Set("S2G_UI_TITLE", onDisk)
+		blank.Set("S2G_SMTP_ADDR", onDisk)
 		blank.Del("S2G_ENTRA_CLIENT_SECRET") // kept from whatever is published
 		blank.Set("action", "save")
 		if resp, body := h.post(c, blank); resp.StatusCode != http.StatusOK {
@@ -2017,7 +1547,7 @@ func TestSetupConcurrentSavesAreRaceFree(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			form := validForm()
-			form.Set("S2G_UI_TITLE", "browser-"+string(rune('a'+i)))
+			form.Set("S2G_SMTP_ADDR", ":"+strconv.Itoa(2700+i))
 			form.Set("action", "save")
 			for range 10 {
 				resp, err := c.PostForm(h.ts.URL+"/setup", form)
@@ -2041,8 +1571,8 @@ func TestSetupConcurrentSavesAreRaceFree(t *testing.T) {
 	if got["S2G_ENTRA_CLIENT_SECRET"] != testClientSecret {
 		t.Errorf("client secret is %q, want the one every submission carried", got["S2G_ENTRA_CLIENT_SECRET"])
 	}
-	if !strings.HasPrefix(got["S2G_UI_TITLE"], "browser-") {
-		t.Errorf("S2G_UI_TITLE is %q, want one browser's whole submission", got["S2G_UI_TITLE"])
+	if !strings.HasPrefix(got["S2G_SMTP_ADDR"], ":27") {
+		t.Errorf("S2G_SMTP_ADDR is %q, want one browser's whole submission", got["S2G_SMTP_ADDR"])
 	}
 }
 

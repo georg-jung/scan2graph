@@ -268,7 +268,6 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request, sess *se
 // page is what every template's layout needs.
 type page struct {
 	Title    string
-	Brand    string // the operator's S2G_UI_TITLE, rendered escaped
 	User     string
 	SignedIn bool
 	Refresh  bool // set while a scan on the page is still being worked on
@@ -297,7 +296,7 @@ type detailView struct {
 type scanRow struct {
 	ID       string
 	Received string
-	Profile  string
+	Sender   string
 	Subject  string
 	Size     string // "1.2 MB", or "2 files · 3.1 MB" for a rarer multi-document scan
 	Status   string
@@ -318,14 +317,14 @@ func (page) Version() string { return version.String() }
 
 // pageFor builds the layout's data for a signed-in page.
 func (s *Server) pageFor(title string, sess *session) page {
-	return page{Title: title, Brand: s.cfg.UITitle, User: sess.name, SignedIn: true, Base: s.cfg.PathPrefix + "/"}
+	return page{Title: title, User: sess.name, SignedIn: true, Base: s.cfg.PathPrefix + "/"}
 }
 
 func (s *Server) row(j jobs.Job) scanRow {
 	return scanRow{
 		ID:       j.ID,
 		Received: j.ReceivedAt.Format("2 Jan 15:04"),
-		Profile:  j.Profile,
+		Sender:   j.Sender,
 		Subject:  j.Subject,
 		Size:     scanSize(j.Documents),
 		Status:   string(j.Status),

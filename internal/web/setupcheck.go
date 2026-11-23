@@ -15,6 +15,8 @@ import (
 	"golang.org/x/oauth2/clientcredentials"
 
 	"github.com/georg-jung/scan2graph/internal/config"
+	"github.com/georg-jung/scan2graph/internal/docintel"
+	"github.com/georg-jung/scan2graph/internal/graphmail"
 	"github.com/georg-jung/scan2graph/internal/msapi"
 )
 
@@ -61,11 +63,8 @@ func runChecks(ctx context.Context, cfg *config.Config) []checkResult {
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		Transport:     capped{http.DefaultTransport},
 	}
-	// Not "is an endpoint configured": profiles can turn recognition off and
-	// leave the setting behind, and probing an endpoint nothing uses would
-	// report a failure about a feature that is not running.
 	di := ""
-	if !cfg.AnyOCR() {
+	if !cfg.Available.OCR {
 		di = "text recognition is off"
 	}
 	secret := cfg.ClientSecret
@@ -88,7 +87,7 @@ func runChecks(ctx context.Context, cfg *config.Config) []checkResult {
 		// correctly scoped registration does not have and would go red on a
 		// working appliance.
 		check(ctx, "App-only token", "", secret, func(ctx context.Context) error {
-			_, err := appToken(ctx, client, cfg, cfg.GraphScope)
+			_, err := appToken(ctx, client, cfg, graphmail.Scope)
 			return err
 		}),
 		check(ctx, "Document Intelligence", di, secret, func(ctx context.Context) error {
@@ -125,12 +124,12 @@ func appToken(ctx context.Context, client *http.Client, cfg *config.Config, scop
 // checkDocIntel lists the resource's models with an app-only token: one call
 // proves the endpoint, its TLS chain, the token and the scope together.
 func checkDocIntel(ctx context.Context, client *http.Client, cfg *config.Config) error {
-	tok, err := appToken(ctx, client, cfg, cfg.DIScope)
+	tok, err := appToken(ctx, client, cfg, docintel.Scope)
 	if err != nil {
 		return err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		cfg.DIEndpoint+"/documentintelligence/documentModels?api-version="+url.QueryEscape(cfg.DIAPIVersion), nil)
+		cfg.DIEndpoint+"/documentintelligence/documentModels?api-version="+docintel.APIVersion, nil)
 	if err != nil {
 		return err
 	}

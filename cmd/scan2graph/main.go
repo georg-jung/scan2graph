@@ -110,11 +110,18 @@ func runServeMode(args []string) {
 // serve logs how configuration was resolved and then runs the appliance.
 // Shared by the "serve" subcommand and the default mode's serve outcome.
 func serve(cfg *config.Config, configFile string, overridden []string) {
-	slog.SetDefault(newLogger(cfg.LogFormat, cfg.LogLevel))
+	slog.SetDefault(newLogger(cfg.LogLevel))
 	if configFile != "" {
 		// Paths and setting names only - never a value, since this file is
 		// where the client secret usually lives.
 		slog.Info("configuration file read", "path", configFile, "overridden_by_environment", overridden)
+	}
+	var file map[string]string
+	if configFile != "" {
+		file, _ = config.ParseFile(configFile) // read once already by configSource
+	}
+	if names := config.Unknown(file, os.Environ()); len(names) > 0 {
+		slog.Warn("unknown settings ignored", "names", names) // names only, never values
 	}
 	if err := run(cfg); err != nil {
 		slog.Error("fatal", "err", err)
@@ -129,7 +136,7 @@ func serve(cfg *config.Config, configFile string, overridden []string) {
 // always wins; short of that, configuration that loads serves, a
 // configuration with nothing in it worth protecting opens the wizard
 // unauthenticated (nothing to steal means nothing to gate), and anything
-// else - notably a half-configured appliance whose secret file went missing -
+// else - notably a half-configured appliance with the identity but not the secret -
 // is the ordinary error exit rather than a silent slide into an
 // unauthenticated configuration editor.
 func runDefaultMode(args []string) {
@@ -241,7 +248,7 @@ func runSetupNextStartMode(args []string) {
 // mode a successful save drains the wizard before returning to start serve;
 // explicit setup and pathless setup keep serving until the process ends.
 func wizard(path string, tokenHash []byte, startAfterSave bool) {
-	slog.SetDefault(newLogger("json", slog.LevelInfo))
+	slog.SetDefault(newLogger(slog.LevelInfo))
 	fileValues, parsed := readConfigFile(path)
 	getenv := config.Layer(fileValues, os.Getenv)
 	// Before anything is printed: the URL the operator is handed, token and
@@ -268,7 +275,7 @@ func wizard(path string, tokenHash []byte, startAfterSave bool) {
 	// pointed at the public URL is watching one address whichever mode the
 	// appliance is in, and setup mode is when it most wants an answer. Above
 	// the wizard's own gate, so a token-gated one still answers.
-	if p := config.BasePath(config.ResolveBaseURL(getenv, "S2G_PUBLIC_BASE_URL")); p != "" {
+	if p := config.BasePath(config.ResolveBaseURL(getenv)); p != "" {
 		mux.HandleFunc("GET "+p+"/healthz", plainOK)
 		mux.HandleFunc("GET "+p+"/readyz", plainOK)
 	}
@@ -309,19 +316,9 @@ func wizard(path string, tokenHash []byte, startAfterSave bool) {
 	}
 }
 
-// setupAddr and setupURL read their two settings the way Load does, through
-// the config package's own resolvers: every setting is documented as also
-// readable from S2G_X_FILE, and a raw lookup silently misses that spelling -
-// the listener would fall back to the default and bind a port nobody
-// published, and the URL the operator is handed would be a filesystem path.
-// On a marker-armed start that is found out only once the one-shot marker is
-// already spent.
-// setupAddr is the address the wizard is configured for, read the way Load
-// reads it so the documented S2G_HTTP_ADDR_FILE spelling is not silently
-// missed - a raw lookup would fall back to the default and bind a port
-// nobody published.
+// setupAddr is the address the wizard is configured for.
 func setupAddr(getenv func(string) string) string {
-	return cmp.Or(config.Resolve(getenv, "S2G_HTTP_ADDR"), defaultHTTPAddr)
+	return cmp.Or(getenv("S2G_HTTP_ADDR"), defaultHTTPAddr)
 }
 
 // setupListener opens that address, falling back to fallback when it will
@@ -358,7 +355,7 @@ func setupListener(getenv func(string) string, fallback string) (net.Listener, s
 // token, when not empty, is the one-shot query parameter "setup-next-start"
 // prints; the wizard's own startup banner never has one to show.
 func setupURL(getenv func(string) string, addr, token string) string {
-	base := config.ResolveBaseURL(getenv, "S2G_PUBLIC_BASE_URL")
+	base := config.ResolveBaseURL(getenv)
 	if base == "" {
 		port := "8080"
 		if _, p, err := net.SplitHostPort(addr); err == nil {
@@ -366,7 +363,7 @@ func setupURL(getenv func(string) string, addr, token string) string {
 		}
 		base = "http://localhost:" + port
 	}
-	u := strings.TrimSuffix(base, "/") + "/setup"
+	u := base + "/setup"
 	if token != "" {
 		u += "?t=" + token
 	}
@@ -374,7 +371,7 @@ func setupURL(getenv func(string) string, addr, token string) string {
 }
 
 // announceSetupWizard tells the operator, in the same style as
-// announceDefaultProfile below, that this run is the setup wizard rather
+// announceFeatures below, that this run is the setup wizard rather
 // than the appliance: which URL opens it, and whether a token gates it.
 // The token itself is never repeated here - whichever command minted it,
 // "setup-next-start" or this one, printed it once already.
@@ -427,24 +424,20 @@ func configSource(args []string, lenient bool) (getenv func(string) string, path
 	return getenv, path, overridden, err == nil && path != "", err
 }
 
-func newLogger(format string, level slog.Level) *slog.Logger {
-	opts := &slog.HandlerOptions{Level: level}
-	if format == "text" {
-		return slog.New(slog.NewTextHandler(os.Stderr, opts))
-	}
-	return slog.New(slog.NewJSONHandler(os.Stderr, opts))
+func newLogger(level slog.Level) *slog.Logger {
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 }
 
 func run(cfg *config.Config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	slog.Info("starting scan2graph", "version", version.String(), "config", cfg)
-	announceDefaultProfile(cfg)
+	slog.Info("starting scan2graph", "version", version.String(), "temp_dir", os.TempDir(), "config", cfg)
+	announceFeatures(cfg)
 	announceSMTPCredentials(cfg)
 
 	store, err := jobs.New(jobs.Options{
-		Root:     cfg.TempDir,
+		Root:     os.TempDir(),
 		TTL:      cfg.JobTTL,
 		MaxBytes: cfg.Limits.MaxStoredBytes,
 	})
@@ -461,17 +454,13 @@ func run(cfg *config.Config) error {
 
 	var ocr pipeline.OCR // interface-typed: a nil *docintel.Client would not be nil here
 	if cfg.DIEndpoint != "" {
-		client, _ := msClient(cfg, cfg.DIScope) // no permission of its own to read
-		ocr = &docintel.Client{
-			HTTP:       client,
-			Endpoint:   cfg.DIEndpoint,
-			APIVersion: cfg.DIAPIVersion,
-		}
+		client, _ := msClient(cfg, docintel.Scope) // no permission of its own to read
+		ocr = &docintel.Client{HTTP: client, Endpoint: cfg.DIEndpoint}
 	}
 
 	var mailer pipeline.Mailer // same reason: interface-typed even when nil
 	if cfg.GraphSender != "" {
-		client, tokens := msClient(cfg, cfg.GraphScope)
+		client, tokens := msClient(cfg, graphmail.Scope)
 		m := &graphmail.Client{
 			HTTP:       client,
 			BaseURL:    cfg.GraphBaseURL,
@@ -487,7 +476,7 @@ func run(cfg *config.Config) error {
 		OCR:     ocr,
 		Mailer:  mailer,
 		BaseURL: cfg.PublicBaseURL,
-		Workers: cfg.Limits.MaxConcurrentJobs,
+		Workers: 2, // OCR and Graph are waits on Azure, not work for this CPU
 		Logger:  slog.Default(),
 	})
 	// The workers get their own context, cancelled only after the SMTP
@@ -667,33 +656,26 @@ func announceGraphCeiling(cfg *config.Config, largeScans bool) {
 		float64(graphmail.MaxAttachmentBytes)/(1<<20), float64(cfg.Limits.MaxMessageBytes)/(1<<20))
 }
 
-// announceDefaultProfile explains what happens to a scan when no sender
-// profiles are configured, since then the enabled features are inferred from
-// which other settings are present. Printed rather than logged: an operator
-// who ends up without OCR or without email delivery needs to see why, at any
-// log level.
-func announceDefaultProfile(cfg *config.Config) {
-	if len(cfg.Profiles) > 0 {
-		return
-	}
+// announceFeatures says which features this configuration makes available
+// and how the printer's sender address picks among them. Printed rather than
+// logged: an operator missing one needs to see why, at any log level.
+func announceFeatures(cfg *config.Config) {
+	a := cfg.Available
 	feature := func(on bool, name, hint string) string {
 		if on {
-			return fmt.Sprintf("  │     %-14s on\n", name+":")
+			return fmt.Sprintf("  │   %-6s on\n", name)
 		}
-		return fmt.Sprintf("  │     %-14s off - %s\n", name+":", hint)
+		return fmt.Sprintf("  │   %-6s off: set %s\n", name, hint)
 	}
 	fmt.Fprint(os.Stderr,
 		"\n"+
-			"  ┌─ Sender profiles ───────────────────────────────────────────\n"+
-			"  │ No S2G_PROFILES configured, so every scanner address gets\n"+
-			"  │ the same treatment:\n"+
+			"  ┌─ Features ──────────────────────────────────────────────────\n"+
+			feature(a.Email, "email", "S2G_GRAPH_SENDER, S2G_ALLOWED_RECIPIENT_DOMAINS")+
+			feature(a.Web, "web", "S2G_PUBLIC_BASE_URL")+
+			feature(a.OCR, "ocr", "S2G_DI_ENDPOINT")+
 			"  │\n"+
-			feature(cfg.DefaultProfile.Email, "email", "set S2G_GRAPH_SENDER")+
-			feature(cfg.DefaultProfile.Web, "web downloads", "set S2G_PUBLIC_BASE_URL")+
-			feature(cfg.DefaultProfile.OCR, "OCR", "set S2G_DI_ENDPOINT")+
-			"  │\n"+
-			"  │ Set S2G_PROFILES to give the printer's sender addresses\n"+
-			"  │ different feature combinations.\n"+
+			"  │ scan@… gets everything on; an address naming email, web or\n"+
+			"  │ ocr gets only those.\n"+
 			"  └─────────────────────────────────────────────────────────────\n\n")
 }
 
@@ -716,19 +698,19 @@ func announceSMTPCredentials(cfg *config.Config) {
 				"  │     username: %s\n"+
 				"  │     password: %s\n"+
 				"  │\n"+
-				"  │ It changes on every restart. Set S2G_SMTP_PASSWORD (or\n"+
-				"  │ S2G_SMTP_PASSWORD_FILE) to keep it stable, or set\n"+
-				"  │ S2G_SMTP_ALLOW_ANONYMOUS=true to run without SMTP AUTH.\n"+
+				"  │ It changes on every restart. Set S2G_SMTP_PASSWORD to keep\n"+
+				"  │ it stable, or S2G_SMTP_ALLOW_ANONYMOUS=true to run without\n"+
+				"  │ SMTP AUTH.\n"+
 				"  └─────────────────────────────────────────────────────────────\n\n",
-			cfg.SMTPUsername, cfg.SMTPPassword)
+			config.SMTPUsername, cfg.SMTPPassword)
 	default:
-		slog.Info("SMTP AUTH enabled", "smtp_username", cfg.SMTPUsername)
+		slog.Info("SMTP AUTH enabled", "smtp_username", config.SMTPUsername)
 	}
 }
 
 // newHTTPHandler serves the health endpoints always - unauthenticated, at the
 // root and, under a subpath prefix, there too - and mounts the web UI
-// underneath them when a profile enables web downloads. Discovery against
+// underneath them when web downloads are available. Discovery against
 // Entra happens here, so a wrong authority is a startup failure rather than a
 // surprise at the first sign-in.
 func newHTTPHandler(ctx context.Context, cfg *config.Config, store *jobs.Store) (http.Handler, error) {
@@ -750,7 +732,7 @@ func newHTTPHandler(ctx context.Context, cfg *config.Config, store *jobs.Store) 
 	}
 
 	if cfg.PublicBaseURL == "" {
-		slog.Info("web UI disabled: no profile enables web downloads")
+		slog.Info("web UI disabled: S2G_PUBLIC_BASE_URL is not set")
 		return mux, nil
 	}
 	ui, err := web.New(ctx, web.Options{Store: store, Config: cfg, Logger: slog.Default()})

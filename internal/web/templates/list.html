@@ -11,7 +11,7 @@
   <td data-label="Received" class="nowrap muted small">{{.Received}}</td>
   <td data-label="Scan">
     <a href="{{$.Base}}scan/{{.ID}}">{{if .Subject}}{{.Subject}}{{else}}(no subject){{end}}</a>
-    <div class="muted small">from {{.Profile}}</div>
+    <div class="muted small">from {{.Sender}}</div>
   </td>
   <td data-label="Size" class="nowrap small">{{.Size}}</td>
   <td data-label="Status" class="nowrap"><span class="status {{.Status}}">{{.Status}}</span></td>

@@ -62,16 +62,15 @@ type harness struct {
 }
 
 // newHarness builds the whole web side, on a host of the appliance's own.
-// uiTitle, when given, is the operator's brand for this appliance.
-func newHarness(t *testing.T, uiTitle ...string) *harness {
+func newHarness(t *testing.T) *harness {
 	t.Helper()
-	return newHarnessAt(t, "", uiTitle...)
+	return newHarnessAt(t, "")
 }
 
 // newHarnessAt is newHarness with the appliance published under a subpath
 // prefix, the way a NAS or an existing site reaches it: the public base URL
 // carries the path, and the appliance both routes and emits it.
-func newHarnessAt(t *testing.T, prefix string, uiTitle ...string) *harness {
+func newHarnessAt(t *testing.T, prefix string) *harness {
 	t.Helper()
 	idp := newFakeIDP(t)
 	clock := newTestClock()
@@ -88,10 +87,6 @@ func newHarnessAt(t *testing.T, prefix string, uiTitle ...string) *harness {
 		ClientID:      testClientID,
 		ClientSecret:  testClientSecret,
 		AuthorityURL:  idp.URL,
-		UITitle:       "scan2graph",
-	}
-	if len(uiTitle) == 1 {
-		cfg.UITitle = uiTitle[0]
 	}
 	s, err := New(context.Background(), Options{Store: store, Config: cfg, Logger: quiet(), Now: clock.now})
 	if err != nil {
@@ -207,7 +202,7 @@ func (h *harness) addJob(subject string, recipients []string, caps jobs.Capabili
 		docs = append(docs, jobs.NewDocument{DisplayName: "invoice.pdf", Path: f.Name()})
 	}
 	j, err := st.Commit(jobs.NewJob{
-		Profile:    "printer@corp.example",
+		Sender:     "printer@corp.example",
 		Caps:       caps,
 		Subject:    subject,
 		Recipients: recipients,
@@ -679,24 +674,6 @@ func TestDetailPageOffersOneDocumentDirectly(t *testing.T) {
 		if !strings.Contains(page, "/scan/"+two.ID+"/"+d.ID) {
 			t.Errorf("the list is missing document %s:\n%s", d.DisplayName, page)
 		}
-	}
-}
-
-// TestUITitleIsEscaped guards the first operator-supplied string that reaches
-// a page: it must arrive as text in both places that render it, never as
-// markup.
-func TestUITitleIsEscaped(t *testing.T) {
-	const title = `Acme <script>alert(1)</script> & Co`
-	h := newHarness(t, title)
-
-	_, body := h.get(h.signedIn(), h.ts.URL+"/")
-	if strings.Contains(body, "<script>") {
-		t.Fatalf("the UI title reached the page as markup:\n%s", body)
-	}
-	// Once in the <title>, once in the header's brand link.
-	escaped := "Acme &lt;script&gt;alert(1)&lt;/script&gt; &amp; Co"
-	if n := strings.Count(body, escaped); n != 2 {
-		t.Errorf("the escaped UI title appears %d times, want 2 (title and brand):\n%s", n, body)
 	}
 }
 

@@ -12,13 +12,8 @@ import (
 	"time"
 
 	"github.com/georg-jung/scan2graph/internal/config"
-)
-
-// The scopes a real deployment uses, which is what makes "a token minted for
-// the other scope" a realistic failure rather than a contrived one.
-const (
-	testGraphScope = "https://graph.microsoft.com/.default"
-	testDIScope    = "https://cognitiveservices.azure.com/.default"
+	"github.com/georg-jung/scan2graph/internal/docintel"
+	"github.com/georg-jung/scan2graph/internal/jobs"
 )
 
 // msStub stands in for Entra and Document Intelligence together: a discovery
@@ -33,18 +28,19 @@ type msStub struct {
 
 func newMSStub(t *testing.T) *msStub {
 	t.Helper()
-	s := &msStub{secret: testClientSecret, scope: testDIScope}
+	s := &msStub{secret: testClientSecret, scope: docintel.Scope}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, map[string]any{
 			"issuer":                                s.URL,
 			"authorization_endpoint":                s.URL + "/authorize",
-			"token_endpoint":                        s.URL + "/token",
+			"token_endpoint":                        s.URL + "/oauth2/v2.0/token",
 			"jwks_uri":                              s.URL + "/jwks",
 			"id_token_signing_alg_values_supported": []string{"RS256"},
 		})
 	})
-	mux.HandleFunc("POST /token", s.token)
+	// Where config.Load derives the token endpoint from this authority.
+	mux.HandleFunc("POST /oauth2/v2.0/token", s.token)
 	mux.HandleFunc("GET /documentintelligence/documentModels", s.models)
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
@@ -116,16 +112,12 @@ func (s *msStub) config() *config.Config {
 		ClientID:     testClientID,
 		ClientSecret: testClientSecret,
 		AuthorityURL: s.URL,
-		TokenURL:     s.URL + "/token",
-		GraphScope:   testGraphScope,
+		TokenURL:     s.URL + "/oauth2/v2.0/token",
 		GraphSender:  "scanner@example.com",
 		DIEndpoint:   s.URL,
-		DIScope:      testDIScope,
-		DIAPIVersion: "2024-11-30",
 		// Load derives this from which settings are present; a hand-built
-		// Config has to say it, or the checks read as an appliance with
-		// recognition switched off.
-		DefaultProfile: config.Capabilities{Email: true, Web: true, OCR: true},
+		// Config has to say it.
+		Available: jobs.Capabilities{Email: true, Web: true, OCR: true},
 	}
 }
 
@@ -183,29 +175,12 @@ func TestChecksPass(t *testing.T) {
 func TestChecksSkip(t *testing.T) {
 	cfg := newMSStub(t).config()
 	cfg.GraphSender, cfg.DIEndpoint = "", ""
-	cfg.DefaultProfile = config.Capabilities{Web: true}
+	cfg.Available = jobs.Capabilities{Web: true}
 	got := results(t, runChecks(t.Context(), cfg))
 	wantOK(t, got["Entra sign-in"])
 	wantOK(t, got["App-only token"])
 	if r := got["Document Intelligence"]; r.Skip != "text recognition is off" || r.OK || r.Err != "" {
 		t.Errorf("%+v, want it skipped with %q", r, "text recognition is off")
-	}
-}
-
-// A profile can turn recognition off and leave the endpoint setting behind.
-// The endpoint is then inert, so probing it would report a failure about a
-// feature that is not running - the skip follows the profiles, not the
-// setting.
-func TestChecksSkipDIWhenNoProfileWantsIt(t *testing.T) {
-	cfg := newMSStub(t).config()
-	cfg.DefaultProfile = config.Capabilities{}
-	cfg.Profiles = map[string]config.Capabilities{
-		"scan-web@scanner.local": {Web: true, OCR: false},
-	}
-	got := results(t, runChecks(t.Context(), cfg))
-	wantOK(t, got["App-only token"])
-	if r := got["Document Intelligence"]; r.Skip != "text recognition is off" || r.Err != "" {
-		t.Errorf("Document Intelligence: %+v, want it skipped even with an endpoint configured", r)
 	}
 }
 
@@ -220,18 +195,6 @@ func TestChecksRefusedToken(t *testing.T) {
 	wantOK(t, got["Entra sign-in"])
 	wantFailure(t, got["App-only token"], "AADSTS7000215")
 	wantFailure(t, got["Document Intelligence"], "AADSTS7000215")
-}
-
-// TestChecksWrongScope is a token the resource will not accept: everything
-// about the app registration is right, and Document Intelligence still
-// refuses it - which reachability alone would never have found.
-func TestChecksWrongScope(t *testing.T) {
-	cfg := newMSStub(t).config()
-	cfg.DIScope = "https://example.invalid/.default"
-	got := results(t, runChecks(t.Context(), cfg))
-	wantOK(t, got["Entra sign-in"])
-	wantOK(t, got["App-only token"])
-	wantFailure(t, got["Document Intelligence"], "Access denied")
 }
 
 // TestChecksWrongEndpoint is the pasted-in URL that answers, but not as a
@@ -347,10 +310,7 @@ func TestChecksBounded(t *testing.T) {
 func testForm(stub *msStub) (url.Values, map[string]string) {
 	form := validForm()
 	form.Set("action", "test")
-	return form, map[string]string{
-		"S2G_ENTRA_AUTHORITY_URL": stub.URL,
-		"S2G_ENTRA_TOKEN_URL":     stub.URL + "/token",
-	}
+	return form, map[string]string{"S2G_ENTRA_AUTHORITY_URL": stub.URL}
 }
 
 // TestSetupTestConnection presses the third button: the results are rendered

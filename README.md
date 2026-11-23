@@ -30,12 +30,12 @@ ssh -N -L 8080:127.0.0.1:8080 operator@scan-host.example
 
 The wizard needs [Entra identity](#entra-id-app-registration) and at least one
 delivery method: email, [web downloads](#reverse-proxy), or both.
-[OCR](#azure-document-intelligence) is optional. Leave printer profiles empty
-for one default behavior. Use **Generate SMTP password**, copy the displayed
-value for the printer, then press **Save and start**. The wizard saves the
-configuration and starts the appliance in the same process; no Docker restart
-or supervisor command is needed. A proxy subpath needs
-`S2G_PUBLIC_BASE_URL` seeded before first boot; see [Reverse proxy](#reverse-proxy).
+[OCR](#azure-document-intelligence) is optional. Use **Generate SMTP
+password**, copy the displayed value for the printer, then press **Save and
+start**. The wizard saves the configuration and starts the appliance in the
+same process; no Docker restart or supervisor command is needed. A proxy
+subpath needs `S2G_PUBLIC_BASE_URL` seeded before first boot; see
+[Reverse proxy](#reverse-proxy).
 
 Finish by [configuring the printer](#setting-up-the-printer). Advanced settings
 are in the [configuration reference](#configuration-reference).
@@ -53,8 +53,7 @@ are in the [configuration reference](#configuration-reference).
 ```
 
 1. The printer sends the scan to scan2graph over plain LAN SMTP.
-2. The **SMTP envelope sender** selects a *sender profile*, i.e. what should
-   happen with the scan.
+2. The **SMTP envelope sender** selects which features apply to the scan.
 3. The **SMTP envelope recipients** identify the *people* the scan is for.
 4. PDFs are extracted, optionally OCRed, and then mailed via Microsoft Graph
    and/or offered for download in the web UI for a limited time.
@@ -63,44 +62,30 @@ are in the [configuration reference](#configuration-reference).
 
 ![One scan, offered as a single download](docs/screenshots/detail.png)
 
-## Sender profiles vs. recipient identity
+## Sender address vs. recipient identity
 
 Printers usually offer two independent address books: the "from" address of the
 device and a list of destination addresses. scan2graph uses them for two
 different purposes, and it never looks at the MIME `From:`/`To:` headers.
 
-* **Envelope sender → feature profile.** Configure one printer sender address
-  per feature combination, for example `scan-web-ocr@scanner.local`. Once
-  profiles are configured, unknown senders are rejected. Profiles are
-  optional: with none configured, every sender gets the same treatment, and
-  each capability is on exactly when the configuration it needs is present —
-  email once a Graph sender and a recipient-domain allowlist are configured,
-  web downloads once the public base URL is, OCR once the Document
-  Intelligence endpoint is. scan2graph prints the resulting profile at
-  startup, so it is never a mystery why a feature is off.
+* **Envelope sender → features.** Each feature is on when the configuration
+  it needs is present: `email` (send the PDFs via Microsoft Graph) once a
+  Graph sender and a recipient-domain allowlist are, `web` (offer them in the
+  web UI for a while) once the public base URL is, `ocr` (make them
+  searchable with Azure Document Intelligence) once its endpoint is. The
+  local part of the sender address picks among them: split on anything that
+  is not a letter or digit, the words `email`, `web` and `ocr` name exactly
+  the features wanted, and an address naming none gets all of them.
+  `web-ocr@scanner.local` gets web and OCR only. An address naming a feature
+  that is not configured, or naming no delivery (`ocr@…` alone), is refused
+  at `MAIL FROM`.
 * **Envelope recipients → users.** The recipient addresses are matched against
   the signed-in Entra user's email / UPN.
 
-A profile is a combination of three independent capabilities:
-
-| capability | effect                                                        |
-| ---------- | ------------------------------------------------------------- |
-| `ocr`      | run each PDF through Azure Document Intelligence (searchable PDF) |
-| `email`    | send the resulting PDFs via Microsoft Graph to the recipients  |
-| `web`      | make the resulting PDFs downloadable in the web UI for a while |
-
-```json
-{
-  "scan-email-ocr@scanner.local": { "email": true,  "web": false, "ocr": true  },
-  "scan-web-ocr@scanner.local":   { "email": false, "web": true,  "ocr": true  },
-  "scan-web@scanner.local":       { "email": false, "web": true,  "ocr": false }
-}
-```
-
 The recipient-domain allowlist (`S2G_ALLOWED_RECIPIENT_DOMAINS`) is checked
-for every recipient of every profile, not only the ones a profile ends up
-emailing — a web-only scan to someone outside the allowed domains is rejected
-at SMTP time just the same. It is only *required* when something can send
+for every recipient of every scan, not only the ones it ends up emailing — a
+web-only scan to someone outside the allowed domains is rejected at SMTP time
+just the same. It is only *required* when something can send
 email, though: a web-only deployment that leaves it unset accepts any
 recipient address at all, which is fine for a printer on your own LAN but
 not a filter you have configured.
@@ -116,15 +101,16 @@ Point the printer's "scan to email" feature at scan2graph:
   if the printer insists on 25).
 * **Encryption**: none. The listener never advertises STARTTLS; see "Security
   assumptions" for why that is an accepted trade-off on a LAN segment.
-* **Authentication**: PLAIN or LOGIN, with `S2G_SMTP_USERNAME` /
-  `S2G_SMTP_PASSWORD` (username defaults to `scanner`; leaving the password
-  unset makes scan2graph generate a fresh one and print it on every start,
-  which is fine for trying things out but not for a printer profile you want
-  to survive a restart). `S2G_SMTP_ALLOW_ANONYMOUS=true` turns AUTH off
-  entirely — only do that on a fully trusted, isolated segment.
-* **From address**: this is the sender-profile address from the table above —
-  configure one printer "scan to" button per feature combination you want.
-* **To address(es)**: the recipients — see "Sender profiles vs. recipient
+* **Authentication**: PLAIN or LOGIN, as user `scanner` with
+  `S2G_SMTP_PASSWORD` (leaving it unset makes scan2graph generate a fresh one
+  and print it on every start, which is fine for trying things out but not
+  for a printer you want to survive a restart).
+  `S2G_SMTP_ALLOW_ANONYMOUS=true` turns AUTH off entirely — only do that on a
+  fully trusted, isolated segment.
+* **From address**: picks the features, as above — one "scan to" button per
+  combination, such as `scan@scanner.local`, `web@scanner.local` and
+  `email-ocr@scanner.local`.
+* **To address(es)**: the recipients — see "Sender address vs. recipient
   identity" above.
 
 The printer's own "test connection" button sends a message with nothing
@@ -139,7 +125,7 @@ scan2graph needs exactly one Entra app registration. It serves both the web
 UI's sign-in (authorization code flow with PKCE) and the app-only tokens used
 to call Microsoft Graph and Azure Document Intelligence (client credentials
 flow) — there is nothing to register twice. Steps 1 and 3 are always needed;
-the rest depend on what your profiles actually do.
+the rest depend on which features you configure.
 
 The setup wizard shows these same steps on its Identity card, cut down to
 the ones your configuration actually needs — and with the redirect URI
@@ -152,18 +138,17 @@ list can only describe.
    single-tenant app is enough. Note the **Directory (tenant) ID** and
    **Application (client) ID** from the Overview page —
    `S2G_ENTRA_TENANT_ID` and `S2G_ENTRA_CLIENT_ID`.
-2. **Only if a profile offers web downloads** (i.e. you configure
-   `S2G_PUBLIC_BASE_URL`): **Authentication → Add a platform → Web**,
-   redirect URI `https://<your host>/auth/callback` (that base URL plus
-   `/auth/callback`, exactly — including its subpath, if it has one, as in
-   `https://nas.acme.office/scanner/auth/callback`). Use the **Web** platform, not SPA or a public
-   client — scan2graph holds a client secret and runs the code exchange
-   server-side. An email-only deployment signs nobody in and needs no
-   redirect URI at all.
+2. **Only for web downloads** (i.e. you configure `S2G_PUBLIC_BASE_URL`):
+   **Authentication → Add a platform → Web**, redirect URI
+   `https://<your host>/auth/callback` (that base URL plus `/auth/callback`,
+   exactly — including its subpath, if it has one, as in
+   `https://nas.acme.office/scanner/auth/callback`). Use the **Web**
+   platform, not SPA or a public client — scan2graph holds a client secret
+   and runs the code exchange server-side. An email-only deployment signs
+   nobody in and needs no redirect URI at all.
 3. **Certificates & secrets → New client secret.** The value is shown once;
-   copy it into `S2G_ENTRA_CLIENT_SECRET` (or, preferably,
-   `S2G_ENTRA_CLIENT_SECRET_FILE`).
-4. **Only if a profile sends email** (i.e. you configure `S2G_GRAPH_SENDER`):
+   copy it into `S2G_ENTRA_CLIENT_SECRET`.
+4. **Only for email** (i.e. you configure `S2G_GRAPH_SENDER`):
    **API permissions → Add a permission → Microsoft Graph → Application
    permissions → `Mail.Send`**, then **Grant admin consent**. This is what
    lets scan2graph's app-only token call `sendMail`. A web-only deployment
@@ -265,11 +250,7 @@ gets the prefix forwarded. Both are unauthenticated and both write a constant
 
 ## Configuration reference
 
-Every `S2G_X` variable below may instead be set as `S2G_X_FILE`, pointing at
-a file whose contents (trailing whitespace trimmed) become the value — the
-way to feed in a secret via a Docker secret file without it ever being a
-plain environment variable. Setting both at once is a startup error. See
-[`.env.example`](.env.example) for a fully commented copy with example
+See [`.env.example`](.env.example) for a fully commented copy with example
 values.
 
 **A configuration file.** The same settings can live in a `KEY=value` file —
@@ -284,68 +265,46 @@ S2G_CONFIG_FILE=/etc/scan2graph/scan2graph.env scan2graph
 There is deliberately no default location: nothing is read unless a path is
 given, and a path that cannot be read or parsed stops startup rather than
 falling back. Precedence is **environment variable > file > built-in
-default**, per setting rather than per spelling: `S2G_X` in the environment
-also overrides an `S2G_X_FILE` line in the file, and vice versa. Startup logs
+default**. Startup logs
 which file was read and names any of its settings the environment overrode,
-so a setting that is being ignored says so by name.
+so a setting that is being ignored says so by name; an `S2G_*` name that
+nothing reads (removed or mistyped), in the file or the environment, is
+warned about the same way.
 Comment lines (`#`), blank lines, an `export ` prefix and single- or
 double-quoted values are all accepted; a duplicate key is an error. Only
 `S2G_*` settings come from the file — `S2G_CONFIG_FILE` itself and anything
-the Go runtime reads directly (`SSL_CERT_FILE`, `HTTPS_PROXY`, `TZ`) must be
+the Go runtime reads directly (`TMPDIR`, `SSL_CERT_FILE`, `HTTPS_PROXY`, `TZ`) must be
 real environment variables.
 
-**Listeners, logging & appearance**
+**Listeners & logging**
 
 | variable | default | required when |
 | --- | --- | --- |
 | `S2G_HTTP_ADDR` | `:8080` | — |
 | `S2G_SMTP_ADDR` | `:2525` | — |
-| `S2G_TEMP_DIR` | the OS temp directory | — |
 | `S2G_LOG_LEVEL` | `info` | — |
-| `S2G_LOG_FORMAT` | `json` | — |
-| `S2G_UI_TITLE` | `scan2graph` | — |
 
-**SMTP AUTH**
+Scans are kept under `$TMPDIR` (Go's `os.TempDir`, `/tmp` by default), and
+logs are always plain text on stderr.
+
+**SMTP AUTH** — the username is always `scanner`.
 
 | variable | default | required when |
 | --- | --- | --- |
-| `S2G_SMTP_USERNAME` | `scanner` | only meaningful once a password is set |
 | `S2G_SMTP_PASSWORD` | none — service mode still generates and prints an ephemeral password on every start | set it for a deployment that must keep working across restarts |
-| `S2G_SMTP_ALLOW_ANONYMOUS` | `false` | mutually exclusive with the two above |
+| `S2G_SMTP_ALLOW_ANONYMOUS` | `false` | mutually exclusive with a password |
 
-**Sender profiles & recipients**
-
-| variable | default | required when |
-| --- | --- | --- |
-| `S2G_PROFILES` | none — the default profile applies to every sender | — |
-| `S2G_ALLOWED_RECIPIENT_DOMAINS` | none | any profile (or the default profile) has `email` enabled |
-| `S2G_PUBLIC_BASE_URL` | none — web UI disabled | any profile (or the default profile) has `web` enabled; a path in it is the subpath the appliance serves itself under |
-
-**Entra ID (identity) — always required**
+**Features, identity & recipients** — each feature turns on when its settings are present.
 
 | variable | default | required when |
 | --- | --- | --- |
+| `S2G_PUBLIC_BASE_URL` | none — web UI disabled | turns `web` on; a path in it is the subpath the appliance serves itself under |
+| `S2G_GRAPH_SENDER` | none | turns `email` on, with the allowlist below |
+| `S2G_ALLOWED_RECIPIENT_DOMAINS` | none | `S2G_GRAPH_SENDER` is set |
+| `S2G_DI_ENDPOINT` | none | turns `ocr` on; must be `https` |
 | `S2G_ENTRA_TENANT_ID` | none | always |
 | `S2G_ENTRA_CLIENT_ID` | none | always |
 | `S2G_ENTRA_CLIENT_SECRET` | none | always |
-| `S2G_ENTRA_AUTHORITY_URL` | derived from the tenant id | override only to point at a local test IdP |
-| `S2G_ENTRA_TOKEN_URL` | derived from the tenant id | override only to point at a local test IdP |
-
-**Microsoft Graph**
-
-| variable | default | required when |
-| --- | --- | --- |
-| `S2G_GRAPH_BASE_URL` | `https://graph.microsoft.com/v1.0` | — |
-| `S2G_GRAPH_SCOPE` | `https://graph.microsoft.com/.default` | — |
-| `S2G_GRAPH_SENDER` | none | any profile (or the default profile) has `email` enabled |
-
-**Azure Document Intelligence**
-
-| variable | default | required when |
-| --- | --- | --- |
-| `S2G_DI_ENDPOINT` | none | any profile (or the default profile) has `ocr` enabled; must be `https` |
-| `S2G_DI_API_VERSION` | `2024-11-30` | — |
-| `S2G_DI_SCOPE` | `https://cognitiveservices.azure.com/.default` | — |
 
 **Lifetimes & limits**
 
@@ -354,7 +313,6 @@ real environment variables.
 | `S2G_JOB_TTL` | `8h` (minimum `1m`) | — |
 | `S2G_MAX_MESSAGE_BYTES` | `33554432` (32 MiB) — the SMTP DATA cap, which also bounds PDF size | — |
 | `S2G_MAX_STORED_BYTES` | `536870912` (512 MiB) — temporary space for queued, in-flight and web-visible scans together; must be at least twice `S2G_MAX_MESSAGE_BYTES`, because OCR holds the searchable PDF and the original at once | — |
-| `S2G_MAX_CONCURRENT_JOBS` | `2` — pipeline workers, also the OCR concurrency cap | — |
 
 A message's MIME structure has its own, non-configurable ceiling (at most 100
 parts, 10 levels of nesting, 16 PDF attachments); a message over any of these
@@ -537,9 +495,9 @@ outside the unit: the service itself may not write `/etc` at all.
 
 **Hardening.** `ProtectSystem=strict` makes the unit's whole file hierarchy
 read-only to it, which is exactly right for an appliance with no state of
-its own to keep — the one directory it does write to, `S2G_TEMP_DIR`, is the
+its own to keep — the one directory it does write to, `$TMPDIR`, is the
 private `/tmp` `PrivateTmp=yes` gives it inside the service's own mount
-namespace, so pointing that setting anywhere else fails at runtime. The
+namespace, so pointing `TMPDIR` anywhere else fails at runtime. The
 empty `CapabilityBoundingSet` works because both listeners sit above port
 1024, and `RestrictAddressFamilies=AF_INET AF_INET6` is why the build above
 is CGO-free: a cgo build resolves names through NSS, which on a host running
@@ -611,8 +569,8 @@ directory: scans being received or worked on can stand above it briefly, so
 give the temporary directory some room above the number you set.
 
 A failed job is not silent. Its status and a short, user-safe reason show in
-the web UI whenever the profile has `web`, and its recipients get a notice
-email whenever the profile has `email` — never the underlying error, a path
+the web UI whenever the scan has `web`, and its recipients get a notice
+email whenever it has `email` — never the underlying error, a path
 or a token. Two failure modes are worth calling out specifically:
 
 * When OCR fails on a job that also has `web`, the job is marked failed but
@@ -622,7 +580,7 @@ or a token. Two failure modes are worth calling out specifically:
   failed to produce — the failed status and reason say so plainly.
 * A scan too large for Graph to send — see "Lifetimes & limits" above for
   what that ceiling is — is not treated as a failure: the recipients get a
-  notice instead, with a download link when the profile has `web`, or advice
+  notice instead, with a download link when the scan has `web`, or advice
   to rescan at a lower resolution when it does not.
 
 ## Non-goals
@@ -657,7 +615,9 @@ npm test
 ```
 
 It builds and starts both the appliance and the fakes itself — nothing needs
-to be running beforehand.
+to be running beforehand. It points the appliance at the fakes with two hooks
+no deployment sets: `S2G_ENTRA_AUTHORITY_URL` (the token endpoint follows it)
+and `S2G_GRAPH_BASE_URL`.
 
 ## License
 

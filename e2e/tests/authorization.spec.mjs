@@ -18,7 +18,7 @@ test.beforeEach(resetFakes);
 test('Bob can neither see nor fetch a scan addressed to Alice', async ({ page }) => {
   const subject = `e2e authorization ${randomUUID().slice(0, 8)}`;
   const codes = await sendScan({
-    from: 'web-only@scanner.local',
+    from: 'web@scanner.local',
     to: 'alice@corp.example',
     subject,
     pdf: makePdf(subject),

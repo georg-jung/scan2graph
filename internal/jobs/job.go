@@ -14,7 +14,7 @@ import (
 )
 
 // Capabilities is the feature set a job was created under, derived from the
-// sender profile that accepted the SMTP envelope.
+// sender address that was accepted on the SMTP envelope.
 type Capabilities struct {
 	Email bool
 	Web   bool
@@ -50,7 +50,7 @@ type Job struct {
 	ID         string
 	ReceivedAt time.Time
 	ExpiresAt  time.Time
-	Profile    string // canonical envelope sender that selected the profile
+	Sender     string // canonical envelope sender
 	Caps       Capabilities
 	Subject    string   // decoded, may be ""
 	Recipients []string // canonical recipient identities
@@ -61,7 +61,7 @@ type Job struct {
 
 // NewJob describes a job to be created by Staging.Commit.
 type NewJob struct {
-	Profile    string
+	Sender     string
 	Caps       Capabilities
 	Subject    string
 	Recipients []string

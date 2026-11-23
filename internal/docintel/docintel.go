@@ -21,11 +21,18 @@ import (
 	"github.com/georg-jung/scan2graph/internal/msapi"
 )
 
+// Scope is the OAuth scope of the token HTTP must carry, and APIVersion the
+// REST API version this client speaks: properties of the service, not
+// settings.
+const (
+	Scope      = "https://cognitiveservices.azure.com/.default"
+	APIVersion = "2024-11-30"
+)
+
 // Client talks to one Document Intelligence resource.
 type Client struct {
-	HTTP       *http.Client // must carry the bearer token
-	Endpoint   string       // https://<resource>.cognitiveservices.azure.com, no trailing slash
-	APIVersion string       // e.g. "2024-11-30"
+	HTTP     *http.Client // must carry the bearer token
+	Endpoint string       // https://<resource>.cognitiveservices.azure.com, no trailing slash
 
 	// sleep replaces time.Sleep in tests; nil uses the real, ctx-aware wait.
 	sleep func(ctx context.Context, d time.Duration)
@@ -127,7 +134,7 @@ func (c *Client) sameOrigin(loc string) error {
 }
 
 func (c *Client) analyzeURL() string {
-	q := url.Values{"api-version": {c.APIVersion}, "output": {"pdf"}}
+	q := url.Values{"api-version": {APIVersion}, "output": {"pdf"}}
 	return c.Endpoint + "/documentintelligence/documentModels/prebuilt-read:analyze?" + q.Encode()
 }
 

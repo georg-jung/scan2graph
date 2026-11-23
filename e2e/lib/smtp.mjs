@@ -26,7 +26,7 @@ export async function sendScan({ from, to, subject, pdf, password = FIXTURE_SECR
     await s.cmd('EHLO printer.local');
 
     await s.cmd('AUTH LOGIN'); // 334, username challenge
-    await s.cmd(base64('printer')); // 334, password challenge
+    await s.cmd(base64('scanner')); // 334, password challenge
     codes.auth = await s.cmd(base64(password));
     if (failed(codes.auth)) return codes;
 
